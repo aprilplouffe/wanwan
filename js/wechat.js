@@ -4284,6 +4284,9 @@ function buildPlusPanelHTML() {
             <button class="plus-item" data-type="link">
               <div class="plus-icon"><i class="fa-solid fa-link"></i></div><span>链接</span>
             </button>
+            <button class="plus-item" data-type="couple-space-invite">
+              <div class="plus-icon" style="color:#ff477e;"><i class="fa-solid fa-heart-pulse"></i></div><span>情侣空间</span>
+            </button>
           </div>
         </div>
       </div>
@@ -8123,6 +8126,38 @@ function handlePlusAction(chatPage, type) {
     case 'transfer':   showTransferSheet(chatPage); break
     case 'location':   showLocationSheet(chatPage); break
     case 'link':       showVirtualLinkSheet(chatPage); break
+    case 'couple-space-invite': handleWechatCoupleSpaceAction(chatPage); break
+  }
+}
+
+async function handleWechatCoupleSpaceAction(chatPage) {
+  const charId = parseInt(chatPage.dataset.charId)
+  if (!charId) {
+    window.toast?.('请在私聊中开通情侣空间')
+    return
+  }
+  const char = await window.getCharacter(charId)
+  if (!char) return
+
+  const coupleConfig = (window.loadAllCoupleSpaces ? await window.loadAllCoupleSpaces() : null) || { activeCharId: null, spaces: {} }
+  coupleConfig.spaces = coupleConfig.spaces || {}
+  const space = coupleConfig.spaces[charId]
+
+  if (space && space.status === 'accepted') {
+    const enter = confirm(`你与【${char.name}】已开通专属情侣空间！\n是否立即前往【恋爱记】查看属于你们的相册、情书、日记与歌单？`)
+    if (enter) {
+      coupleConfig.activeCharId = charId
+      if (window.saveAllCoupleSpaces) await window.saveAllCoupleSpaces(coupleConfig)
+      if (window.showLoveDiaryPage) window.showLoveDiaryPage()
+    }
+    return
+  }
+
+  const confirmed = confirm(`是否向【${char.name}】发送【开通情侣空间】邀请？\n开通后将接入【恋爱记】，共同记录相册、情书、日记、悄悄话、心愿、歌单与动态。`)
+  if (!confirmed) return
+
+  if (window.sendCoupleSpaceInviteFromChat) {
+    await window.sendCoupleSpaceInviteFromChat(chatPage, char)
   }
 }
 

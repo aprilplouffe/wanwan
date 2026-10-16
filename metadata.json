@@ -1,0 +1,8 @@
+{
+  "name": "弯弯",
+  "description": "弯弯机 — 浏览器端虚拟伴侣手机系统，集桌面小组件、微信对话、角色档案、世界书、音乐、社交动态与小游戏于一体。",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

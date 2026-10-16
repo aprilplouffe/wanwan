@@ -335,6 +335,32 @@ function initDB() {
     mcpServers:        '&id, name, enabled, updatedAt',
     mcpToolTraces:     '++id, scope, conversationId, [scope+conversationId], turnId, createdAt'
   })
+  db.version(16).stores({
+    config:            'key',
+    characters:        '++id, type, name',
+    chats:             '++id, charId, ownerUid, [ownerUid+charId]',
+    messages:          '++id, chatId, createdAt, [chatId+createdAt], clientMessageId, serverMessageId, onlineStatus',
+    groupChats:        '++id',
+    groupMessages:     '++id, groupId, createdAt',
+    moments:           '++id, ownerUid, charId, createdAt, [ownerUid+charId]',
+    finance:           '++id, charId',
+    offlineChats:      '++id, charId',
+    stickers:          '++id, categoryId',
+    stickerCategories: '++id',
+    memories:          '++id, ownerUid, charId, chatId, [ownerUid+charId], [chatId+status], updatedAt',
+    memoryRuns:        '++id, ownerUid, charId, chatId, fromMsgId, toMsgId, createdAt',
+    callRecords:       '++id, chatId, charId, ownerUid, createdAt',
+    smsConversations:  '++id, ownerPhone, remotePhone, [ownerPhone+remotePhone], updatedAt',
+    smsMessages:       '++id, conversationId, createdAt',
+    imageBlobs:        '++id, createdAt',
+    doorModules:       '&id, type, enabled, updatedAt',
+    doorResults:       '&id, userId, characterId, moduleId, createdAt',
+    avgSaves:          '++id, gameId, slot, updatedAt',
+    avgConfigs:        'key',
+    mcpServers:        '&id, name, enabled, updatedAt',
+    mcpToolTraces:     '++id, scope, conversationId, [scope+conversationId], turnId, createdAt',
+    lorebook:          '++id, key'
+  })
   installWanWanDBRecovery()
 }
 

@@ -1,0 +1,523 @@
+/* love-diary.css — 恋爱记（情侣空间）全套样式 */
+
+#love-diary-page {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: #fff8f9;
+  color: #333;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 顶部情侣横幅 */
+.ld-banner {
+  position: relative;
+  height: 200px;
+  background: linear-gradient(135deg, #ffd1dc 0%, #ffc0cb 50%, #ffe4e1 100%);
+  background-size: cover;
+  background-position: center;
+  display: flex;
+  flex-direction: column;
+  justifyContent: space-between;
+  padding: 14px 16px;
+  color: #5a3e47;
+  box-shadow: 0 4px 20px rgba(255, 182, 193, 0.25);
+  flex-shrink: 0;
+}
+
+.ld-banner-nav {
+  display: flex;
+  align-items: center;
+  justifyContent: space-between;
+  z-index: 2;
+}
+
+.ld-nav-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5a3e47;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.ld-banner-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-top: -10px;
+  z-index: 2;
+}
+
+.ld-avatar-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.ld-avatar-img {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  object-fit: cover;
+  box-shadow: 0 4px 12px rgba(255, 105, 180, 0.25);
+}
+
+.ld-avatar-name {
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 4px;
+  color: #4a333c;
+  max-width: 70px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ld-heart-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.ld-heart-icon {
+  font-size: 26px;
+  color: #ff477e;
+  animation: ldPulse 1.4s infinite ease-in-out;
+  filter: drop-shadow(0 2px 6px rgba(255, 71, 126, 0.4));
+}
+
+@keyframes ldPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+
+.ld-days-badge {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(8px);
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ff477e;
+  margin-top: 4px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+}
+
+.ld-banner-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #7d5a65;
+  z-index: 2;
+}
+
+/* 导航 Tabs */
+.ld-tabs-bar {
+  display: flex;
+  background: #fff;
+  padding: 4px 8px;
+  border-bottom: 1px solid #ffeef1;
+  overflow-x: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+.ld-tabs-bar::-webkit-scrollbar { display: none; }
+
+.ld-tab-item {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #8c737c;
+  cursor: pointer;
+  border-radius: 18px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.ld-tab-item.active {
+  background: #ffe3e8;
+  color: #ff477e;
+  font-weight: 700;
+}
+
+/* 主内容容器 */
+.ld-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 相册 Album */
+.ld-album-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.ld-photo-card {
+  background: #fff;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+  display: flex;
+  flex-direction: column;
+}
+.ld-photo-img {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+}
+.ld-photo-info {
+  padding: 8px 10px;
+}
+.ld-photo-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+.ld-photo-date {
+  font-size: 10px;
+  color: #a08c93;
+  margin-top: 2px;
+}
+
+/* 情书 Love Letters */
+.ld-letter-card {
+  background: #fffdf9;
+  border: 1px solid #f6e8d8;
+  border-radius: 16px;
+  padding: 18px;
+  margin-bottom: 14px;
+  box-shadow: 0 4px 14px rgba(230, 200, 180, 0.15);
+  position: relative;
+  cursor: pointer;
+}
+.ld-letter-seal {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #ff5e7e;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  box-shadow: 0 2px 8px rgba(255, 94, 126, 0.4);
+}
+.ld-letter-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #5c3b28;
+  margin-bottom: 8px;
+}
+.ld-letter-preview {
+  font-size: 13px;
+  color: #7a5f50;
+  line-height: 1.6;
+  max-height: 48px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ld-letter-meta {
+  font-size: 11px;
+  color: #b59f93;
+  margin-top: 10px;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* 悄悄话 Whispers */
+.ld-whispers-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.ld-whisper-card {
+  border-radius: 14px;
+  padding: 14px;
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 心愿清单 Wishes */
+.ld-wish-item {
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.02);
+  cursor: pointer;
+}
+.ld-wish-check {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid #ff9ebb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+.ld-wish-item.done .ld-wish-check {
+  background: #ff477e;
+  border-color: #ff477e;
+  color: #fff;
+}
+.ld-wish-item.done .ld-wish-text {
+  text-decoration: line-through;
+  color: #a08c93;
+}
+.ld-wish-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+  flex: 1;
+}
+
+/* 我们的歌单 Playlist */
+.ld-song-item {
+  background: #fff;
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.02);
+}
+.ld-song-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ld-song-cover {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+.ld-song-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+.ld-song-artist {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+}
+.ld-song-play-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #ffe3e8;
+  color: #ff477e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+/* 动态 Moments */
+.ld-moment-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+}
+.ld-moment-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.ld-moment-ava {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.ld-moment-author {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ff477e;
+}
+.ld-moment-date {
+  font-size: 11px;
+  color: #a08c93;
+}
+.ld-moment-body {
+  font-size: 14px;
+  line-height: 1.55;
+  color: #2d2426;
+  margin-bottom: 8px;
+}
+.ld-moment-images {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ld-moment-img {
+  width: 90px;
+  height: 90px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+.ld-moment-foot {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #ff477e;
+  cursor: pointer;
+}
+
+/* 悬浮新建按钮 */
+.ld-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 20px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff6b8b, #ff477e);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(255, 71, 126, 0.4);
+  cursor: pointer;
+  font-size: 20px;
+  z-index: 60;
+  border: none;
+}
+
+/* 角色选择与未接入状态卡 */
+.ld-select-partner-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+}
+.ld-partner-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+.ld-partner-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #4a2d36;
+}
+.ld-partner-desc {
+  font-size: 12px;
+  color: #8c737c;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+.ld-char-item {
+  background: #fff;
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+}
+.ld-char-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ld-char-ava {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.ld-char-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+}
+.ld-char-bio {
+  font-size: 12px;
+  color: #999;
+  margin-top: 2px;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ld-invite-btn {
+  background: linear-gradient(135deg, #ff758c 0%, #ff7eb3 100%);
+  color: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 18px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 3px 8px rgba(255, 117, 140, 0.3);
+}
+.ld-status-tag {
+  font-size: 12px;
+  color: #ff477e;
+  background: #ffe3e8;
+  padding: 6px 14px;
+  border-radius: 18px;
+  font-weight: 600;
+  border: 1px solid #ffccd5;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(255, 71, 126, 0.15);
+  display: inline-flex;
+  align-items: center;
+  transition: all 0.2s ease;
+}
+.ld-status-tag:hover {
+  background: #ffd6df;
+  transform: translateY(-1px);
+}
+

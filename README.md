@@ -1,121 +1,77 @@
-# 弯弯机部署教程
+# 弯弯 (WanWan) — 虚拟手机伴侣系统
 
-弯弯机是一个可以直接部署到浏览器使用的静态应用。本项目不需要服务器、不需要安装依赖，也不需要执行构建命令。
+本项目已由原 Dynamic 原生架构完整重构为现代化 **React 19 + TypeScript + Vite** 应用。
 
-推荐将仓库连接到 Netlify。完成一次设置后，只要 GitHub 仓库有新提交，Netlify 就会自动发布新版。没有 GitHub 账户时，也可以直接上传项目文件夹。
+弯弯机是一个纯浏览器端运行的虚拟智能手机系统，集成了桌面小组件、微信角色扮演对话、角色档案、世界书、音乐播放器、互动视觉小说、钱迹记账与趣味小游戏于一体。
 
-## 部署前准备
+## 技术栈与特性
 
-推荐方案需要：
+- **前端架构**：React 19 + TypeScript + Vite 6
+- **本地存储**：Dexie.js (IndexedDB) 本地持久化，支持全量数据 JSON 备份与恢复
+- **设计风格**：Liquid Glass 玻璃拟态设计，完美还原 iOS 风格主屏与多页应用交互
+- **AI 角色对话**：支持配置 OpenAI / Gemini / Claude 等自定义兼容 API 端点与模型；支持内置情感角色提示词与离线拟真陪伴
 
-- 一个 [GitHub](https://github.com/) 账户
-- 一个 [Netlify](https://app.netlify.com/signup) 账户
+## 核心应用与功能
 
-手动上传只需要下载好的项目文件。
+1. **桌面与小组件 (Desktop & Widgets)**
+   - 动态实时状态栏（时钟、WiFi、电量）
+   - 消息通知、今日心情、对话气泡、想见你心动卡片、音乐播放小组件
+   - 多分页网格布局与底部 Dock 栏，支持自定义壁纸与标签颜色
 
-## 方案一：连接 GitHub 自动部署「推荐」
+2. **微信 (WeChat)**
+   - 会话列表、未读徽标、角色切换
+   - 消息气泡、图片发送、微信红包、语音消息展示
+   - 智能 AI 回复：支持根据角色设定生成对话或调用已配置的大模型接口
+   - 朋友圈 (Moments)：图文发布、点赞与互动
 
-### 1. Fork 本仓库
+3. **角色档案 (Character Archive)**
+   - 支持 CHAR (主角)、NPC (配角)、USER (用户) 筛选与分组管理
+   - 完整角色属性编辑：头像、问候语、Prompt 设定与背景设定
+   - 角色 JSON 导入与导出
 
-1. 打开本项目的 GitHub 仓库页面。
-2. 点击页面右上角的 **Fork**。
-3. 点击 **Create fork**，把项目复制到你自己的 GitHub 账户。
+4. **世界书 (Lorebook)**
+   - 设定词条管理、触发关键词匹配与内容检索
 
-以后可以在自己的仓库页面点击 **Sync fork** 同步本项目的更新。同步产生新提交后，Netlify 会自动重新部署。
+5. **橙光 · 互动视觉小说 (AVG Engine)**
+   - 内置两部互动小说：《校园皆是修罗场》与《谍影留声》
+   - 角色立绘、全景背景、打字机对话流、分支选择与读档存档
 
-### 2. 在 Netlify 导入仓库
+6. **网易云音乐 (Music Player)**
+   - 黑胶唱片旋转动画、歌曲切换、实时滚动歌词与进度控制
 
-1. 登录 [Netlify](https://app.netlify.com/)。
-2. 在团队首页点击 **Add new project**。
-3. 选择 **Import an existing project**。
-4. 选择 **GitHub**，按提示授权 Netlify 访问你的 GitHub 仓库。
-5. 在仓库列表中选择刚刚 Fork 的弯弯仓库。如果找不到它，请在 GitHub 授权设置中允许 Netlify 访问该仓库。
+7. **钱迹记账 (Wallet)**
+   - 资产结余统计、支出/收入分类明细、记一笔弹窗
 
-### 3. 填写部署设置
+8. **游戏大厅 (Game Hall)**
+   - 单机 6 人局狼人杀（神职查验与投票淘汰）
+   - 幸运摇骰子与命运抛硬币
 
-在发布前确认以下设置：
+9. **伴侣应用群**
+   - **X / Twitter**：角色社交动态推文流与发帖
+   - **Instagram**：限时动态与照片流
+   - **iCity**：静谧个人微日记与天气心情收录
+   - **淘宝**：角色礼物心愿挑选与购物车
+   - **Readen 书店**：小说多章节阅读器
+   - **YumYum 外卖**：美食外送点单
+   - **任意门**：海边、雨夜、星空等浪漫场景传送
+   - **终端 (Terminal)**：黑客指令控制台
+   - **想见你**：实时心率与心动计数器
+   - **电话 (Phone)**：模拟拨号键盘、通话记录与通话中界面
 
-| 设置 | 填写内容 |
-| --- | --- |
-| Production branch | 保持默认，通常是 `main` 或 `master` |
-| Base directory | 留空 |
-| Build command | 留空 |
-| Publish directory | `.` |
-| Environment variables | 不需要添加 |
+10. **设置与备份 (Settings)**
+    - API 端点、密钥、模型与温度配置
+    - 桌面壁纸与图标主题定制
+    - 本地数据库备份导出与一键恢复
 
-然后点击 **Publish**。等待部署状态显示为已发布后，打开 Netlify 提供的 `https://项目名称.netlify.app` 地址即可使用。
+## 本地开发与构建
 
-> 如果新建的 Netlify 团队默认启用了私有项目，部署完成后可能只有团队成员能访问。需要公开分享时，请在 Netlify 的项目访问设置中将它改为公开。
+```bash
+# 安装依赖
+npm install
 
-### 4. 更新网站
+# 启动开发服务器 (默认端口 3000)
+npm run dev
 
-连接 GitHub 后，Netlify 会监听生产分支：
-
-- 你向自己的生产分支提交或合并修改后，Netlify 会自动部署。
-- 上游项目发布更新后，先在 GitHub 的 Fork 页面点击 **Sync fork**；同步完成后，Netlify 会自动部署。
-- 可以在 Netlify 项目中的 **Deploys** 页面查看进度、日志和历史版本。
-
-## 方案二：手动上传到 Netlify
-
-这种方式不需要连接 GitHub，但每次更新都要重新上传。
-
-1. 在 GitHub 仓库页面点击 **Code**，再点击 **Download ZIP**。
-2. 解压下载的 ZIP。
-3. 打开解压后的文件夹，确认第一层能直接看到 `index.html`、`css`、`js`、`img` 等内容。
-4. 登录 Netlify 后打开 [Netlify Drop](https://app.netlify.com/drop)。
-5. 把整个项目文件夹拖到上传区域。
-6. 上传完成后，打开 Netlify 提供的 `netlify.app` 地址。
-
-更新手动部署的网站时，先下载并解压新版项目，再进入原来的 Netlify 项目，在 **Deploys** 页面的上传区域拖入更新后的完整文件夹。
-
-## 部署后的常用设置
-
-### 修改网站地址
-
-Netlify 会自动生成一个随机的 `netlify.app` 地址。可以在项目设置中修改项目名称，从而更改这个地址。
-
-如需使用自己的域名，请进入 **Domain management** > **Production domains**，再选择 **Add a domain**。具体步骤可参考 [Netlify 自定义域名文档](https://docs.netlify.com/manage/domains/manage-domains/assign-a-domain-to-your-site-app/)。
-
-### 添加到手机主屏幕
-
-弯弯机支持作为网页应用安装：
-
-- **iPhone / iPad（Safari）**：打开网站，点击分享按钮，选择“添加到主屏幕”。
-- **Android（Chrome）**：打开网站，点击浏览器菜单，选择“安装应用”或“添加到主屏幕”。
-
-## 数据与隐私
-
-- 聊天、角色、设置和 API 配置等数据主要保存在当前浏览器的本地存储中，不会因为部署到 Netlify 就自动上传到 Netlify。
-- 更换设备、浏览器、无痕窗口或网站域名后，会被视为一个新的本地数据空间。清除浏览器的网站数据也可能删除已有内容。
-- 更换设备、浏览器或域名前，请先在弯弯中导出数据备份，再在新地址中导入。
-- 模型服务的 API 地址和 API Key 应在弯弯的设置页面中填写，不需要放进 Netlify 环境变量，也不要直接写进公开仓库的代码。
-- 页面会从外部 CDN 加载部分程序和图标，并使用部分外部图片资源，因此使用时需要网络连接。
-
-## 常见问题
-
-### 部署后显示 404 或 Page not found
-
-检查 Netlify 的 **Publish directory** 是否为 `.`，并确认 `index.html` 位于上传或仓库的根目录，而不是多套了一层文件夹。
-
-### 页面能打开，但没有样式或部分功能不能使用
-
-确认项目内容上传完整，尤其不要遗漏 `css`、`js`、`img` 和 `audio` 文件夹。然后在 Netlify 的 **Deploys** 页面重新部署。
-
-### GitHub 更新后，网站没有变化
-
-1. 确认修改已经进入 Netlify 设置的生产分支。
-2. 在 Netlify 的 **Deploys** 页面确认是否产生了新部署，以及部署是否成功。
-3. 重新打开网站；如仍显示旧内容，清除该网站的浏览器缓存后再试。
-
-### 换了域名或项目地址后，原来的数据不见了
-
-这是浏览器的数据隔离机制。不同域名会使用不同的本地数据空间。回到旧地址导出备份，再到新地址导入即可。
-
-### 在 Netlify 中找不到 GitHub 仓库
-
-重新连接 GitHub，并在授权页面允许 Netlify 访问该仓库。组织账户中的仓库可能还需要组织管理员批准 Netlify 的访问权限。
-
-## 相关文档
-
-- [Netlify：从 Git 仓库部署](https://docs.netlify.com/start/quickstarts/deploy-from-repository/)
-- [Netlify Drop 使用说明](https://docs.netlify.com/start/quickstarts/netlify-drop-quickstart/)
+# 生产环境编译
+npm run build
+```

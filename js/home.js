@@ -37,7 +37,8 @@ var DESKTOP_ICONS = [
 
 var DESKTOP_PAGE2_ICONS = [
   { id: 'tutorial', img: 'img/wanwan.png', label: '教程', action: function() { window.showTutorialPage && showTutorialPage() } },
-  { id: 'loveDiary', fa: 'fa-solid fa-heart-pulse', label: '恋爱记', action: function() {} },
+  { id: 'appStore', fa: 'fa-brands fa-app-store-ios', label: '应用市场', action: function() { window.showAppStorePage && showAppStorePage() } },
+  { id: 'loveDiary', fa: 'fa-solid fa-heart-pulse', label: '恋爱记', action: function() { window.showLoveDiaryPage && showLoveDiaryPage() } },
   { id: 'wanwanFarm', fa: 'fa-solid fa-seedling', label: '弯弯农场', action: function() {} },
   { id: 'visualnovel', svg: SVG_ICONS.visualnovel, label: '橙光', action: function() { window.showAvgPage && showAvgPage() } },
   { id: 'terminal', fa: 'fa-solid fa-terminal', label: '终端', action: function() { window.showTerminalPage && showTerminalPage() } }
@@ -80,6 +81,11 @@ function getDesktopIconRegistry() {
       registry[item.id] = item
     })
   })
+  if (window._customDesktopApps && Array.isArray(window._customDesktopApps)) {
+    window._customDesktopApps.forEach(function(app) {
+      registry[app.id] = app
+    })
+  }
   _desktopWidgets.forEach(function(widget) {
     registry[widget.id] = widget
   })
