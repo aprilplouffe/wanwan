@@ -1854,7 +1854,7 @@ document.getElementById('closeBtn').onclick = function() {
     var rawHtml = app.html || '<!DOCTYPE html><html><body><h1>应用内容为空</h1></body></html>';
 
     // 检查是否已包含 SDK
-    var sdkScript = '<script src="/js/wanwan-sdk.js"><\/script>';
+    var sdkScript = '<script src="' + new URL('js/wanwan-sdk.js', document.baseURI).href + '"><\/script>';
     if (!rawHtml.includes('wanwan-sdk.js')) {
       if (rawHtml.includes('</head>')) {
         rawHtml = rawHtml.replace('</head>', sdkScript + '</head>');

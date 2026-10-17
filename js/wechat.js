@@ -13788,11 +13788,6 @@ async function switchWechatAccountTo(user) {
   window.toast && window.toast('已切换账号')
 }
 
-function removeWechatPageNow(id) {
-  const page = document.getElementById(id)
-  if (page) page.remove()
-}
-
 // 退出登录
 function doLogout() {
   if (!confirm('确认退出微信登录？')) return
