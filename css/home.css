@@ -170,18 +170,52 @@
   max-width: 72px; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ===== 页面指示点 ===== */
+/* ===== 页面指示点与分页控制 ===== */
 .page-dots {
-  display: flex; justify-content: center;
-  gap: 6px; padding: 8px 0; flex-shrink: 0;
+  display: flex; justify-content: center; align-items: center;
+  gap: 8px; padding: 6px 0; flex-shrink: 0;
+  user-select: none;
+}
+.page-dots-list {
+  display: flex; align-items: center; gap: 7px;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 4px 10px; border-radius: 999px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.theme-dark .page-dots-list {
+  background: rgba(255, 255, 255, 0.08);
+}
+.page-nav-btn {
+  background: none; border: none; padding: 4px 8px;
+  font-size: 13px; color: var(--c-text-sub, #8e8e93);
+  cursor: pointer; opacity: 0.7; transition: opacity var(--dur), transform var(--dur);
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+}
+.page-nav-btn:hover:not(:disabled) {
+  opacity: 1; transform: scale(1.15);
+  color: var(--c-accent, #0071e3);
+}
+.page-nav-btn:disabled {
+  opacity: 0.18; cursor: default; transform: none;
 }
 .dot {
-  width: 5px; height: 5px; border-radius: 50%;
-  background: var(--c-border-m);
-  transition: background var(--dur), transform var(--dur);
+  width: 6px; height: 6px; border-radius: 999px;
+  background: var(--c-border-m, #c7c7cc);
+  transition: all 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
   cursor: pointer;
+  position: relative;
 }
-.dot.active { background: var(--c-accent); transform: scale(1.2); }
+.dot::after {
+  content: ''; position: absolute;
+  top: -10px; bottom: -10px; left: -8px; right: -8px;
+}
+.dot.active {
+  width: 18px;
+  background: var(--c-accent, #1d1d1f);
+  border-radius: 999px;
+}
 
 /* ===== iOS 26 液态玻璃 Dock 栏 ===== */
 .dock-area {

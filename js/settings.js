@@ -267,6 +267,11 @@ function buildAppearanceSection() {
       '<div class="row-body"><div class="row-label">壁纸</div></div>' +
       '<i class="fa fa-angle-right row-chevron"></i>' +
     '</div>' +
+    '<div class="list-row clickable" id="row-app-store">' +
+      '<div class="row-icon-box" style="background:#0071e3;color:#fff;"><i class="fa-solid fa-bag-shopping"></i></div>' +
+      '<div class="row-body"><div class="row-label">应用市场</div><div class="row-sub">App Store · 软件生态与创作</div></div>' +
+      '<i class="fa fa-angle-right row-chevron"></i>' +
+    '</div>' +
     '<div class="list-row clickable" id="row-floating-ball">' +
       '<div class="row-icon-box"><i class="fa-solid fa-crosshairs"></i></div>' +
       '<div class="row-body"><div class="row-label">悬浮球</div></div>' +
@@ -3728,6 +3733,12 @@ async function loadSettingsValues(page) {
   page.querySelector('#row-image-gen-config').addEventListener('click', openImageGenConfigPage)
   page.querySelector('#row-font').addEventListener('click', openFontPage)
   page.querySelector('#row-wallpaper').addEventListener('click', openWallpaperPage)
+  var rowAppStore = page.querySelector('#row-app-store')
+  if (rowAppStore) {
+    rowAppStore.addEventListener('click', function() {
+      if (window.showAppStorePage) window.showAppStorePage()
+    })
+  }
   page.querySelector('#row-floating-ball').addEventListener('click', openFloatingBallPage)
   page.querySelector('#row-online-config').addEventListener('click', openOnlineConfigPage)
   if (window.injectDataButtons) window.injectDataButtons(page)
