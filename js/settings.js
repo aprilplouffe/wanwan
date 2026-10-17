@@ -268,8 +268,8 @@ function buildAppearanceSection() {
       '<i class="fa fa-angle-right row-chevron"></i>' +
     '</div>' +
     '<div class="list-row clickable" id="row-app-store">' +
-      '<div class="row-icon-box" style="background:#0071e3;color:#fff;"><i class="fa-solid fa-bag-shopping"></i></div>' +
-      '<div class="row-body"><div class="row-label">应用市场</div><div class="row-sub">App Store · 软件生态与创作</div></div>' +
+      '<div class="row-icon-box"><i class="fa-solid fa-bag-shopping"></i></div>' +
+      '<div class="row-body"><div class="row-label">应用市场</div></div>' +
       '<i class="fa fa-angle-right row-chevron"></i>' +
     '</div>' +
     '<div class="list-row clickable" id="row-floating-ball">' +

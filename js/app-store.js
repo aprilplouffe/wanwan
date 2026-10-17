@@ -915,7 +915,7 @@
             var isInstalled = installedApps.some(function(item) { return item.id === app.id; });
             return (
               '<div class="as-app-card" data-app-id="' + app.id + '">' +
-                '<div class="as-app-icon-wrap" style="background:' + (app.iconBg || '#007aff') + '; color:#fff;">' +
+                '<div class="as-app-icon-wrap" style="background:' + (app.iconBg || 'var(--c-accent-dark)') + '; color:#fff;">' +
                   '<i class="' + (app.iconFa || 'fa-solid fa-cube') + '"></i>' +
                 '</div>' +
                 '<div class="as-app-info">' +
@@ -923,7 +923,7 @@
                   '<div class="as-app-author-line">' + app.subtitle + '</div>' +
                   '<div class="as-app-rating-row">' +
                     '<span>★ ' + app.rating + '</span>' +
-                    '<span style="color:#8e8e93;">(' + app.reviews + ')</span>' +
+                    '<span style="color:var(--c-sub);">(' + app.reviews + ')</span>' +
                     '<span class="as-app-category-badge">' + app.category + '</span>' +
                     '<span class="as-app-category-badge">' + app.size + '</span>' +
                   '</div>' +
@@ -997,10 +997,10 @@
 
       var html =
         '<div style="padding:14px 16px 8px;">' +
-          '<div style="background:#fff;border-radius:14px;padding:12px 16px;box-shadow:0 2px 8px rgba(0,0,0,0.04);display:flex;align-items:center;justify-content:space-between;">' +
+          '<div style="background:var(--c-bg);border:1px solid var(--c-border);border-radius:var(--r-md);padding:12px 16px;box-shadow:var(--shadow-sm);display:flex;align-items:center;justify-content:space-between;">' +
             '<div>' +
-              '<div style="font-size:14px;font-weight:700;">小手机已安装 ' + installedApps.length + ' 款应用</div>' +
-              '<div style="font-size:11px;color:#8e8e93;margin-top:2px;">本地沙盒运行 · 占用约 ' + totalSize + ' KB</div>' +
+              '<div style="font-size:14px;font-weight:700;color:var(--c-text);">小手机已安装 ' + installedApps.length + ' 款应用</div>' +
+              '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">本地沙盒运行 · 占用约 ' + totalSize + ' KB</div>' +
             '</div>' +
             '<button class="as-btn-action" id="as-refresh-installed" style="min-width:auto;padding:6px 12px;"><i class="fa fa-rotate-right"></i></button>' +
           '</div>' +
@@ -1008,11 +1008,11 @@
 
         '<div class="as-app-list" style="margin-top:6px;">' +
           (filtered.length === 0 ?
-            '<div style="text-align:center;padding:40px 20px;color:#8e8e93;font-size:13px;">暂无安装的应用，可在“发现”或“创作”中安装</div>' :
+            '<div style="text-align:center;padding:40px 20px;color:var(--c-sub);font-size:13px;">暂无安装的应用，可在“发现”或“创作”中安装</div>' :
             filtered.map(function(app) {
               return (
                 '<div class="as-app-card" data-installed-id="' + app.id + '">' +
-                  '<div class="as-app-icon-wrap" style="background:' + (app.iconBg || '#007aff') + '; color:#fff;">' +
+                  '<div class="as-app-icon-wrap" style="background:' + (app.iconBg || 'var(--c-accent-dark)') + '; color:#fff;">' +
                     '<i class="' + (app.iconFa || 'fa-solid fa-cube') + '"></i>' +
                   '</div>' +
                   '<div class="as-app-info">' +
@@ -1025,7 +1025,7 @@
                   '</div>' +
                   '<div style="display:flex;gap:6px;">' +
                     '<button class="as-btn-action is-open" data-open-id="' + app.id + '">打开</button>' +
-                    '<button class="as-btn-action" style="color:#ff3b30;background:#ffe5e5;min-width:auto;padding:6px 10px;" data-uninstall-id="' + app.id + '" title="卸载"><i class="fa fa-trash-can"></i></button>' +
+                    '<button class="as-btn-action" style="color:var(--c-red);background:rgba(176,90,90,0.12);border-color:rgba(176,90,90,0.2);min-width:auto;padding:6px 10px;" data-uninstall-id="' + app.id + '" title="卸载"><i class="fa fa-trash-can"></i></button>' +
                   '</div>' +
                 '</div>'
               );
@@ -1093,7 +1093,7 @@
           // 模块 2: 单文件逐项上传与在线配置
           '<div class="as-create-card">' +
             '<div class="as-create-card-header">' +
-              '<div class="as-create-card-icon" style="background:#e8fdf0;color:#34c759;"><i class="fa fa-layer-group"></i></div>' +
+              '<div class="as-create-card-icon"><i class="fa fa-layer-group"></i></div>' +
               '<div>' +
                 '<div class="as-create-card-title">单文件逐项上传与在线制作</div>' +
                 '<div class="as-create-card-desc">分别上传/填写 HTML、CSS、JS 及应用元信息</div>' +
@@ -1138,13 +1138,13 @@
           // 模块 3: 制作说明 (详细制作规格与 SDK 使用指南)
           '<div class="as-create-card">' +
             '<div class="as-create-card-header">' +
-              '<div class="as-create-card-icon" style="background:#fff3e0;color:#ff9500;"><i class="fa fa-book"></i></div>' +
+              '<div class="as-create-card-icon"><i class="fa fa-book"></i></div>' +
               '<div>' +
                 '<div class="as-create-card-title">应用制作说明 & SDK 接口规范</div>' +
                 '<div class="as-create-card-desc">详细规范指导，帮助开发者快速适配小手机</div>' +
               '</div>' +
             '</div>' +
-            '<div style="font-size:13px;line-height:1.6;color:#3c3c43;">' +
+            '<div style="font-size:13px;line-height:1.6;color:var(--c-text);">' +
               '<p><strong>1. 标准应用包目录结构 (.zip)：</strong></p>' +
               '<div class="as-code-block">' +
                 'my-app.zip<br>' +
@@ -1185,14 +1185,14 @@
               '</div>' +
 
               '<p style="margin-top:12px;"><strong>4. 视口适配规范：</strong></p>' +
-              '<p style="font-size:12px;color:#666;">小手机采用紧凑视口，推荐宽度自适应（360px ~ 414px），页面顶部与底部留出安全区适配。</p>' +
+              '<p style="font-size:12px;color:var(--c-sub);">小手机采用紧凑视口，推荐宽度自适应（360px ~ 414px），页面顶部与底部留出安全区适配。</p>' +
             '</div>' +
           '</div>' +
 
           // 模块 4: 根据小手机当前SDK生成应用包文件
           '<div class="as-create-card">' +
             '<div class="as-create-card-header">' +
-              '<div class="as-create-card-icon" style="background:#f3e8ff;color:#af52de;"><i class="fa fa-gears"></i></div>' +
+              '<div class="as-create-card-icon"><i class="fa fa-gears"></i></div>' +
               '<div>' +
                 '<div class="as-create-card-title">根据当前小手机 SDK 生成应用包</div>' +
                 '<div class="as-create-card-desc">自动注入最新 WanWanSDK 1.2.0 与响应式完整工程代码</div>' +
@@ -1211,7 +1211,7 @@
               '<label class="as-form-label">自定义工程名称</label>' +
               '<input class="as-form-input" id="as-gen-name" value="我的小手机应用">' +
             '</div>' +
-            '<button class="as-btn-primary" id="as-btn-download-sdk-pkg" style="background:#af52de;"><i class="fa fa-download"></i>生成并下载应用包 (.zip)</button>' +
+            '<button class="as-btn-primary" id="as-btn-download-sdk-pkg"><i class="fa fa-download"></i>生成并下载应用包 (.zip)</button>' +
             '<button class="as-btn-secondary" id="as-btn-test-sdk-pkg"><i class="fa fa-play"></i>直接生成并安装到小手机体验</button>' +
           '</div>' +
 
@@ -1720,7 +1720,7 @@ document.getElementById('closeBtn').onclick = function() {
         '</div>' +
         '<div class="as-detail-body">' +
           '<div class="as-detail-top-row">' +
-            '<div class="as-detail-icon" style="background:' + (app.iconBg || '#007aff') + ';color:#fff;">' +
+            '<div class="as-detail-icon" style="background:' + (app.iconBg || 'var(--c-accent-dark)') + ';color:#fff;">' +
               '<i class="' + (app.iconFa || 'fa-solid fa-cube') + '"></i>' +
             '</div>' +
             '<div class="as-detail-meta">' +
@@ -1730,7 +1730,7 @@ document.getElementById('closeBtn').onclick = function() {
                 '<button class="as-btn-action ' + (isInstalled ? 'is-open' : '') + '" id="as-detail-action-btn">' +
                   (isInstalled ? '打开' : '获取') +
                 '</button>' +
-                '<button class="as-btn-action" id="as-detail-export-btn" style="background:#e5e5ea;color:#333;">' +
+                '<button class="as-btn-action" id="as-detail-export-btn" style="background:var(--c-surface-2);color:var(--c-text);border:1px solid var(--c-border-m);">' +
                   '<i class="fa fa-download"></i>' +
                 '</button>' +
               '</div>' +
@@ -1761,15 +1761,15 @@ document.getElementById('closeBtn').onclick = function() {
           '</div>' +
 
           '<div style="margin-bottom:16px;">' +
-            '<div style="font-size:16px;font-weight:700;margin-bottom:6px;">应用介绍</div>' +
-            '<div style="font-size:13px;line-height:1.6;color:#3c3c43;white-space:pre-line;">' +
+            '<div style="font-size:16px;font-weight:700;margin-bottom:6px;color:var(--c-text);">应用介绍</div>' +
+            '<div style="font-size:13px;line-height:1.6;color:var(--c-text);white-space:pre-line;">' +
               app.description +
             '</div>' +
           '</div>' +
 
           '<div>' +
-            '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">信息与权限</div>' +
-            '<div style="background:#f2f2f7;border-radius:12px;padding:12px;font-size:12px;line-height:1.8;color:#555;">' +
+            '<div style="font-size:16px;font-weight:700;margin-bottom:8px;color:var(--c-text);">信息与权限</div>' +
+            '<div style="background:var(--c-surface-2);border-radius:12px;border:1px solid var(--c-border);padding:12px;font-size:12px;line-height:1.8;color:var(--c-sub);">' +
               '<div>开发者: <strong>' + (app.developer || '本地创作者') + '</strong></div>' +
               '<div>包体体积: <strong>' + (app.size || '32 KB') + '</strong></div>' +
               '<div>设备兼容: <strong>WanWan Phone OS 1.0+</strong></div>' +
@@ -1825,8 +1825,8 @@ document.getElementById('closeBtn').onclick = function() {
           '<i class="fa fa-angle-left" style="font-size:22px;"></i>' +
           '<span>返回</span>' +
         '</button>' +
-        '<span style="font-weight:700;font-size:15px;color:#000;">' + app.name + '</span>' +
-        '<button style="background:none;border:none;color:#007aff;font-size:16px;cursor:pointer;padding:6px;" id="as-runner-menu">' +
+        '<span style="font-weight:700;font-size:15px;color:var(--c-text);">' + app.name + '</span>' +
+        '<button style="background:none;border:none;color:var(--c-text);font-size:16px;cursor:pointer;padding:6px;" id="as-runner-menu">' +
           '<i class="fa fa-ellipsis"></i>' +
         '</button>' +
       '</div>' +
