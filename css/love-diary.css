@@ -22,7 +22,7 @@
   background-position: center;
   display: flex;
   flex-direction: column;
-  justifyContent: space-between;
+  justify-content: space-between;
   padding: 14px 16px;
   color: #5a3e47;
   box-shadow: 0 4px 20px rgba(255, 182, 193, 0.25);
@@ -32,7 +32,7 @@
 .ld-banner-nav {
   display: flex;
   align-items: center;
-  justifyContent: space-between;
+  justify-content: space-between;
   z-index: 2;
 }
 
