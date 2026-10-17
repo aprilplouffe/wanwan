@@ -1,0 +1,8 @@
+{
+  "appId": "com.wanwan.app",
+  "appName": "弯弯",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true
+  }
+}
