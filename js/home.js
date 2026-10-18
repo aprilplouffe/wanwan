@@ -42,7 +42,18 @@ var DESKTOP_PAGE2_ICONS = [
   { id: 'yumyum',      fa: 'fa-solid fa-drumstick-bite',  label: 'YumYum',   action: function() { window.showYumYumPage && showYumYumPage() } },
   { id: 'anyDoor',     fa: 'fa-solid fa-cubes',           label: '任意门',   action: function() { window.showAnyDoorPage && showAnyDoorPage() } },
   { id: 'gameHall',    fa: 'fa-solid fa-dice',            label: '游戏大厅', action: function() { window.showGameHallPage && showGameHallPage() } },
-  { id: 'appStore',    svg: SVG_ICONS.appStore, fa: 'fa-solid fa-bag-shopping', label: '应用市场', action: function() { window.showAppStorePage && showAppStorePage() } }
+  { id: 'appStore',    svg: SVG_ICONS.appStore, fa: 'fa-solid fa-bag-shopping', label: '应用市场', action: function() { window.showAppStorePage && window.showAppStorePage() } },
+  { id: 'parallelLetter', fa: 'fa-solid fa-envelope-open-text', label: '平行来信', action: function() {
+    if (typeof window.showParallelLettersApp === 'function') {
+      window.showParallelLettersApp();
+    } else if (typeof window.showParallelLettersPage === 'function') {
+      window.showParallelLettersPage();
+    } else if (window.showToast) {
+      showToast('「平行来信」加载中…');
+    } else {
+      alert('「平行来信」加载中…');
+    }
+  } }
 ]
 
 var DESKTOP_ICON_PAGES = [DESKTOP_ICONS, DESKTOP_PAGE2_ICONS]
@@ -544,6 +555,8 @@ function ensureAppStoreOnPage2(layout) {
   if (Array.isArray(layout.dock)) {
     var dockIdx = layout.dock.indexOf('appStore')
     if (dockIdx !== -1) layout.dock.splice(dockIdx, 1)
+    var plDock = layout.dock.indexOf('parallelLetter')
+    if (plDock !== -1) layout.dock.splice(plDock, 1)
     var ghDock = layout.dock.indexOf('gameHall')
     if (ghDock !== -1) layout.dock.splice(ghDock, 1)
   }
@@ -551,6 +564,7 @@ function ensureAppStoreOnPage2(layout) {
     var sList = getPageSlots(layout.pages[p])
     for (var s = 0; s < sList.length; s++) {
       if (sList[s] === 'appStore') sList[s] = null
+      if (sList[s] === 'parallelLetter') sList[s] = null
       if (p === 0 && sList[s] === 'gameHall') sList[s] = null
     }
   }
@@ -564,13 +578,14 @@ function ensureAppStoreOnPage2(layout) {
   if (!hasWidgets) {
     var items = []
     for (var i = 0; i < p2Slots.length; i++) {
-      if (p2Slots[i] && p2Slots[i] !== 'appStore') items.push(p2Slots[i])
+      if (p2Slots[i] && p2Slots[i] !== 'appStore' && p2Slots[i] !== 'parallelLetter') items.push(p2Slots[i])
     }
     if (items.indexOf('gameHall') === -1) {
       items.push('gameHall')
     }
     var ghIdx = items.indexOf('gameHall')
     items.splice(ghIdx + 1, 0, 'appStore')
+    items.splice(ghIdx + 2, 0, 'parallelLetter')
 
     for (var i = 0; i < _desktopSlotsPerPage; i++) {
       p2Slots[i] = items[i] || null
@@ -586,6 +601,20 @@ function ensureAppStoreOnPage2(layout) {
       if (emptyIdx !== -1) p2Slots[emptyIdx] = displaced
     } else {
       p2Slots[targetSlot] = 'appStore'
+    }
+
+    var asSlot = p2Slots.indexOf('appStore')
+    var plTargetSlot = asSlot !== -1 ? asSlot + 1 : firstEmptySlot(layout.pages[1])
+    if (plTargetSlot < 0 || plTargetSlot >= _desktopSlotsPerPage) plTargetSlot = firstEmptySlot(layout.pages[1])
+    if (plTargetSlot !== -1 && plTargetSlot < _desktopSlotsPerPage) {
+      if (p2Slots[plTargetSlot] && p2Slots[plTargetSlot] !== 'parallelLetter') {
+        var displaced2 = p2Slots[plTargetSlot]
+        p2Slots[plTargetSlot] = 'parallelLetter'
+        var emptyIdx2 = firstEmptySlot(layout.pages[1])
+        if (emptyIdx2 !== -1) p2Slots[emptyIdx2] = displaced2
+      } else {
+        p2Slots[plTargetSlot] = 'parallelLetter'
+      }
     }
   }
   layout.pages[1].slots = p2Slots
@@ -672,9 +701,11 @@ async function loadDesktopLayout() {
   var curP2 = _desktopLayout && _desktopLayout.pages && _desktopLayout.pages[1] ? getPageSlots(_desktopLayout.pages[1]) : []
   var savedP1 = saved && Array.isArray(saved.pages) && saved.pages[0] ? getPageSlots(saved.pages[0]) : []
   var needsSave = (savedP2.indexOf('appStore') !== curP2.indexOf('appStore')) ||
+                  (savedP2.indexOf('parallelLetter') !== curP2.indexOf('parallelLetter')) ||
                   (savedP2.indexOf('gameHall') !== curP2.indexOf('gameHall')) ||
                   (savedP1.indexOf('gameHall') !== -1) ||
-                  (savedP1.indexOf('appStore') !== -1)
+                  (savedP1.indexOf('appStore') !== -1) ||
+                  (savedP1.indexOf('parallelLetter') !== -1)
   if (needsSave) {
     try {
       await saveDesktopLayout()
