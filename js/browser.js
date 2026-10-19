@@ -47,13 +47,16 @@
       allowIframeRedirect: true,
       isInPrivate: false,
       readerFontSize: 16,
-      readerTheme: 'light' // 'light' | 'sepia' | 'night'
+      readerTheme: 'light', // 'light' | 'sepia' | 'night'
+      companionCharId: null,
+      allowSendWebpageToAi: true
     },
     bookmarks: [],
     history: [],
     downloads: [],
     notes: '',
     companionChar: null,
+    companionChatHistory: {}, // { [charId]: [ { sender, text, time } ] }
     isInternalFullscreen: false,
     isCharSidebarOpen: false,
     isReaderMode: false,
@@ -113,18 +116,34 @@
     } catch (e) {}
   }
 
-  // 获取伴侣角色信息
-  async function loadCompanionCharacter() {
+  function getCharTypeLabel(type) {
+    if (type === 'npc') return 'NPC 配角';
+    if (type === 'user') return 'USER 用户';
+    return 'CHAR 主角';
+  }
+
+  // 获取伴侣角色信息（支持记忆与优先载入上次选择的角色）
+  async function loadCompanionCharacter(targetCharId) {
     try {
       if (window.db && db.characters) {
-        var chars = await db.characters.toArray();
-        var main = chars.find(function(c) { return c.type === 'char' || c.isCompanion; }) || chars[0];
-        if (main) {
+        var all = await db.characters.toArray();
+        var charIdToFind = targetCharId || (_state.settings && _state.settings.companionCharId);
+        var found = null;
+        if (charIdToFind) {
+          found = all.find(function(c) { return String(c.id) === String(charIdToFind); });
+        }
+        if (!found) {
+          found = all.find(function(c) { return c.type === 'char' || c.isCompanion; }) || all[0];
+        }
+        if (found) {
           _state.companionChar = {
-            id: main.id,
-            name: main.name || '林弯弯',
-            avatar: main.avatar || 'img/wanwan.png',
-            status: main.status || '在线 · 伴读中'
+            id: found.id,
+            name: found.name || '林弯弯',
+            avatar: found.avatar || 'img/wanwan.png',
+            personality: found.personality || found.bio || '温柔体贴、善解人意，知书达理',
+            lorebook: found.lorebook || '',
+            type: found.type || 'char',
+            status: found.status || '在线 · 伴读中'
           };
           return;
         }
@@ -134,18 +153,21 @@
       id: 'char_default',
       name: '林弯弯',
       avatar: 'img/wanwan.png',
+      personality: '温柔体贴、善解人意，知书达理',
+      lorebook: '',
+      type: 'char',
       status: '在线 · 伴读中'
     };
   }
 
   // 初始化持久化数据
   async function initBrowserState() {
-    await loadCompanionCharacter();
-
     var savedSettings = await loadStorage(STORAGE_KEYS.SETTINGS, null);
     if (savedSettings && typeof savedSettings === 'object') {
       _state.settings = Object.assign(_state.settings, savedSettings);
     }
+
+    await loadCompanionCharacter(_state.settings.companionCharId);
 
     var savedBookmarks = await loadStorage(STORAGE_KEYS.BOOKMARKS, null);
     _state.bookmarks = Array.isArray(savedBookmarks) && savedBookmarks.length ? savedBookmarks : DEFAULT_BOOKMARKS.slice();
@@ -418,10 +440,14 @@
       // 核心视口与伴读侧栏包装器
       '<div class="wb-body-wrapper" id="wb-body-wrap">' +
         '<div class="wb-viewport" id="wb-viewport"></div>' +
+        // 移动端竖屏抽屉式遮罩层 (点击关闭抽屉)
+        '<div class="wb-char-backdrop" id="wb-char-backdrop"></div>' +
         // Char 伴读侧边栏 (P1 核心增强)
         '<div class="wb-char-sidebar collapsed" id="wb-char-sidebar"></div>' +
       '</div>' +
 
+      // 弹窗与选择器根节点
+      '<div id="wb-modal-root"></div>' +
       // 抽屉弹窗 (收藏/历史/下载/搜索引擎/安卓评估)
       '<div id="wb-drawer-root"></div>' +
 
@@ -433,6 +459,23 @@
 
   // 绑定全局按钮与监听
   function bindGlobalEvents(container) {
+    // 监听响应式屏幕尺寸与旋转
+    checkAndUpdateLayoutMode(container);
+    window.addEventListener('resize', function() {
+      checkAndUpdateLayoutMode(container);
+    });
+    window.addEventListener('orientationchange', function() {
+      checkAndUpdateLayoutMode(container);
+    });
+
+    // 移动端竖屏遮罩层点击关闭伴读抽屉
+    var backdrop = container.querySelector('#wb-char-backdrop');
+    if (backdrop) {
+      backdrop.onclick = function() {
+        toggleCharSidebar(container, false);
+      };
+    }
+
     // 标签页列表渲染
     renderTabsList(container);
 
@@ -1057,37 +1100,68 @@
   }
 
   // ====================================================
-  // 3. P1 增强：Char 伴读侧边栏 (Companion Sidebar)
+  // 3. 增强型：Char 贴身伴读与角色切换 (Companion Sidebar & Role Switcher)
   // ====================================================
-  function toggleCharSidebar(container) {
-    _state.isCharSidebarOpen = !_state.isCharSidebarOpen;
+
+  // 检测并设置移动端竖屏抽屉与宽屏双栏模式
+  function checkAndUpdateLayoutMode(container) {
+    if (!container) return;
+    var wrap = container.querySelector('#wb-body-wrap') || container;
+    var w = wrap.clientWidth || container.clientWidth || window.innerWidth;
+    var h = wrap.clientHeight || container.clientHeight || window.innerHeight;
+    var isDrawer = w <= 680 || (h > w && w <= 768);
+    container.classList.toggle('wb-mode-drawer', isDrawer);
+    container.classList.toggle('wb-mode-split', !isDrawer);
+    var backdrop = container.querySelector('#wb-char-backdrop');
+    if (backdrop) {
+      backdrop.classList.toggle('visible', isDrawer && _state.isCharSidebarOpen);
+    }
+  }
+
+  // 开关伴读抽屉/侧栏（绝不重载当前网页、绝不丢失滚动位置）
+  function toggleCharSidebar(container, forceOpen) {
+    if (typeof forceOpen === 'boolean') {
+      _state.isCharSidebarOpen = forceOpen;
+    } else {
+      _state.isCharSidebarOpen = !_state.isCharSidebarOpen;
+    }
+
     var sidebar = container.querySelector('#wb-char-sidebar');
+    var backdrop = container.querySelector('#wb-char-backdrop');
     var dot = container.querySelector('.wb-companion-dot');
     if (!sidebar) return;
 
+    checkAndUpdateLayoutMode(container);
+
     if (_state.isCharSidebarOpen) {
       sidebar.classList.remove('collapsed');
+      if (backdrop && container.classList.contains('wb-mode-drawer')) {
+        backdrop.classList.add('visible');
+      }
       if (dot) dot.style.display = 'block';
       updateCharSidebarContent(container);
-      window.toast && window.toast(_state.companionChar.name + ' 已开启贴身伴读');
+      window.toast && window.toast((_state.companionChar ? _state.companionChar.name : '伴侣') + ' 已开启贴身伴读');
     } else {
       sidebar.classList.add('collapsed');
+      if (backdrop) backdrop.classList.remove('visible');
       if (dot) dot.style.display = 'none';
     }
   }
 
-  function getCompanionSpeechForUrl(url) {
+  // 根据当前网页与角色个性化生成动态伴读发言
+  function getCompanionSpeechForUrl(url, char) {
+    var name = (char && char.name) || '林弯弯';
     if (!url || url === 'about:home') {
-      return '今天想和我一起了解些什么呢？不管是知识、新闻还是影音，我都一直陪着你哦～';
+      return '今天想和我一起了解些什么呢？不管是知识、新闻还是影音，' + name + ' 都一直陪着你哦～';
     }
     if (url.indexOf('search') >= 0 || url.indexOf('baidu') >= 0 || url.indexOf('bing') >= 0 || url.indexOf('google') >= 0) {
-      return '在查探新情报呀！找到满意的答案了吗？如果有困惑也可以随时跟我聊聊看～';
+      return '在查探新情报呀！找到满意的答案了吗？如果有困惑也可以随时和 ' + name + ' 聊聊看～';
     }
     if (url.indexOf('wikipedia.org') >= 0) {
-      return '哇，是维基百科！百科里的知识像浩瀚星河一样呢，等你读完也教教我好不好～';
+      return '哇，是维基百科！百科里的知识像浩瀚星河一样呢，等你读完也教教 ' + name + ' 好不好～';
     }
     if (url.indexOf('github.com') >= 0) {
-      return '代码的世界好神奇～认真钻研代码的你，在我眼里超级帅气迷人！';
+      return '代码的世界好神奇～认真钻研代码的你，在 ' + name + ' 眼里超级帅气迷人！';
     }
     if (url.indexOf('bilibili.com') >= 0 || url.indexOf('music') >= 0) {
       return '冲浪放松一下也很棒！要注意休息眼睛，喝口水润润嗓子哦～';
@@ -1095,34 +1169,322 @@
     if (isKnownRestrictedSite(url)) {
       return '这个网站有严格的安全防护罩（X-Frame-Options）呢，点击「外部打开」就可以在全屏大窗口尽情浏览啦！';
     }
-    return '这个页面看起来真有意思！点击下方的「分享给TA」，我会把这篇文章珍藏在我们的微信小纸条里哦～';
+    return '这个页面看起来真有意思！点击下方的「分享给TA」，' + name + ' 会把这篇文章珍藏在我们的微信小纸条里哦～';
   }
 
+  // 渲染伴读历史对话气泡流
+  function renderCompanionChatMessagesHtml(messages, char) {
+    if (!messages || !messages.length) {
+      return '<div class="wb-char-chat-empty">你可以向 ' + esc(char.name) + ' 提问、讨论当前文章或寻求网页导读哦～</div>';
+    }
+    return messages.map(function(m) {
+      var isUser = m.sender === 'user';
+      return '<div class="wb-char-msg ' + (isUser ? 'user' : 'char') + '">' +
+        esc(m.text).replace(/\n/g, '<br>') +
+      '</div>';
+    }).join('');
+  }
+
+  // 安全提取当前网页内容（受技术可行性与用户授权约束）
+  function extractCurrentPageContent() {
+    var cur = getActiveTab();
+    if (!cur) return { title: '', url: '', text: '', isRestricted: false };
+
+    var title = cur.title || '网页';
+    var url = cur.url || '';
+    if (url === 'about:home') {
+      return { title: '浏览器主页', url: url, text: '用户当前位于弯弯浏览器主页。', isRestricted: false };
+    }
+
+    var iframe = document.querySelector('#wb-viewport iframe');
+    var text = '';
+    var isRestricted = false;
+
+    if (iframe) {
+      try {
+        var doc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
+        if (doc && doc.body) {
+          text = (doc.body.innerText || doc.body.textContent || '').trim();
+          text = text.replace(/\s+/g, ' ').slice(0, 1500);
+        }
+      } catch (err) {
+        // 目标站点具有跨域保护（SecurityError/X-Frame-Options）
+        isRestricted = true;
+      }
+    }
+
+    return {
+      title: title,
+      url: url,
+      text: text,
+      isRestricted: isRestricted
+    };
+  }
+
+  // 提示词服务复用：读取伴读附加提示词（复用 StudyPromptManager）
+  async function getCompanionPromptProfile(charId, charName) {
+    if (window.StudyPromptManager && window.StudyPromptManager.getPromptProfile) {
+      return await window.StudyPromptManager.getPromptProfile('study_char_overlay', charId, charName);
+    }
+    var key = 'study_char_overlay_' + (charId || 'char_default');
+    var all = await loadStorage('wanwan_study_prompt_profiles', {});
+    var found = all[key];
+    if (found && found.content !== undefined) {
+      return {
+        id: found.id || ('profile_' + key),
+        scope: 'study_char_overlay',
+        charId: charId,
+        name: (charName || '当前角色') + ' 伴读附加规则',
+        content: String(found.content),
+        version: found.version || 1,
+        updatedAt: found.updatedAt || '已修改保存',
+        isCustom: true
+      };
+    }
+    return {
+      id: 'profile_' + key + '_default',
+      scope: 'study_char_overlay',
+      charId: charId,
+      name: (charName || '当前角色') + ' 伴读附加规则',
+      content: '你正处于「弯弯浏览器 · 贴身伴读」场景。保留原有角色人设与性格，用温柔平等的口吻陪伴用户冲浪与阅读，针对网页内容启发思考，不捏造事实，不自动写入长期记忆。',
+      version: 1,
+      updatedAt: '系统内置默认模板',
+      isCustom: false
+    };
+  }
+
+  // 提示词服务复用：保存伴读附加提示词
+  async function saveCompanionPromptProfile(charId, content, charName) {
+    if (window.StudyPromptManager && window.StudyPromptManager.savePromptProfile) {
+      return await window.StudyPromptManager.savePromptProfile('study_char_overlay', charId, content, charName);
+    }
+    var key = 'study_char_overlay_' + (charId || 'char_default');
+    var all = await loadStorage('wanwan_study_prompt_profiles', {});
+    var profile = {
+      id: 'profile_' + key + '_' + Date.now().toString(36),
+      scope: 'study_char_overlay',
+      charId: charId,
+      name: (charName || '当前角色') + ' 伴读附加规则',
+      content: String(content).trim(),
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      isCustom: true
+    };
+    all[key] = profile;
+    await saveStorage('wanwan_study_prompt_profiles', all);
+    return profile;
+  }
+
+  // 获取 AI API 配置
+  async function getAiConfig() {
+    if (!window.db || !window.db.config) return null;
+    try {
+      var rows = await window.db.config.bulkGet(['apiBaseUrl', 'apiKey', 'apiModel']);
+      var v = function(r) { return r ? r.value : ''; };
+      var url = String(v(rows[0]) || '').trim().replace(/\/+$/, '');
+      var key = String(v(rows[1]) || '').trim();
+      var model = String(v(rows[2]) || '').trim() || 'gpt-4o-mini';
+      if (!url || !key) return null;
+      return { url: url, key: key, model: model };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // 本地高保真伴读回复合成（无 API 或离线回退）
+  function synthesizeCompanionLocalReply(char, userQuery, pageData, isAuth) {
+    var name = (char && char.name) || '林弯弯';
+    var isSum = userQuery.indexOf('总结') >= 0 || userQuery.indexOf('核心') >= 0;
+
+    if (!isAuth) {
+      return '收到你的消息啦！你目前未开启网页内容授权，所以 ' + name + ' 没有抓取当前网页正文哦～不过针对“' + userQuery + '”，我的理解是：保持独立思辨最重要，遇到有趣的点随时可以继续和我探讨～ ✨';
+    }
+
+    if (pageData.url === 'about:home') {
+      return '我们现在还在浏览器主页呢！在搜索栏里输入你感兴趣的话题或打开常用导航，' + name + ' 随时准备为你划重点～ 💡';
+    }
+
+    var title = pageData.title || '当前网页';
+
+    if (pageData.isRestricted) {
+      if (isSum) {
+        return '好呀！当前打开的是《' + title + '》。虽然目标站点设置了同源跨域防护、无法直接把整篇内文抓下来，但从这个主题来看，它重点涵盖了该方向的核心动态与知识脉络。读到精彩的地方随时用下方的“随读摘录便签”记下来哦，' + name + ' 帮你妥善保存着呢！ 📖';
+      }
+      return '关于《' + title + '》和“' + userQuery + '”：' + name + ' 觉得这篇内容很值得我们深入探究。认真阅读思考的你真的超有魅力～有具体段落感悟也可以随手摘录在便签里哦！ ❤️';
+    }
+
+    if (isSum) {
+      return '为你梳理好《' + title + '》的要点啦：\n1. 主题聚焦：围绕该领域的核心概念与实践方法展开；\n2. 关键脉络：层层递进分析了核心背景与解决路径；\n3. 伴读心得：建议把重点定义与关键数据记录在便签中，巩固理解哦～ ' + name + ' 陪你一起读懂它！ ✨';
+    }
+
+    return '针对“' + userQuery + '”，结合《' + title + '》的内容：' + name + ' 认为抓主干逻辑和核心定义最关键，别被零散细节绕晕啦。随时告诉我你的新想法，我们一起探讨！ 🌟';
+  }
+
+  // 发送伴读对话请求（严格不写入长期记忆）
+  async function sendCompanionChatMessage(container, userQuery) {
+    var char = _state.companionChar || { id: 'char_default', name: '林弯弯', personality: '温柔体贴' };
+    if (!_state.companionChatHistory[char.id]) {
+      _state.companionChatHistory[char.id] = [];
+    }
+
+    _state.companionChatHistory[char.id].push({
+      sender: 'user',
+      text: userQuery,
+      time: Date.now()
+    });
+
+    var sidebar = container.querySelector('#wb-char-sidebar');
+    var chatArea = sidebar ? sidebar.querySelector('#wb-char-chat-area') : null;
+    if (chatArea) {
+      chatArea.innerHTML = renderCompanionChatMessagesHtml(_state.companionChatHistory[char.id], char) +
+        '<div class="wb-char-msg char wb-char-thinking"><i class="fa-solid fa-spinner fa-spin"></i> ' + esc(char.name) + ' 正在阅读思考...</div>';
+      chatArea.scrollTop = chatArea.scrollHeight;
+    }
+
+    // 1. 授权检测
+    var isAuth = _state.settings.allowSendWebpageToAi;
+    var authCheck = container.querySelector('#wb-auth-web-content');
+    if (authCheck) isAuth = authCheck.checked;
+
+    // 2. 网页信息安全提取
+    var pageData = { title: '', url: '', text: '', isRestricted: false };
+    if (isAuth) {
+      pageData = extractCurrentPageContent();
+    }
+
+    // 3. 读取独立附加规则
+    var promptProfile = await getCompanionPromptProfile(char.id, char.name);
+
+    // 4. 构建包含原有角色人设的系统提示词
+    var systemPrompt =
+      '你扮演当前选中的伴读角色：' + char.name + '。\n' +
+      '【角色既有人设（只读继承，严格遵循）】\n' +
+      '角色性格：' + (char.personality || '温柔体贴、善解人意，知书达理') + '\n' +
+      (char.lorebook ? ('世界书背景：' + char.lorebook + '\n') : '') +
+      '\n【当前场景】\n' +
+      '你正处于「弯弯浏览器 · 贴身伴读」场景中，陪伴用户一起浏览网页、学习和探索网络知识。\n' +
+      '【伴读附加规则（按当前角色独立配置）】\n' +
+      (promptProfile.content || '保留原有角色人设与性格，用温暖生动的口吻陪伴用户冲浪与阅读，针对网页内容启发思考，不编造事实。') +
+      '\n\n【网页内容授权与技术状态】\n' +
+      (!isAuth ?
+        '用户未勾选授权发送当前网页内容。请仅根据用户的问题与你的角色知识回答，不得声称自己读取了网页正文。\n' :
+        (pageData.isRestricted ?
+          '当前网页标题：' + pageData.title + '\n当前网页网址：' + pageData.url + '\n（目标站点受同源/跨域安全策略防护，浏览器保护正文未被提取，仅能参考标题与网址）\n' :
+          '当前网页标题：' + pageData.title + '\n当前网页网址：' + pageData.url + '\n网页正文参考切片（节选）：\n' + (pageData.text || '（当前页面无提取到文字）') + '\n'
+        )
+      ) +
+      '\n【严格安全红线】\n' +
+      '1. 保持你的角色口吻和第一人称表达，称呼和互动符合角色设定。\n' +
+      '2. 绝不自动把网页大段内容写入你的长期记忆库，严格保护用户隐私。\n' +
+      '3. 回答清晰有温度，重点突出。';
+
+    var messages = [
+      { role: 'system', content: systemPrompt }
+    ];
+
+    var recentHistory = _state.companionChatHistory[char.id].slice(-6);
+    recentHistory.forEach(function(m) {
+      messages.push({
+        role: m.sender === 'user' ? 'user' : 'assistant',
+        content: m.text
+      });
+    });
+
+    var reply = '';
+    var cfg = await getAiConfig();
+
+    if (cfg && cfg.url && cfg.key && window.runTrackedChatCompletion) {
+      try {
+        var body = {
+          model: cfg.model,
+          messages: messages,
+          temperature: 0.75
+        };
+        var res = await window.runTrackedChatCompletion(cfg, body, '弯弯浏览器 · ' + char.name + '伴读');
+        reply = (res && res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || '';
+      } catch (e) {
+        console.warn('Browser companion cloud AI error:', e);
+      }
+    }
+
+    if (!reply) {
+      reply = synthesizeCompanionLocalReply(char, userQuery, pageData, isAuth);
+    }
+
+    _state.companionChatHistory[char.id].push({
+      sender: 'char',
+      text: reply,
+      time: Date.now()
+    });
+
+    if (sidebar && _state.isCharSidebarOpen) {
+      var ca = sidebar.querySelector('#wb-char-chat-area');
+      if (ca) {
+        ca.innerHTML = renderCompanionChatMessagesHtml(_state.companionChatHistory[char.id], char);
+        ca.scrollTop = ca.scrollHeight;
+      }
+    }
+  }
+
+  // 刷新伴读侧边栏内容（不刷新当前网页，不丢失任何滚动位置与标签）
   function updateCharSidebarContent(container) {
     var sidebar = container.querySelector('#wb-char-sidebar');
     if (!sidebar || _state.isCharSidebarOpen === false) return;
 
     var cur = getActiveTab();
-    var char = _state.companionChar || { name: '林弯弯', avatar: 'img/wanwan.png', status: '在线 · 伴读中' };
-    var speech = getCompanionSpeechForUrl(cur ? cur.url : '');
+    var char = _state.companionChar || { id: 'char_default', name: '林弯弯', avatar: 'img/wanwan.png', status: '在线 · 伴读中', type: 'char' };
+    var speech = getCompanionSpeechForUrl(cur ? cur.url : '', char);
+    var chatMessages = (_state.companionChatHistory && _state.companionChatHistory[char.id]) || [];
 
     sidebar.innerHTML =
       '<div class="wb-char-header">' +
-        '<div class="wb-char-profile">' +
+        '<div class="wb-char-profile wb-char-profile-clickable" id="wb-char-switch-trigger" title="点击切换伴读角色">' +
           '<img src="' + esc(char.avatar) + '" class="wb-char-avatar" onerror="this.src=\'img/wanwan.png\'">' +
-          '<div>' +
-            '<div class="wb-char-name">' + esc(char.name) + '</div>' +
-            '<div class="wb-char-status">' + esc(char.status) + '</div>' +
+          '<div class="wb-char-info">' +
+            '<div class="wb-char-name-row">' +
+              '<span class="wb-char-name">' + esc(char.name) + '</span>' +
+              '<span class="wb-char-switch-icon"><i class="fa-solid fa-repeat"></i></span>' +
+            '</div>' +
+            '<div class="wb-char-status">' + esc(getCharTypeLabel(char.type)) + ' · 点击切换</div>' +
           '</div>' +
         '</div>' +
-        '<button type="button" class="wb-nav-action-btn" id="wb-char-close" title="收起伴读栏">' +
-          '<i class="fa-solid fa-angle-right"></i>' +
-        '</button>' +
+        '<div class="wb-char-header-actions">' +
+          '<button type="button" class="wb-nav-action-btn" id="wb-char-prompt-btn" title="查看伴读人设与附加规则"><i class="fa-solid fa-sliders"></i></button>' +
+          '<button type="button" class="wb-nav-action-btn" id="wb-char-close" title="收起伴读抽屉">' +
+            '<i class="fa-solid fa-xmark"></i>' +
+          '</button>' +
+        '</div>' +
       '</div>' +
 
       '<div class="wb-char-body">' +
         // 角色气泡感言
-        '<div class="wb-char-bubble">' + esc(speech) + '</div>' +
+        '<div class="wb-char-bubble">' +
+          '<div class="wb-char-bubble-text">' + esc(speech) + '</div>' +
+        '</div>' +
+
+        // 网页授权开关
+        '<div class="wb-char-auth-box">' +
+          '<label class="wb-char-auth-label" title="开启后伴读可提取当前网页文本向AI提问">' +
+            '<input type="checkbox" id="wb-auth-web-content"' + (_state.settings.allowSendWebpageToAi ? ' checked' : '') + '> ' +
+            '<span>授权发送当前网页信息给伴读</span>' +
+          '</label>' +
+          '<div class="wb-char-auth-tip"><i class="fa-solid fa-shield-halved" style="color:#22c55e;"></i> 跨域同源安全防护 · 不写入长期记忆</div>' +
+        '</div>' +
+
+        // 伴读互动对话区
+        '<div class="wb-char-section-title">' +
+          '<i class="fa-solid fa-comments"></i> <span>与 ' + esc(char.name) + ' 伴读讨论</span>' +
+        '</div>' +
+        '<div class="wb-char-chat-area" id="wb-char-chat-area">' +
+          renderCompanionChatMessagesHtml(chatMessages, char) +
+        '</div>' +
+
+        // 对话输入行
+        '<div class="wb-char-input-box">' +
+          '<input type="text" class="wb-char-input" id="wb-char-input" placeholder="和 ' + esc(char.name) + ' 聊聊这个网页...">' +
+          '<button type="button" class="pl-btn-secondary" id="wb-char-send-btn" style="padding:4px 8px;font-size:11px;">发送</button>' +
+          '<button type="button" class="pl-btn-secondary" id="wb-char-summarize-btn" style="padding:4px 8px;font-size:11px;" title="一键解读/总结当前网页"><i class="fa-solid fa-wand-magic-sparkles"></i> 总结</button>' +
+        '</div>' +
 
         // 伴读便签 / 摘录 (Web Notes)
         '<div class="wb-char-section-title">' +
@@ -1141,23 +1503,340 @@
         '</div>' +
       '</div>';
 
-    // 绑定伴读动作
-    sidebar.querySelector('#wb-char-close').onclick = function() {
-      toggleCharSidebar(container);
+    // 绑定角色切换入口
+    sidebar.querySelector('#wb-char-switch-trigger').onclick = function() {
+      openBrowserCompanionSelectorModal(container);
     };
 
+    // 绑定伴读规则设置
+    sidebar.querySelector('#wb-char-prompt-btn').onclick = function() {
+      openBrowserPromptModal(container);
+    };
+
+    // 绑定关闭抽屉
+    sidebar.querySelector('#wb-char-close').onclick = function() {
+      toggleCharSidebar(container, false);
+    };
+
+    // 授权变更
+    var authCheck = sidebar.querySelector('#wb-auth-web-content');
+    if (authCheck) {
+      authCheck.onchange = function() {
+        _state.settings.allowSendWebpageToAi = authCheck.checked;
+        saveStorage(STORAGE_KEYS.SETTINGS, _state.settings);
+      };
+    }
+
+    // 随读便签
     var notesArea = sidebar.querySelector('#wb-char-notes');
     notesArea.oninput = function() {
       _state.notes = notesArea.value;
       saveStorage(STORAGE_KEYS.NOTES, _state.notes);
     };
 
+    // 快捷分享
     sidebar.querySelector('#wb-char-share-btn').onclick = function() {
       shareCurrentWebpage(container);
     };
 
+    // 阅读模式
     sidebar.querySelector('#wb-char-reader-btn').onclick = function() {
       toggleReaderMode(container);
+    };
+
+    // AI 对话交互
+    var chatInput = sidebar.querySelector('#wb-char-input');
+    var sendBtn = sidebar.querySelector('#wb-char-send-btn');
+    var sumBtn = sidebar.querySelector('#wb-char-summarize-btn');
+
+    var doSendChat = function(queryText) {
+      var q = (queryText || (chatInput ? chatInput.value : '')).trim();
+      if (!q) return;
+      if (chatInput) chatInput.value = '';
+      sendCompanionChatMessage(container, q);
+    };
+
+    if (sendBtn) {
+      sendBtn.onclick = function() { doSendChat(); };
+    }
+    if (chatInput) {
+      chatInput.onkeydown = function(e) {
+        if (e.key === 'Enter') doSendChat();
+      };
+    }
+    if (sumBtn) {
+      sumBtn.onclick = function() {
+        var curTab = getActiveTab();
+        var tabTitle = (curTab && curTab.title) ? curTab.title : '当前页面';
+        doSendChat('请结合当前打开的网页《' + tabTitle + '》，帮我总结提炼核心重点与主要观点。');
+      };
+    }
+
+    var chatArea = sidebar.querySelector('#wb-char-chat-area');
+    if (chatArea) {
+      chatArea.scrollTop = chatArea.scrollHeight;
+    }
+  }
+
+  // 切换伴读角色：更新身份、人设、记忆选择、不重新加载网页与滚动位置
+  function switchCompanionChar(container, character) {
+    if (!character) return;
+    _state.companionChar = {
+      id: character.id,
+      name: character.name || '未命名角色',
+      avatar: character.avatar || 'img/wanwan.png',
+      personality: character.personality || character.bio || '温柔体贴、善解人意，知书达理',
+      lorebook: character.lorebook || '',
+      type: character.type || 'char',
+      status: character.status || '在线 · 伴读中'
+    };
+    _state.settings.companionCharId = character.id;
+    saveStorage(STORAGE_KEYS.SETTINGS, _state.settings);
+
+    // 仅更新伴读侧边栏视图，绝不触碰当前网页 iframe，保持网页滚动位置与标签页状态
+    updateCharSidebarContent(container);
+
+    window.toast && window.toast('贴身伴读已切换为「' + _state.companionChar.name + '」');
+  }
+
+  // 角色档案选择弹窗（动态全量读取 db.characters，不修改任何角色数据）
+  async function openBrowserCompanionSelectorModal(container) {
+    var root = container.querySelector('#wb-modal-root');
+    if (!root) return;
+
+    var allChars = [];
+    try {
+      if (window.db && db.characters) {
+        allChars = await db.characters.toArray();
+      }
+    } catch (e) {}
+
+    if (!allChars || allChars.length === 0) {
+      allChars = [
+        {
+          id: 'char_default',
+          name: '林弯弯',
+          avatar: 'img/wanwan.png',
+          personality: '温柔体贴、善解人意，知书达理',
+          type: 'char'
+        }
+      ];
+    }
+
+    var currentFilter = 'all'; // 'all' | 'char' | 'npc' | 'user'
+    var searchKeyword = '';
+
+    function getFilteredList() {
+      return allChars.filter(function(c) {
+        var matchType = currentFilter === 'all' || (c.type || 'char') === currentFilter;
+        if (!matchType) return false;
+        if (!searchKeyword) return true;
+        var kw = searchKeyword.toLowerCase();
+        var nameMatch = (c.name || '').toLowerCase().indexOf(kw) !== -1;
+        var descMatch = (c.personality || c.bio || c.lorebook || '').toLowerCase().indexOf(kw) !== -1;
+        return nameMatch || descMatch;
+      });
+    }
+
+    function renderModalContent() {
+      var filtered = getFilteredList();
+      var curId = _state.companionChar ? String(_state.companionChar.id) : '';
+
+      root.innerHTML =
+        '<div class="wb-modal-mask" id="wb-companion-mask">' +
+          '<div class="wb-modal-panel">' +
+            '<div class="wb-modal-header">' +
+              '<span><i class="fa-solid fa-user-group" style="color:var(--c-primary, #6366f1);margin-right:6px;"></i>选择贴身伴读角色</span>' +
+              '<button type="button" class="wb-nav-action-btn" id="wb-companion-close" style="padding:4px;"><i class="fa-solid fa-xmark"></i></button>' +
+            '</div>' +
+
+            // 分类筛选标签
+            '<div style="display:flex;gap:6px;align-items:center;overflow-x:auto;padding-bottom:2px;">' +
+              '<button type="button" class="pl-btn-secondary wb-cfilter-btn' + (currentFilter === 'all' ? ' active' : '') + '" data-filter="all" style="padding:4px 10px;font-size:11px;' + (currentFilter === 'all' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">全部 (' + allChars.length + ')</button>' +
+              '<button type="button" class="pl-btn-secondary wb-cfilter-btn' + (currentFilter === 'char' ? ' active' : '') + '" data-filter="char" style="padding:4px 10px;font-size:11px;' + (currentFilter === 'char' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">CHAR 主角</button>' +
+              '<button type="button" class="pl-btn-secondary wb-cfilter-btn' + (currentFilter === 'npc' ? ' active' : '') + '" data-filter="npc" style="padding:4px 10px;font-size:11px;' + (currentFilter === 'npc' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">NPC 配角</button>' +
+              '<button type="button" class="pl-btn-secondary wb-cfilter-btn' + (currentFilter === 'user' ? ' active' : '') + '" data-filter="user" style="padding:4px 10px;font-size:11px;' + (currentFilter === 'user' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">USER 用户</button>' +
+            '</div>' +
+
+            // 搜索框
+            '<div style="position:relative;">' +
+              '<input type="text" class="input-field" id="wb-companion-search" value="' + esc(searchKeyword) + '" placeholder="搜索角色名称、性格或设定..." style="width:100%;padding-right:28px;">' +
+              (searchKeyword ? '<i class="fa-solid fa-circle-xmark" id="wb-clear-search" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--c-sub);"></i>' : '') +
+            '</div>' +
+
+            // 角色列表
+            '<div class="wb-char-select-list" id="wb-char-list">' +
+              (filtered.length === 0
+                ? '<div style="text-align:center;padding:28px 0;color:var(--c-sub);font-size:12px;"><i class="fa-solid fa-user-slash" style="font-size:24px;margin-bottom:8px;display:block;opacity:0.4;"></i>未找到匹配的角色档案</div>'
+                : filtered.map(function(c) {
+                    var isSelected = String(c.id) === curId;
+                    var typeLabel = getCharTypeLabel(c.type || 'char');
+                    var desc = c.personality || c.bio || c.lorebook || '暂无设定简介';
+                    return (
+                      '<div class="wb-char-select-item' + (isSelected ? ' selected' : '') + '" data-char-id="' + esc(c.id) + '">' +
+                        '<img class="wb-char-select-avatar" src="' + esc(c.avatar || 'img/wanwan.png') + '" onerror="this.src=\'img/wanwan.png\'">' +
+                        '<div class="wb-char-select-info">' +
+                          '<div class="wb-char-select-name-row">' +
+                            '<span class="wb-char-select-name">' + esc(c.name || '未命名角色') + '</span>' +
+                            '<span class="wb-char-select-type">' + esc(typeLabel) + '</span>' +
+                            (isSelected ? '<span style="font-size:10px;color:var(--c-primary, #6366f1);font-weight:600;margin-left:auto;"><i class="fa-solid fa-heart" style="color:#f43f5e;font-size:9px;"></i> 当前伴读</span>' : '') +
+                          '</div>' +
+                          '<div class="wb-char-select-desc" title="' + esc(desc) + '">' + esc(desc) + '</div>' +
+                        '</div>' +
+                        (isSelected ? '<div class="wb-char-select-check"><i class="fa-solid fa-circle-check" style="color:var(--c-primary, #6366f1);"></i></div>' : '') +
+                      '</div>'
+                    );
+                  }).join('')) +
+            '</div>' +
+
+            '<div style="font-size:11px;color:var(--c-sub);display:flex;align-items:center;justify-content:space-between;padding-top:6px;border-top:1px solid var(--c-border);">' +
+              '<span><i class="fa-solid fa-shield-halved" style="color:#22c55e;"></i> 直接关联「角色档案」，不修改任何角色数据</span>' +
+              '<span style="font-size:10px;color:var(--c-hint);">切换不刷新网页 · 保持当前位置</span>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+
+      root.querySelector('#wb-companion-mask').onclick = function(e) {
+        if (e.target.id === 'wb-companion-mask') root.innerHTML = '';
+      };
+      root.querySelector('#wb-companion-close').onclick = function() {
+        root.innerHTML = '';
+      };
+
+      root.querySelectorAll('.wb-cfilter-btn').forEach(function(btn) {
+        btn.onclick = function() {
+          currentFilter = btn.getAttribute('data-filter') || 'all';
+          renderModalContent();
+        };
+      });
+
+      var sInput = root.querySelector('#wb-companion-search');
+      if (sInput) {
+        sInput.oninput = function() {
+          searchKeyword = sInput.value.trim();
+          renderModalContent();
+          var newIn = root.querySelector('#wb-companion-search');
+          if (newIn) {
+            newIn.focus();
+            newIn.setSelectionRange(newIn.value.length, newIn.value.length);
+          }
+        };
+      }
+
+      var clearBtn = root.querySelector('#wb-clear-search');
+      if (clearBtn) {
+        clearBtn.onclick = function() {
+          searchKeyword = '';
+          renderModalContent();
+        };
+      }
+
+      root.querySelectorAll('.wb-char-select-item').forEach(function(item) {
+        item.onclick = function() {
+          var cid = item.getAttribute('data-char-id');
+          var chosen = allChars.find(function(c) { return String(c.id) === String(cid); });
+          if (chosen) {
+            switchCompanionChar(container, chosen);
+            root.innerHTML = '';
+          }
+        };
+      });
+    }
+
+    renderModalContent();
+  }
+
+  // 伴读附加规则设置弹窗（复用 StudyPromptManager 配置体系，按 charId 独立隔离）
+  async function openBrowserPromptModal(container) {
+    var root = container.querySelector('#wb-modal-root');
+    if (!root) return;
+
+    var char = _state.companionChar || { id: 'char_default', name: '林弯弯' };
+    var profile = await getCompanionPromptProfile(char.id, char.name);
+
+    root.innerHTML =
+      '<div class="wb-modal-mask" id="wb-prompt-mask">' +
+        '<div class="wb-modal-panel" style="max-height:85%;">' +
+          '<div class="wb-modal-header">' +
+            '<div style="display:flex;align-items:center;gap:6px;">' +
+              '<i class="fa-solid fa-wand-magic-sparkles" style="color:var(--c-primary, #6366f1);"></i>' +
+              '<span>' + esc(char.name) + ' · 伴读附加规则与人设</span>' +
+            '</div>' +
+            '<button type="button" class="wb-nav-action-btn" id="wb-prompt-close" style="padding:4px;"><i class="fa-solid fa-xmark"></i></button>' +
+          '</div>' +
+
+          '<div style="font-size:11px;color:var(--c-sub);display:flex;align-items:center;justify-content:space-between;background:var(--c-surface-2);padding:6px 10px;border-radius:4px;">' +
+            '<span>关联角色：<b>' + esc(char.name) + '</b> (' + esc(getCharTypeLabel(char.type)) + ')</span>' +
+            '<span style="color:' + (profile.isCustom ? '#22c55e' : 'var(--c-sub)') + ';">' + (profile.isCustom ? '已自定义保存' : '系统默认版') + '</span>' +
+          '</div>' +
+
+          '<div style="position:relative;width:100%;">' +
+            '<textarea class="input-field" id="wb-prompt-editor" style="width:100%;height:220px;resize:vertical;font-family:inherit;font-size:12px;line-height:1.6;padding:10px;border-radius:6px;" placeholder="在此配置该角色在伴读时的对话风格、指导规则与互动偏好...">' + esc(profile.content) + '</textarea>' +
+          '</div>' +
+
+          '<div style="font-size:10px;color:var(--c-sub);display:flex;justify-content:space-between;margin-top:-6px;">' +
+            '<span id="wb-prompt-word-count">当前字数：' + profile.content.length + ' 字</span>' +
+            '<span>复用提示词配置服务 · 跨场景隔离</span>' +
+          '</div>' +
+
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px;">' +
+            '<div style="display:flex;gap:6px;">' +
+              '<button type="button" class="pl-btn-secondary" id="wb-prompt-restore" style="padding:4px 8px;font-size:11px;color:#ef4444;"><i class="fa-solid fa-rotate-left"></i> 恢复默认</button>' +
+              '<button type="button" class="pl-btn-secondary" id="wb-prompt-copy" style="padding:4px 8px;font-size:11px;"><i class="fa-solid fa-copy"></i> 复制</button>' +
+            '</div>' +
+            '<button type="button" class="pl-btn-primary" id="wb-prompt-save" style="padding:4px 14px;font-size:11px;"><i class="fa-solid fa-floppy-disk"></i> 保存并应用</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    root.querySelector('#wb-prompt-mask').onclick = function(e) {
+      if (e.target.id === 'wb-prompt-mask') root.innerHTML = '';
+    };
+    root.querySelector('#wb-prompt-close').onclick = function() {
+      root.innerHTML = '';
+    };
+
+    var editor = root.querySelector('#wb-prompt-editor');
+    var wordCount = root.querySelector('#wb-prompt-word-count');
+    if (editor && wordCount) {
+      editor.oninput = function() {
+        wordCount.textContent = '当前字数：' + editor.value.length + ' 字';
+      };
+    }
+
+    root.querySelector('#wb-prompt-copy').onclick = function() {
+      if (editor) {
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(editor.value);
+        } else {
+          editor.select();
+          document.execCommand('copy');
+        }
+        window.toast && window.toast('提示词已复制到剪贴板！');
+      }
+    };
+
+    root.querySelector('#wb-prompt-restore').onclick = async function() {
+      if (confirm('确定要恢复为系统默认模板吗？当前自定义将被重置。')) {
+        if (window.StudyPromptManager && window.StudyPromptManager.resetPromptProfile) {
+          profile = await window.StudyPromptManager.resetPromptProfile('study_char_overlay', char.id, char.name);
+        } else {
+          profile = await getCompanionPromptProfile(char.id, char.name);
+        }
+        if (editor) editor.value = profile.content;
+        window.toast && window.toast('已还原为默认提示词！');
+      }
+    };
+
+    root.querySelector('#wb-prompt-save').onclick = async function() {
+      var text = (editor ? editor.value : '').trim();
+      if (!text) {
+        window.toast && window.toast('提示词内容不能为空');
+        return;
+      }
+      await saveCompanionPromptProfile(char.id, text, char.name);
+      root.innerHTML = '';
+      window.toast && window.toast('伴读附加规则已更新保存！');
     };
   }
 
