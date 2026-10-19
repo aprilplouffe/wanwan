@@ -56,7 +56,30 @@ var DESKTOP_PAGE2_ICONS = [
   } }
 ]
 
-var DESKTOP_ICON_PAGES = [DESKTOP_ICONS, DESKTOP_PAGE2_ICONS]
+var DESKTOP_PAGE3_ICONS = [
+  { id: 'browser',       fa: 'fa-solid fa-compass',             label: '弯弯浏览器', action: function() { window.showBrowserPage && window.showBrowserPage() } },
+  { id: 'studyRoom',     fa: 'fa-solid fa-hourglass-half',       label: '陪伴自习室', action: function() { window.showStudyRoomPage && window.showStudyRoomPage() } },
+  { id: 'ourHome',       fa: 'fa-solid fa-house-user',          label: '我们的家',   action: function() { window.showOurHomePage && window.showOurHomePage() } },
+  { id: 'achievement',   fa: 'fa-solid fa-award',               label: '成就馆',     action: function() { window.showAchievementPage && window.showAchievementPage() } },
+  { id: 'timeCalendar',  fa: 'fa-solid fa-calendar-days',       label: '时光日历',   action: function() { window.showTimeCalendarPage && window.showTimeCalendarPage() } },
+  { id: 'lifeGame',      fa: 'fa-solid fa-gamepad',             label: '人生游戏',   action: function() { window.showLifeGamePage && window.showLifeGamePage() } },
+  { id: 'heartbeatMall', fa: 'fa-solid fa-store',               label: '心动商城',   action: function() { window.showHeartbeatMallPage && window.showHeartbeatMallPage() } },
+  { id: 'fanCommunity',  fa: 'fa-solid fa-comments',            label: '同好社区',   action: function() { window.showFanCommunityPage && window.showFanCommunityPage() } },
+  { id: 'heartbeatLive', fa: 'fa-solid fa-video',               label: '心动直播',   action: function() { window.showHeartbeatLivePage && window.showHeartbeatLivePage() } }
+]
+
+var DESKTOP_ICON_PAGES = [DESKTOP_ICONS, DESKTOP_PAGE2_ICONS, DESKTOP_PAGE3_ICONS]
+var PAGE3_APP_IDS = [
+  'browser',
+  'studyRoom',
+  'ourHome',
+  'achievement',
+  'timeCalendar',
+  'lifeGame',
+  'heartbeatMall',
+  'fanCommunity',
+  'heartbeatLive'
+]
 var DOCK_ICONS = [
   { id: 'settings', fa: 'fa-solid fa-gear', label: '设置', action: function() { window.showSettingsPage && showSettingsPage() } },
   { id: 'iscreens', fa: 'fa-solid fa-wand-magic-sparkles', label: 'iScreens', action: function() { window.showiScreenPage && showiScreenPage() } },
@@ -85,6 +108,9 @@ var _desktopDrag = null
 var _desktopEdgeTimer = null
 var _desktopPointerDown = null
 var _desktopResizeBound = false
+var currentPage = 0
+var TOTAL_PAGES = 3
+var _desktopPageTransitionTimer = 0
 
 function getDesktopIconRegistry() {
   var registry = {}
@@ -559,6 +585,10 @@ function ensureAppStoreOnPage2(layout) {
     if (plDock !== -1) layout.dock.splice(plDock, 1)
     var ghDock = layout.dock.indexOf('gameHall')
     if (ghDock !== -1) layout.dock.splice(ghDock, 1)
+    PAGE3_APP_IDS.forEach(function(p3Id) {
+      var p3DockIdx = layout.dock.indexOf(p3Id)
+      if (p3DockIdx !== -1) layout.dock.splice(p3DockIdx, 1)
+    })
   }
   for (var p = 0; p < layout.pages.length; p++) {
     var sList = getPageSlots(layout.pages[p])
@@ -566,6 +596,7 @@ function ensureAppStoreOnPage2(layout) {
       if (sList[s] === 'appStore') sList[s] = null
       if (sList[s] === 'parallelLetter') sList[s] = null
       if (p === 0 && sList[s] === 'gameHall') sList[s] = null
+      if (p === 0 && PAGE3_APP_IDS.indexOf(sList[s]) !== -1) sList[s] = null
     }
   }
 
@@ -578,7 +609,9 @@ function ensureAppStoreOnPage2(layout) {
   if (!hasWidgets) {
     var items = []
     for (var i = 0; i < p2Slots.length; i++) {
-      if (p2Slots[i] && p2Slots[i] !== 'appStore' && p2Slots[i] !== 'parallelLetter') items.push(p2Slots[i])
+      if (p2Slots[i] && p2Slots[i] !== 'appStore' && p2Slots[i] !== 'parallelLetter' && PAGE3_APP_IDS.indexOf(p2Slots[i]) === -1) {
+        items.push(p2Slots[i])
+      }
     }
     if (items.indexOf('gameHall') === -1) {
       items.push('gameHall')
@@ -587,9 +620,29 @@ function ensureAppStoreOnPage2(layout) {
     items.splice(ghIdx + 1, 0, 'appStore')
     items.splice(ghIdx + 2, 0, 'parallelLetter')
 
+    // 关键：将9个新增软件严格按顺序紧随在「平行来信」后面
+    for (var k = 0; k < PAGE3_APP_IDS.length; k++) {
+      if (items.indexOf(PAGE3_APP_IDS[k]) === -1) {
+        items.push(PAGE3_APP_IDS[k])
+      }
+    }
+
+    // 填充第 2 屏
     for (var i = 0; i < _desktopSlotsPerPage; i++) {
       p2Slots[i] = items[i] || null
     }
+    layout.pages[1].slots = p2Slots
+
+    // 超出第 2 屏容量的软件，无缝顺延到第 3 屏
+    while (layout.pages.length < 3) {
+      layout.pages.push(createEmptyDesktopPage())
+    }
+    var p3Slots = getPageSlots(layout.pages[2])
+    var overflowItems = items.slice(_desktopSlotsPerPage)
+    for (var j = 0; j < _desktopSlotsPerPage; j++) {
+      p3Slots[j] = overflowItems[j] || null
+    }
+    layout.pages[2].slots = p3Slots
   } else {
     var ghSlot = p2Slots.indexOf('gameHall')
     var targetSlot = ghSlot !== -1 ? ghSlot + 1 : firstEmptySlot(layout.pages[1])
@@ -616,8 +669,52 @@ function ensureAppStoreOnPage2(layout) {
         p2Slots[plTargetSlot] = 'parallelLetter'
       }
     }
+    layout.pages[1].slots = p2Slots
+
+    while (layout.pages.length < 3) {
+      layout.pages.push(createEmptyDesktopPage())
+    }
   }
-  layout.pages[1].slots = p2Slots
+  return layout
+}
+
+function ensurePage3Apps(layout) {
+  if (!layout || !Array.isArray(layout.pages)) return layout
+  while (layout.pages.length < 3) {
+    layout.pages.push(createEmptyDesktopPage())
+  }
+  if (Array.isArray(layout.dock)) {
+    PAGE3_APP_IDS.forEach(function(p3Id) {
+      var idx = layout.dock.indexOf(p3Id)
+      if (idx !== -1) layout.dock.splice(idx, 1)
+    })
+  }
+
+  // 检查已在第2屏或第3屏就位的应用
+  var existingMap = {}
+  for (var p = 1; p < layout.pages.length; p++) {
+    var sl = getPageSlots(layout.pages[p])
+    for (var s = 0; s < sl.length; s++) {
+      if (sl[s] && PAGE3_APP_IDS.indexOf(sl[s]) !== -1) {
+        existingMap[sl[s]] = true
+      }
+    }
+  }
+
+  var missing = PAGE3_APP_IDS.filter(function(id) {
+    return !existingMap[id]
+  })
+
+  // 将未安排的应用依次放入第2屏末尾或第3屏空位
+  for (var p = 1; p < layout.pages.length && missing.length > 0; p++) {
+    var sl = getPageSlots(layout.pages[p])
+    for (var s = 0; s < _desktopSlotsPerPage && missing.length > 0; s++) {
+      if (!sl[s]) {
+        sl[s] = missing.shift()
+      }
+    }
+    layout.pages[p].slots = sl
+  }
   return layout
 }
 
@@ -676,12 +773,16 @@ function normalizeDesktopLayout(layout, keepTrailingEmpty) {
   placeQueuedIcons(0)
 
   ensureAppStoreOnPage2(next)
+  ensurePage3Apps(next)
 
   next.pages = next.pages.filter(function(page, index) {
     if (keepTrailingEmpty && index === next.pages.length - 1) return true
     return pageHasIcons(page)
   })
-  if (!next.pages.length) next.pages.push(createEmptyDesktopPage())
+  while (next.pages.length < 3) {
+    next.pages.push(createEmptyDesktopPage())
+  }
+  ensurePage3Apps(next)
   return next
 }
 
@@ -700,17 +801,25 @@ async function loadDesktopLayout() {
   var savedP2 = saved && Array.isArray(saved.pages) && saved.pages[1] ? getPageSlots(saved.pages[1]) : []
   var curP2 = _desktopLayout && _desktopLayout.pages && _desktopLayout.pages[1] ? getPageSlots(_desktopLayout.pages[1]) : []
   var savedP1 = saved && Array.isArray(saved.pages) && saved.pages[0] ? getPageSlots(saved.pages[0]) : []
-  var needsSave = (savedP2.indexOf('appStore') !== curP2.indexOf('appStore')) ||
+  var savedAllIds = (saved && Array.isArray(saved.pages))
+    ? saved.pages.reduce(function(list, p) { return list.concat(getPageSlots(p)) }, [])
+    : []
+  var anyNewAppMissing = PAGE3_APP_IDS.some(function(id) {
+    return savedAllIds.indexOf(id) === -1
+  })
+  var needsSave = anyNewAppMissing ||
+                  (savedP2.indexOf('appStore') !== curP2.indexOf('appStore')) ||
                   (savedP2.indexOf('parallelLetter') !== curP2.indexOf('parallelLetter')) ||
                   (savedP2.indexOf('gameHall') !== curP2.indexOf('gameHall')) ||
                   (savedP1.indexOf('gameHall') !== -1) ||
                   (savedP1.indexOf('appStore') !== -1) ||
-                  (savedP1.indexOf('parallelLetter') !== -1)
+                  (savedP1.indexOf('parallelLetter') !== -1) ||
+                  (!saved || !saved.pages || saved.pages.length < 2)
   if (needsSave) {
     try {
       await saveDesktopLayout()
     } catch (e) {
-      console.warn('saveDesktopLayout after appStore placement failed:', e)
+      console.warn('saveDesktopLayout after layout normalization failed:', e)
     }
   }
   return _desktopLayout
@@ -768,6 +877,10 @@ async function saveDesktopLayout() {
 
 function ensureDesktopLayout() {
   if (!_desktopLayout) _desktopLayout = normalizeDesktopLayout(null, false)
+  while (_desktopLayout.pages.length < 3) {
+    _desktopLayout.pages.push(createEmptyDesktopPage())
+  }
+  ensurePage3Apps(_desktopLayout)
   return _desktopLayout
 }
 
@@ -2976,9 +3089,6 @@ function renderDock() {
 }
 
 // ===== 多页桌面滑动 =====
-var currentPage = 0
-var TOTAL_PAGES = 2
-var _desktopPageTransitionTimer = 0
 
 function activateDesktopEditModeInPlace() {
   if (_desktopEditing) return
@@ -3366,7 +3476,8 @@ function bindDesktopSwipe() {
 
 // ===== 切换桌面页 =====
 function switchDesktopPage(n, immediate) {
-  currentPage = Math.max(0, Math.min(n, TOTAL_PAGES - 1))
+  var target = (typeof n === 'number' && !isNaN(n)) ? n : 0
+  currentPage = Math.max(0, Math.min(target, Math.max(1, TOTAL_PAGES) - 1))
   var wrapper = document.getElementById('desktop-wrapper')
   var homePage = document.getElementById('home-page')
   if (wrapper) {

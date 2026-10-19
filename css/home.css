@@ -136,16 +136,16 @@
   width: 60px; height: 60px;
   border-radius: 14px;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(20px) saturate(180%) brightness(1.05);
-  -webkit-backdrop-filter: blur(20px) saturate(180%) brightness(1.05);
-  border: none;
-  box-shadow: none;
+  background: rgba(255, 255, 255, 0.1) !important;
+  backdrop-filter: blur(20px) saturate(180%) brightness(1.05) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) brightness(1.05) !important;
+  border: none !important;
+  box-shadow: none !important;
   position: relative; overflow: hidden;
 }
-.icon-bg i {
+.app-icon .icon-bg i {
   font-size: 26px;
-  color: var(--icon-color, var(--c-accent-dark));
+  color: var(--icon-color, var(--c-accent-dark)) !important;
 }
 .icon-bg svg {
   width: 30px; height: 30px;

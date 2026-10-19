@@ -1,0 +1,848 @@
+/* placeholder-apps.css — 9个新增App与原版Wanwan Phone视觉规范100%同构 */
+
+/* ===== 全局通用外壳样式 ===== */
+.pl-app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--c-bg);
+  color: var(--c-text);
+  overflow: hidden;
+  font-family: var(--font, -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Text", sans-serif);
+}
+
+.pl-app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-bg);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.pl-app-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pl-app-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  margin-left: -6px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-text);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: opacity var(--dur) var(--ease);
+}
+.pl-app-back-btn:active {
+  opacity: 0.5;
+}
+
+.pl-app-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pl-app-icon-mini {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+}
+
+.pl-app-header-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--c-text);
+}
+
+.pl-app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pl-app-badge-dev {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-sub);
+}
+
+.pl-app-scroll-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 顶部大 Banner 卡片 — 原版极简卡片规范 */
+.pl-app-hero-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  padding: 18px 16px;
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pl-app-hero-pill {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-sub);
+}
+
+.pl-app-hero-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--c-text);
+  line-height: 1.35;
+}
+
+.pl-app-hero-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--c-sub);
+}
+
+.pl-app-hero-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.pl-app-stat-item {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--c-text);
+}
+.pl-app-stat-item i {
+  color: var(--c-sub);
+}
+
+/* Section 标头与网格卡片 */
+.pl-app-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.pl-app-section-title i {
+  font-size: 13px;
+  color: var(--c-sub);
+}
+
+.pl-app-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.pl-app-feature-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: all var(--dur) var(--ease);
+}
+.pl-app-feature-card:active {
+  transform: scale(0.98);
+}
+
+.pl-app-feature-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+}
+
+.pl-app-feature-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.pl-app-feature-desc {
+  font-size: 11px;
+  color: var(--c-sub);
+  line-height: 1.5;
+}
+
+/* 开发中预告横幅 */
+.pl-app-dev-banner {
+  background: var(--c-surface-2);
+  border: 1px dashed var(--c-border-m);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--c-sub);
+}
+.pl-app-dev-banner i {
+  font-size: 18px;
+  color: var(--c-hint);
+  flex-shrink: 0;
+}
+.pl-app-dev-banner-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pl-app-dev-banner-title {
+  font-weight: 600;
+  color: var(--c-text);
+  font-size: 12px;
+}
+
+/* 原版统一规范按钮 */
+.pl-btn-primary {
+  background: var(--c-accent, #1d1d1f);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.pl-btn-primary:active {
+  opacity: 0.75;
+  transform: scale(0.96);
+}
+
+.pl-btn-secondary {
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-pill);
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.pl-btn-secondary:active {
+  opacity: 0.75;
+  transform: scale(0.96);
+}
+
+/* ====================================================
+   1. 弯弯浏览器 (原版极简风)
+   ==================================================== */
+.edge-browser-nav-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--c-surface-2);
+  padding: 7px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-border);
+}
+.edge-url-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  color: var(--c-text);
+  outline: none;
+}
+.edge-url-icons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--c-sub);
+  font-size: 13px;
+}
+
+.edge-tabs-container {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+.edge-tabs-container::-webkit-scrollbar {
+  display: none;
+}
+.edge-tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  font-size: 12px;
+  color: var(--c-sub);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+}
+.edge-tab-item.active {
+  background: var(--c-surface);
+  color: var(--c-text);
+  border-color: var(--c-text);
+  font-weight: 600;
+}
+
+/* ====================================================
+   2. 陪伴自习室 (原版极简风)
+   ==================================================== */
+.study-timer-box {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+}
+
+.study-timer-dial {
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  border: 3px solid var(--c-surface-2);
+  border-top-color: var(--c-text);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.study-timer-time {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--c-text);
+  font-variant-numeric: tabular-nums;
+}
+.study-timer-status {
+  font-size: 11px;
+  color: var(--c-sub);
+  font-weight: 500;
+}
+
+.study-sound-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.study-chip {
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  font-size: 12px;
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+}
+.study-chip.active {
+  background: var(--c-accent, #1d1d1f);
+  color: #fff;
+  border-color: var(--c-accent, #1d1d1f);
+}
+
+/* ====================================================
+   3. 我们的家 (原版极简风)
+   ==================================================== */
+.ourhome-preview-box {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ourhome-room-visual {
+  height: 110px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  font-size: 32px;
+  color: var(--c-text);
+}
+.ourhome-furniture-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.ourhome-f-card {
+  min-width: 88px;
+  padding: 10px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  text-align: center;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+}
+.ourhome-f-card:active {
+  opacity: 0.7;
+}
+.ourhome-f-card-icon {
+  font-size: 20px;
+  color: var(--c-text);
+  margin-bottom: 4px;
+}
+
+/* ====================================================
+   4. 成就馆 (原版极简风)
+   ==================================================== */
+.achieve-badge-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.achieve-badge-item {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+}
+.achieve-badge-item:active {
+  transform: scale(0.97);
+}
+.achieve-badge-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+}
+.achieve-badge-item.locked .achieve-badge-icon {
+  background: var(--c-surface-2);
+  color: var(--c-hint);
+  border-color: var(--c-border);
+  opacity: 0.5;
+}
+.achieve-badge-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.achieve-badge-desc {
+  font-size: 10px;
+  color: var(--c-sub);
+}
+
+/* ====================================================
+   5. 时光日历 (原版极简风)
+   ==================================================== */
+.calendar-month-grid {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.calendar-week-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-size: 11px;
+  color: var(--c-sub);
+  font-weight: 500;
+}
+.calendar-days-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  text-align: center;
+}
+.calendar-day-cell {
+  padding: 6px 0;
+  font-size: 12px;
+  border-radius: 50%;
+  color: var(--c-text);
+  cursor: pointer;
+}
+.calendar-day-cell.today {
+  background: var(--c-accent, #1d1d1f);
+  color: #fff;
+  font-weight: 700;
+}
+.calendar-day-cell.event {
+  position: relative;
+}
+.calendar-day-cell.event::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--c-sub);
+}
+
+.calendar-countdown-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.calendar-countdown-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.calendar-countdown-days {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--c-text);
+}
+
+/* ====================================================
+   6. 人生游戏 (原版极简风)
+   ==================================================== */
+.lifegame-profile-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.lifegame-exp-bar {
+  height: 6px;
+  background: var(--c-surface-2);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  position: relative;
+}
+.lifegame-exp-fill {
+  height: 100%;
+  width: 65%;
+  background: var(--c-accent, #1d1d1f);
+  border-radius: var(--r-pill);
+}
+
+.lifegame-stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.lifegame-stat-box {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 8px;
+  text-align: center;
+}
+.lifegame-stat-val {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--c-text);
+}
+.lifegame-stat-lbl {
+  font-size: 10px;
+  color: var(--c-sub);
+}
+
+/* ====================================================
+   7. 心动商城 (原版极简风)
+   ==================================================== */
+.mall-assets-bar {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mall-asset-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--c-text);
+}
+.mall-asset-item i {
+  color: var(--c-sub);
+}
+
+.mall-shelf-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.mall-good-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mall-good-visual {
+  height: 64px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+}
+.mall-good-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.mall-good-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.mall-price {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.mall-btn-buy {
+  background: var(--c-accent, #1d1d1f);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--dur) var(--ease);
+}
+.mall-btn-buy:active {
+  opacity: 0.7;
+}
+
+/* ====================================================
+   8. 同好社区 (原版极简风)
+   ==================================================== */
+.community-post-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.community-author-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.community-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--c-border);
+}
+.community-author-info {
+  flex: 1;
+}
+.community-author-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.community-post-time {
+  font-size: 11px;
+  color: var(--c-sub);
+}
+.community-post-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--c-text);
+}
+.community-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--c-sub);
+  font-size: 12px;
+  padding-top: 6px;
+  border-top: 1px solid var(--c-border);
+}
+.community-act-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.community-act-btn.liked {
+  color: var(--c-accent, var(--c-text));
+}
+
+/* ====================================================
+   9. 心动直播 (原版极简风)
+   ==================================================== */
+.live-player-preview {
+  position: relative;
+  height: 190px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px;
+  color: var(--c-text);
+}
+.live-top-indicators {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.live-badge-pulsing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.live-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-accent, var(--c-text));
+  animation: livePulse 1.2s infinite;
+}
+@keyframes livePulse {
+  0% { transform: scale(0.9); opacity: 0.6; }
+  50% { transform: scale(1.4); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.6; }
+}
+
+.live-barrage-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 85%;
+}
+.live-barrage-bubble {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  box-shadow: var(--shadow-sm);
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  color: var(--c-text);
+  align-self: flex-start;
+}
