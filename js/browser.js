@@ -49,7 +49,8 @@
       readerFontSize: 16,
       readerTheme: 'light', // 'light' | 'sepia' | 'night'
       companionCharId: null,
-      allowSendWebpageToAi: true
+      allowSendWebpageToAi: true,
+      showRestrictedFloatingBadge: true
     },
     bookmarks: [],
     history: [],
@@ -1097,11 +1098,20 @@
 
     viewport.appendChild(iframe);
 
-    // 浮动降级助手条
+    // 错误监听：真正发生加载失败时显示错误说明
+    iframe.onerror = function() {
+      clearTimeout(timer);
+      finishLoading(container);
+      showFallbackCard(container, viewport, tab);
+    };
+
+    // 浮动降级助手条（支持根据用户设置保持显示或隐藏）
+    var showBadge = _state.settings.showRestrictedFloatingBadge !== false;
     var helpBtn = document.createElement('button');
     helpBtn.type = 'button';
-    helpBtn.className = 'wb-banner-btn';
-    helpBtn.style.cssText = 'position:absolute;bottom:12px;right:12px;z-index:25;background:rgba(0,0,0,0.75);color:#fff;border-color:rgba(255,255,255,0.25);padding:5px 12px;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+    helpBtn.className = 'wb-banner-btn wb-restricted-pill';
+    helpBtn.id = 'wb-restricted-pill';
+    helpBtn.style.cssText = 'position:absolute;bottom:12px;right:12px;z-index:25;background:rgba(0,0,0,0.75);color:#fff;border-color:rgba(255,255,255,0.25);padding:5px 12px;box-shadow:0 2px 8px rgba(0,0,0,0.3);' + (showBadge ? '' : 'display:none;');
     helpBtn.innerHTML = '<i class="fa-solid fa-circle-question"></i> ' + (isRestricted ? '该网站可能受限' : '页面加载异常？');
     helpBtn.onclick = function() {
       showFallbackCard(container, viewport, tab);
@@ -1117,7 +1127,8 @@
     var card = document.createElement('div');
     card.className = 'wb-fallback-card';
     card.innerHTML =
-      '<div class="wb-fallback-box">' +
+      '<div class="wb-fallback-box" style="position:relative;">' +
+        '<button type="button" class="wb-drawer-close" id="wb-fb-close" style="position:absolute;top:10px;right:12px;background:none;border:none;font-size:16px;color:var(--c-sub);cursor:pointer;" title="关闭说明"><i class="fa-solid fa-xmark"></i></button>' +
         '<div class="wb-fallback-icon"><i class="fa-solid fa-shield-cat"></i></div>' +
         '<div class="wb-fallback-title">跨域保护与安全沙盒说明</div>' +
         '<div class="wb-fallback-desc">' +
@@ -1127,6 +1138,9 @@
         '<div class="wb-fallback-actions">' +
           '<button type="button" class="pl-btn-primary" id="wb-fb-external">' +
             '<i class="fa-solid fa-arrow-up-right-from-square"></i> 在外部新窗口打开' +
+          '</button>' +
+          '<button type="button" class="pl-btn-secondary" id="wb-fb-hide-pill">' +
+            '<i class="fa-solid fa-eye-slash"></i> 隐藏右下角『该网站可能受限』提示' +
           '</button>' +
           '<button type="button" class="pl-btn-secondary" id="wb-fb-reader">' +
             '<i class="fa-solid fa-book-open"></i> 切换伴读阅读模式' +
@@ -1147,6 +1161,27 @@
       window.open(tab.url, '_blank');
       card.remove();
     };
+    card.querySelector('#wb-fb-hide-pill').onclick = function() {
+      // 1. 本地设置持久化
+      _state.settings.showRestrictedFloatingBadge = false;
+      saveStorage(STORAGE_KEYS.SETTINGS, _state.settings);
+
+      // 2. 立即隐藏右下角黑色浮动提示
+      var helpBtn = viewport.querySelector('#wb-restricted-pill, .wb-restricted-pill');
+      if (helpBtn) {
+        helpBtn.style.display = 'none';
+      }
+
+      // 3. 关闭说明页面，不关闭当前网页、不刷新、不改变网址、不影响导航
+      card.remove();
+      window.toast && window.toast('已隐藏右下角提示，可在「更多 → 设置」中重新开启');
+    };
+    var closeBtn = card.querySelector('#wb-fb-close');
+    if (closeBtn) {
+      closeBtn.onclick = function() {
+        card.remove();
+      };
+    }
     card.querySelector('#wb-fb-reader').onclick = function() {
       card.remove();
       toggleReaderMode(container);
@@ -2347,6 +2382,124 @@
   }
 
   // ====================================================
+  // 6.5 浏览器设置面板 (包含网站受限提示开关、搜索引擎等)
+  // ====================================================
+  function openBrowserSettingsDrawer(container) {
+    var root = container.querySelector('#wb-drawer-root');
+    if (!root) return;
+
+    var showBadge = _state.settings.showRestrictedFloatingBadge !== false;
+    var curEngine = SEARCH_ENGINES[_state.settings.searchEngine] || SEARCH_ENGINES.bing;
+
+    root.innerHTML =
+      '<div class="wb-drawer-overlay" id="wb-settings-mask">' +
+        '<div class="wb-drawer-panel" style="height:auto;max-height:85%;">' +
+          '<div class="wb-drawer-header">' +
+            '<div style="display:flex;align-items:center;gap:8px;">' +
+              '<button type="button" class="wb-drawer-close" id="wb-settings-back" title="返回选项菜单" style="font-size:13px;width:auto;height:auto;padding:2px 6px;"><i class="fa-solid fa-angle-left"></i></button>' +
+              '<span style="font-size:14px;font-weight:600;color:var(--c-text);">设置</span>' +
+            '</div>' +
+            '<button type="button" class="wb-drawer-close" id="wb-settings-close"><i class="fa-solid fa-xmark"></i></button>' +
+          '</div>' +
+          '<div class="wb-drawer-body" style="padding:16px;gap:8px;max-height:520px;overflow-y:auto;">' +
+            // 核心功能：显示网站受限浮动提示开关
+            '<div class="wb-setting-row">' +
+              '<div class="wb-setting-info">' +
+                '<div class="wb-setting-title">显示网站受限浮动提示</div>' +
+                '<div class="wb-setting-desc">访问受跨域或沙盒保护的网页时，在右下角显示黑色浮动提示按钮</div>' +
+              '</div>' +
+              '<label class="wb-switch">' +
+                '<input type="checkbox" id="wb-set-restricted-badge"' + (showBadge ? ' checked' : '') + '>' +
+                '<span class="wb-switch-slider"></span>' +
+              '</label>' +
+            '</div>' +
+            // 搜索引擎快捷配置
+            '<div class="wb-setting-row" id="wb-set-row-engine" style="cursor:pointer;">' +
+              '<div class="wb-setting-info">' +
+                '<div class="wb-setting-title">默认搜索引擎</div>' +
+                '<div class="wb-setting-desc">当前：' + esc(curEngine.name) + '</div>' +
+              '</div>' +
+              '<i class="fa-solid fa-angle-right" style="color:var(--c-sub);"></i>' +
+            '</div>' +
+            // 伴读授权开关
+            '<div class="wb-setting-row">' +
+              '<div class="wb-setting-info">' +
+                '<div class="wb-setting-title">允许伴读分析网页内容</div>' +
+                '<div class="wb-setting-desc">开启后伴读角色可提取网页要点并互动讨论</div>' +
+              '</div>' +
+              '<label class="wb-switch">' +
+                '<input type="checkbox" id="wb-set-auth-ai"' + (_state.settings.allowSendWebpageToAi ? ' checked' : '') + '>' +
+                '<span class="wb-switch-slider"></span>' +
+              '</label>' +
+            '</div>' +
+            // 隐私无痕模式
+            '<div class="wb-setting-row">' +
+              '<div class="wb-setting-info">' +
+                '<div class="wb-setting-title">无痕隐私浏览模式</div>' +
+                '<div class="wb-setting-desc">不记录浏览历史、搜索记录和表单数据</div>' +
+              '</div>' +
+              '<label class="wb-switch">' +
+                '<input type="checkbox" id="wb-set-inprivate"' + (_state.settings.isInPrivate ? ' checked' : '') + '>' +
+                '<span class="wb-switch-slider"></span>' +
+              '</label>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    root.querySelector('#wb-settings-mask').onclick = function(e) {
+      if (e.target.id === 'wb-settings-mask') closeDrawer(container);
+    };
+    root.querySelector('#wb-settings-close').onclick = function() {
+      closeDrawer(container);
+    };
+    var backBtn = root.querySelector('#wb-settings-back');
+    if (backBtn) {
+      backBtn.onclick = function() {
+        closeDrawer(container);
+        openMoreOptionsMenu(container);
+      };
+    }
+
+    // 核心切换逻辑：随时重新开启或关闭
+    root.querySelector('#wb-set-restricted-badge').onchange = function() {
+      var isChecked = this.checked;
+      _state.settings.showRestrictedFloatingBadge = isChecked;
+      saveStorage(STORAGE_KEYS.SETTINGS, _state.settings);
+
+      // 实时生效：更新当前视口内浮动按钮显示状态
+      var pills = container.querySelectorAll('#wb-restricted-pill, .wb-restricted-pill');
+      pills.forEach(function(pill) {
+        pill.style.display = isChecked ? 'block' : 'none';
+      });
+
+      window.toast && window.toast(isChecked ? '已开启网站受限浮动提示' : '已隐藏网站受限浮动提示');
+    };
+
+    root.querySelector('#wb-set-row-engine').onclick = function() {
+      closeDrawer(container);
+      openEngineSelector(container);
+    };
+
+    var authAiCheck = root.querySelector('#wb-set-auth-ai');
+    if (authAiCheck) {
+      authAiCheck.onchange = function() {
+        _state.settings.allowSendWebpageToAi = authAiCheck.checked;
+        saveStorage(STORAGE_KEYS.SETTINGS, _state.settings);
+        var sbAuth = container.querySelector('#wb-auth-web-content');
+        if (sbAuth) sbAuth.checked = authAiCheck.checked;
+      };
+    }
+
+    var inPrivateCheck = root.querySelector('#wb-set-inprivate');
+    if (inPrivateCheck) {
+      inPrivateCheck.onchange = function() {
+        toggleInPrivateMode(container);
+      };
+    }
+  }
+
+  // ====================================================
   // 7. 更多选项菜单 (恢复关闭标签/全屏/无痕/安卓评估)
   // ====================================================
   function openMoreOptionsMenu(container) {
@@ -2376,6 +2529,9 @@
               }).join('') +
               '</div>'
             ) : '') +
+            '<button type="button" class="pl-btn-secondary" id="wb-menu-settings">' +
+              '<i class="fa-solid fa-gear"></i> 设置' +
+            '</button>' +
             '<button type="button" class="pl-btn-secondary" id="wb-menu-restore"' + (hasClosed ? '' : ' disabled style="opacity:0.4;cursor:not-allowed;"') + '>' +
               '<i class="fa-solid fa-rotate-left"></i> 恢复关闭的标签页 ' + (hasClosed ? ('(' + esc(lastClosedTitle) + ')') : '(无)') +
             '</button>' +
@@ -2425,6 +2581,14 @@
         }
       };
     });
+
+    var settingsBtn = root.querySelector('#wb-menu-settings');
+    if (settingsBtn) {
+      settingsBtn.onclick = function() {
+        closeDrawer(container);
+        openBrowserSettingsDrawer(container);
+      };
+    }
 
     var restoreBtn = root.querySelector('#wb-menu-restore');
     if (restoreBtn && hasClosed) {
