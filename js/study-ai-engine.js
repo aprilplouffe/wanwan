@@ -8,7 +8,8 @@
   var STORAGE_KEYS = {
     DOCUMENTS: 'wanwan_study_documents_v2',
     SEARCH_INDEX: 'wanwan_study_search_index_v2',
-    AI_CACHE: 'wanwan_study_ai_cache_v2'
+    AI_CACHE: 'wanwan_study_ai_cache_v2',
+    PROMPT_PROFILES: 'wanwan_study_prompt_profiles'
   };
 
   // 工具函数：转义HTML
@@ -630,6 +631,117 @@
   };
 
   // ====================================================
+
+  // ====================================================
+  // AI 提示词管理中心 (P0 核心数据管理器)
+  // 遵循《自习室 AI 提示词管理中心完整规划 V1.0》规范
+  // 1. 专业学习助手与 Char 自习室附加规则分开存储
+  // 2. Char 附加规则按 charId 严格隔离保存，修改互不影响
+  // 3. 系统默认模板只读隔离，用户修改另存，应用升级绝不覆盖
+  // 4. 原有角色档案、世界书、关系与记忆保持只读，绝不污染
+  // ====================================================
+
+  var DEFAULT_STUDY_ASSISTANT_PROMPT = "你是「弯弯小手机 · 陪伴自习室」内置的专业 AI 学习助手，是一位严谨、耐心、善于启发思考的私人学习导师。你不是恋爱角色 Char。\n\n【教学目标】\n帮助用户理解知识、建立体系、解决问题、巩固记忆并逐步独立学习。根据课程、章节、学习目标与用户水平调整难度。\n\n【回答规则】\n1. 优先直接回答核心问题，再解释原理、关键步骤与例子。\n2. 简单问题简洁回答；复杂问题分步骤讲解。\n3. 不确定时明确说明，不编造教材原文、公式、答案、章节或引用。\n4. 不假装已读取未提供的资料，也不假装已保存记录或调用工具。\n5. 对数学、理科、编程题展示必要推导并检查结果。\n6. 用户希望练习时可先给提示；明确要求完整答案时可以给出完整解答。\n\n【教材与 RAG】\n1. 优先依据本次实际提供的资料片段作答。\n2. 只标注真实存在的来源、章节、页码或片段编号。\n3. 资料不足时说明缺口，不把模型通用知识冒充教材内容。\n4. 用户要求仅依据资料时，不自行扩展。\n5. 只有允许通用知识补充时才补充，并明确区分来源。\n6. 资料与通用知识不一致时指出差异，不偷偷改写资料。\n\n【学习任务】\n- 知识讲解：概念、原理、例子、易错点。\n- 资料总结：按实际提供的范围提炼提纲、重点、难点。\n- 智能出题：根据指定范围、题型、难度生成题目；练习时默认不提前展示答案。\n- 智能批改：依据答案与评分要点分析；主观题评分仅作参考。\n- 错题辅导：定位错误、讲解知识点、给出同类巩固题。\n- 模拟考试：遵守用户选择的时长、范围、答案展示规则。\n- 学习计划：按目标、时间、进度拆分合理任务；不得假装已写入日历或任务系统。\n\n【互动风格】\n温和、清楚、专业，不羞辱、不敷衍、不机械夸奖。尊重用户的学习节奏；发现错误主动纠正。\n\n【Char 与隐私边界】\n你不扮演 Char，不继承 Char 的恋爱关系与私密记忆。你可为 Char 提供准确的知识依据，但 Char 的个性表达不得改变答案和来源。学习资料默认私有，不自动发布社区，不自动写入 Char 长期记忆。\n\n目标：帮助用户真正学会，而不只是得到答案。";
+
+  var DEFAULT_STUDY_CHAR_OVERLAY_PROMPT = "你正处于「弯弯小手机 · 陪伴自习室」场景。\n\n【身份】\n你仍然是当前选中的 Char。保留原有角色档案、性格、称呼、关系、语言习惯和世界书设定。自习室附加规则只改变学习场景下的互动方式，不得覆盖、改写或重置原有人设。\n\n【陪伴】\n你的任务是陪伴用户专注、在合适时机鼓励，并在用户允许时进行答疑、抽查与讲解。表达方式应符合你的个性，不机械重复模板。\n\n【模式】\n- 安静陪伴：专注期间不主动打扰，用户主动询问时回答。\n- 温柔鼓励：专注期间保持安静，休息时适度关心。\n- 互动学习：按应用安排的时机和用户设置进行提问、抽查、答疑。\n\n计时、消息触发和频率由应用程序控制。不要自行绕过静默限制，也不要假装已完成计时或任务。\n\n【知识准确性】\n应用提供资料或专业学习助手的知识依据时，你可以用自己的人设风格讲解，但不得篡改公式、答案、事实结论或来源。资料不足时诚实说明。\n\n【数据边界】\n学习资料不自动写入长期记忆；不把平行来信 IF 世界当作主线事实；不擅自修改角色档案、世界书、关系或成绩。\n\n【表达】\n保留原有情感与个性，同时尊重用户的学习目标和专注状态。";
+
+  var StudyPromptManager = {
+    DEFAULT_ASSISTANT_PROMPT: DEFAULT_STUDY_ASSISTANT_PROMPT,
+    DEFAULT_CHAR_OVERLAY_PROMPT: DEFAULT_STUDY_CHAR_OVERLAY_PROMPT,
+
+    getStorageKey: function(scope, charId) {
+      if (scope === 'study_assistant') {
+        return 'study_assistant';
+      }
+      return 'study_char_overlay_' + (charId || 'char_default');
+    },
+
+    getAllProfiles: async function() {
+      var map = await loadStorage(STORAGE_KEYS.PROMPT_PROFILES, null);
+      if (map && typeof map === 'object' && !Array.isArray(map)) {
+        return map;
+      }
+      return {};
+    },
+
+    getPromptProfile: async function(scope, charId, charName) {
+      var key = this.getStorageKey(scope, charId);
+      var all = await this.getAllProfiles();
+      var found = all[key];
+
+      if (found && found.content !== undefined && found.isCustom) {
+        return {
+          id: found.id || ('profile_' + key),
+          scope: scope,
+          charId: scope === 'study_char_overlay' ? (charId || 'char_default') : null,
+          name: found.name || (scope === 'study_assistant' ? '专业学习助手' : ((charName || '当前角色') + ' 自习室附加规则')),
+          content: String(found.content),
+          baseTemplateId: scope === 'study_assistant' ? 'study-assistant-default' : 'study-char-overlay-default',
+          version: found.version || 1,
+          updatedAt: found.updatedAt || '已修改保存',
+          isCustom: true,
+          schemaVersion: 1
+        };
+      }
+
+      // 默认系统内置模板
+      return {
+        id: 'profile_' + key + '_default',
+        scope: scope,
+        charId: scope === 'study_char_overlay' ? (charId || 'char_default') : null,
+        name: scope === 'study_assistant' ? '专业学习助手' : ((charName || '当前角色') + ' 自习室附加规则'),
+        content: scope === 'study_assistant' ? DEFAULT_STUDY_ASSISTANT_PROMPT : DEFAULT_STUDY_CHAR_OVERLAY_PROMPT,
+        baseTemplateId: scope === 'study_assistant' ? 'study-assistant-default' : 'study-char-overlay-default',
+        version: 1,
+        updatedAt: '系统内置默认模板',
+        isCustom: false,
+        schemaVersion: 1
+      };
+    },
+
+    savePromptProfile: async function(scope, charId, content, charName) {
+      var text = (content !== undefined && content !== null) ? String(content).trim() : '';
+      if (!text) {
+        throw new Error('提示词内容不能为空');
+      }
+      if (text.length > 10000) {
+        throw new Error('提示词内容过长（已达 ' + text.length + ' 字，上限 10000 字）');
+      }
+
+      var key = this.getStorageKey(scope, charId);
+      var all = await this.getAllProfiles();
+      var prev = all[key];
+      var nextVersion = (prev && prev.version) ? (prev.version + 1) : 1;
+
+      var profile = {
+        id: 'profile_' + key + '_' + Date.now().toString(36),
+        scope: scope,
+        charId: scope === 'study_char_overlay' ? (charId || 'char_default') : null,
+        name: scope === 'study_assistant' ? '专业学习助手' : ((charName || '当前角色') + ' 自习室附加规则'),
+        content: text,
+        baseTemplateId: scope === 'study_assistant' ? 'study-assistant-default' : 'study-char-overlay-default',
+        version: nextVersion,
+        updatedAt: new Date().toISOString(),
+        isCustom: true,
+        schemaVersion: 1
+      };
+
+      all[key] = profile;
+      await saveStorage(STORAGE_KEYS.PROMPT_PROFILES, all);
+      return profile;
+    },
+
+    resetPromptProfile: async function(scope, charId, charName) {
+      var key = this.getStorageKey(scope, charId);
+      var all = await this.getAllProfiles();
+      if (all[key]) {
+        delete all[key];
+        await saveStorage(STORAGE_KEYS.PROMPT_PROFILES, all);
+      }
+      return this.getPromptProfile(scope, charId, charName);
+    }
+  };
+
   // 3. 共享学习引擎 (StudyAIEngine)
   // 支持专业助手模式与 Char 人设化模式，严格共享证据并保留来源
   // 支持追问、来源定位、页码与章节引用
@@ -696,7 +808,7 @@
       var cfg = await this.getAiConfig();
 
       if (cfg && cfg.url && cfg.key) {
-        answer = await this.callCloudAi(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory);
+        answer = await this.callCloudAi(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory, docFilter, chapterFilter);
       } else {
         answer = this.synthesizeLocalAnswer(query, mode, companionChar, searchRes.chunks, isFallback);
       }
@@ -728,22 +840,48 @@
     },
 
     // 云端请求（严格携带人设/专业系统指令，控制上下文预算）
-    callCloudAi: async function(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory) {
+    callCloudAi: async function(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory, docFilter, chapterFilter) {
       var systemPrompt = '';
       if (mode === 'professional') {
-        systemPrompt =
-          '你是一位严谨高学术素养的大学教授与专业考研辅导导师。\n' +
-          '回答要求：逻辑严密、分条归纳、概念清晰。必须严格基于提供的【参考教材片段】回答，并在每处引用后标注 [来源: 《文档名》第X章/第X页]。\n' +
-          (isFallback ? '当前为模型通识补充模式，请明确在开头声明【模型通识补充 · 非教材直接引用】。' : '');
+        // 读取专业学习助手当前提示词（自定义或系统内置默认）
+        var assistantProfile = await StudyPromptManager.getPromptProfile('study_assistant');
+        systemPrompt = assistantProfile.content;
+
+        // 动态自习室上下文注入（V1.0 规范第 9 节）
+        systemPrompt +=
+          '\n\n【动态自习室上下文】' +
+          '\n学习模式：专业辅导答疑' +
+          '\n资料使用范围：' + (docFilter ? '指定教材' : '全部教材资料库') +
+          (chapterFilter ? ('\n指定章节：' + chapterFilter) : '') +
+          '\n是否允许通用知识补充：' + (isFallback ? '是' : '否') +
+          (isFallback ? '\n当前为模型通识补充模式，请明确在开头声明【模型通识补充 · 非教材直接引用】。\n' : '\n');
       } else {
-        systemPrompt =
-          '你是用户的专属伴侣兼自习搭子【' + companionChar.name + '】。\n' +
-          '你的人物性格与人设：' + companionChar.personality + '。\n' +
-          '回答要求：\n' +
-          '1. 保持亲切、体贴、温柔的同桌语气，把知识点深入浅出地讲给用户听，不枯燥不生硬。\n' +
-          '2. 严守证据：讲解的内容必须严格基于【参考教材片段】，同时附带 [来源: 《文档名》第X章/第X页]。\n' +
-          '3. 坚决不要将教材全文存入你的长期记忆。\n' +
-          (isFallback ? '当前为模型通识补充模式，请自然温和地说明“书上没直接写这个呢，不过按我的了解可以这样理解哦～”' : '');
+        // 读取当前 Char 专属自习室附加规则（按 charId 严格独立隔离）
+        var cid = companionChar ? companionChar.id : 'char_default';
+        var charProfile = await StudyPromptManager.getPromptProfile('study_char_overlay', cid, companionChar ? companionChar.name : '');
+
+        // 严格遵循第 4 节系统边界：原有人设只读，绝不覆盖或篡改
+        var originalPersona =
+          '【原有人设档案（只读，不得覆盖或改写）】\n' +
+          '角色名称：' + companionChar.name + '\n' +
+          '性格特征：' + (companionChar.personality || '温柔体贴') + '\n' +
+          (companionChar.lorebook ? ('设定背景：' + companionChar.lorebook + '\n') : '');
+
+        var overlayRules =
+          '\n【自习室附加规则】\n' +
+          charProfile.content;
+
+        var studyMode = (window.WanwanStudyRoom && window.WanwanStudyRoom.getState) ? window.WanwanStudyRoom.getState().studyMode : 'gentle';
+        var dynamicContext =
+          '\n\n【当前自习室动态上下文】' +
+          '\n当前陪伴模式：' + studyMode +
+          '\n当前 Char ID：' + (companionChar.id || 'char_default') +
+          '\n资料使用范围：' + (docFilter ? '指定教材' : '全部教材资料库') +
+          (chapterFilter ? ('\n指定章节：' + chapterFilter) : '') +
+          '\n是否允许通用知识补充：' + (isFallback ? '是' : '否') +
+          (isFallback ? '\n当前为模型通识补充模式，请自然温和地说明“书上没直接写这个呢，不过按我的了解可以这样理解哦～”\n' : '\n');
+
+        systemPrompt = originalPersona + overlayRules + dynamicContext;
       }
 
       var userMsg =
@@ -985,6 +1123,7 @@
   window.StudyDocParser = StudyDocParser;
   window.StudySearchIndex = StudySearchIndex;
   window.StudyAIEngine = StudyAIEngine;
+  window.StudyPromptManager = StudyPromptManager;
 
   // 页面加载即刻初始化检索索引
   StudySearchIndex.init();
