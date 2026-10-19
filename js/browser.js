@@ -369,7 +369,7 @@
           '</button>' +
         '</div>' +
 
-        // 2. 导航控制器与地址栏
+        // 2. 主导航栏 (手机竖屏解构为：后退 + 前进 + 可伸缩地址栏 + 刷新)
         '<div class="wb-nav-bar">' +
           '<button type="button" class="wb-nav-action-btn" id="wb-btn-back" title="后退">' +
             '<i class="fa-solid fa-arrow-left"></i>' +
@@ -377,14 +377,8 @@
           '<button type="button" class="wb-nav-action-btn" id="wb-btn-forward" title="前进">' +
             '<i class="fa-solid fa-arrow-right"></i>' +
           '</button>' +
-          '<button type="button" class="wb-nav-action-btn" id="wb-btn-reload" title="刷新">' +
-            '<i class="fa-solid fa-rotate-right"></i>' +
-          '</button>' +
-          '<button type="button" class="wb-nav-action-btn" id="wb-btn-home" title="主页">' +
-            '<i class="fa-solid fa-house"></i>' +
-          '</button>' +
 
-          // 核心地址栏 Omnibox
+          // 核心可伸缩地址栏 Omnibox
           '<div class="wb-omnibox">' +
             '<div class="wb-engine-badge" id="wb-engine-switch" title="点击切换搜索引擎">' +
               '<i class="' + (SEARCH_ENGINES[_state.settings.searchEngine] || SEARCH_ENGINES.bing).icon + '"></i>' +
@@ -395,7 +389,7 @@
             '<button type="button" class="wb-omni-btn" id="wb-clear-btn" style="display:none;" title="清空">' +
               '<i class="fa-solid fa-xmark"></i>' +
             '</button>' +
-            '<button type="button" class="wb-omni-btn" id="wb-star-btn" title="添加/取消收藏">' +
+            '<button type="button" class="wb-omni-btn wb-desktop-only" id="wb-star-btn" title="添加/取消收藏">' +
               '<i class="fa-regular fa-star"></i>' +
             '</button>' +
             '<button type="button" class="wb-omni-btn" id="wb-go-btn" title="前往">' +
@@ -403,18 +397,26 @@
             '</button>' +
           '</div>' +
 
-          // 右侧快捷功能按键：伴读、书签历史、全屏、关闭
-          '<button type="button" class="wb-nav-action-btn" id="wb-btn-companion" title="Char 伴读助手">' +
+          // 刷新按钮 (紧随地址栏右侧)
+          '<button type="button" class="wb-nav-action-btn" id="wb-btn-reload" title="刷新">' +
+            '<i class="fa-solid fa-rotate-right"></i>' +
+          '</button>' +
+
+          // 宽屏/桌面专属按键（手机版收纳至底部快捷栏或菜单）
+          '<button type="button" class="wb-nav-action-btn wb-desktop-only" id="wb-btn-home" title="主页">' +
+            '<i class="fa-solid fa-house"></i>' +
+          '</button>' +
+          '<button type="button" class="wb-nav-action-btn wb-desktop-only" id="wb-btn-companion" title="Char 伴读助手">' +
             '<i class="fa-solid fa-wand-magic-sparkles"></i>' +
             '<span class="wb-companion-dot" style="display:' + (_state.isCharSidebarOpen ? 'block' : 'none') + '"></span>' +
           '</button>' +
-          '<button type="button" class="wb-nav-action-btn" id="wb-btn-bookmarks" title="收藏夹、历史与下载">' +
+          '<button type="button" class="wb-nav-action-btn wb-desktop-only" id="wb-btn-bookmarks" title="收藏夹、历史与下载">' +
             '<i class="fa-solid fa-clock-rotate-left"></i>' +
           '</button>' +
-          '<button type="button" class="wb-nav-action-btn" id="wb-btn-fullscreen" title="小手机内部全屏">' +
+          '<button type="button" class="wb-nav-action-btn wb-desktop-only" id="wb-btn-fullscreen" title="小手机内部全屏">' +
             '<i class="fa-solid fa-expand"></i>' +
           '</button>' +
-          '<button type="button" class="wb-nav-action-btn" id="wb-btn-close-app" title="返回桌面">' +
+          '<button type="button" class="wb-nav-action-btn wb-desktop-only" id="wb-btn-close-app" title="返回桌面">' +
             '<i class="fa-solid fa-xmark"></i>' +
           '</button>' +
         '</div>' +
@@ -444,6 +446,35 @@
         '<div class="wb-char-backdrop" id="wb-char-backdrop"></div>' +
         // Char 伴读侧边栏 (P1 核心增强)
         '<div class="wb-char-sidebar collapsed" id="wb-char-sidebar"></div>' +
+      '</div>' +
+
+      // 3. 手机版底部快捷操作栏 (第三层快捷栏)
+      '<div class="wb-bottom-bar" id="wb-bottom-bar">' +
+        '<button type="button" class="wb-bottom-action-btn" id="wb-bottom-home" title="主页">' +
+          '<i class="fa-solid fa-house"></i>' +
+          '<span>主页</span>' +
+        '</button>' +
+        '<button type="button" class="wb-bottom-action-btn" id="wb-bottom-companion" title="Char 伴读助手">' +
+          '<i class="fa-solid fa-wand-magic-sparkles"></i>' +
+          '<span class="wb-companion-dot" style="display:' + (_state.isCharSidebarOpen ? 'block' : 'none') + '"></span>' +
+          '<span>伴读</span>' +
+        '</button>' +
+        '<button type="button" class="wb-bottom-action-btn" id="wb-bottom-bookmarks" title="收藏与历史">' +
+          '<i class="fa-solid fa-clock-rotate-left"></i>' +
+          '<span>收藏</span>' +
+        '</button>' +
+        '<button type="button" class="wb-bottom-action-btn" id="wb-bottom-fullscreen" title="小手机全屏">' +
+          '<i class="fa-solid fa-expand"></i>' +
+          '<span>全屏</span>' +
+        '</button>' +
+        '<button type="button" class="wb-bottom-action-btn" id="wb-bottom-more" title="更多功能">' +
+          '<i class="fa-solid fa-ellipsis"></i>' +
+          '<span>更多</span>' +
+        '</button>' +
+        '<button type="button" class="wb-bottom-action-btn" id="wb-bottom-close-app" title="返回桌面">' +
+          '<i class="fa-solid fa-xmark"></i>' +
+          '<span>桌面</span>' +
+        '</button>' +
       '</div>' +
 
       // 弹窗与选择器根节点
@@ -589,14 +620,50 @@
       toggleInternalFullscreen(container, false);
     };
 
-    // 关闭应用退出到桌面
-    container.querySelector('#wb-btn-close-app').onclick = function() {
+    // 关闭应用退出到桌面 (顶栏与底栏联动)
+    var handleCloseApp = function() {
       if (window.closePage) {
         window.closePage('browser-page');
       } else {
         container.remove();
       }
     };
+    var closeBtn = container.querySelector('#wb-btn-close-app');
+    if (closeBtn) closeBtn.onclick = handleCloseApp;
+    var bottomCloseBtn = container.querySelector('#wb-bottom-close-app');
+    if (bottomCloseBtn) bottomCloseBtn.onclick = handleCloseApp;
+
+    // 手机底部快捷栏按键事件绑定
+    var bottomHomeBtn = container.querySelector('#wb-bottom-home');
+    if (bottomHomeBtn) {
+      bottomHomeBtn.onclick = function() {
+        navigateTo(container, 'about:home');
+      };
+    }
+    var bottomCompBtn = container.querySelector('#wb-bottom-companion');
+    if (bottomCompBtn) {
+      bottomCompBtn.onclick = function() {
+        toggleCharSidebar(container);
+      };
+    }
+    var bottomBmsBtn = container.querySelector('#wb-bottom-bookmarks');
+    if (bottomBmsBtn) {
+      bottomBmsBtn.onclick = function() {
+        openDrawer(container, 'bookmarks');
+      };
+    }
+    var bottomFsBtn = container.querySelector('#wb-bottom-fullscreen');
+    if (bottomFsBtn) {
+      bottomFsBtn.onclick = function() {
+        toggleInternalFullscreen(container);
+      };
+    }
+    var bottomMoreBtn = container.querySelector('#wb-bottom-more');
+    if (bottomMoreBtn) {
+      bottomMoreBtn.onclick = function() {
+        openMoreOptionsMenu(container);
+      };
+    }
 
     // 顶部受限条动作
     container.querySelector('#wb-banner-external').onclick = function() {
@@ -1109,12 +1176,13 @@
     var wrap = container.querySelector('#wb-body-wrap') || container;
     var w = wrap.clientWidth || container.clientWidth || window.innerWidth;
     var h = wrap.clientHeight || container.clientHeight || window.innerHeight;
-    var isDrawer = w <= 680 || (h > w && w <= 768);
-    container.classList.toggle('wb-mode-drawer', isDrawer);
-    container.classList.toggle('wb-mode-split', !isDrawer);
+    var isMobile = w <= 680 || (h > w && w <= 768);
+    container.classList.toggle('wb-mobile-layout', isMobile);
+    container.classList.toggle('wb-mode-drawer', isMobile);
+    container.classList.toggle('wb-mode-split', !isMobile);
     var backdrop = container.querySelector('#wb-char-backdrop');
     if (backdrop) {
-      backdrop.classList.toggle('visible', isDrawer && _state.isCharSidebarOpen);
+      backdrop.classList.toggle('visible', isMobile && _state.isCharSidebarOpen);
     }
   }
 
@@ -1138,13 +1206,13 @@
       if (backdrop && container.classList.contains('wb-mode-drawer')) {
         backdrop.classList.add('visible');
       }
-      if (dot) dot.style.display = 'block';
+      container.querySelectorAll('.wb-companion-dot').forEach(function(d) { d.style.display = 'block'; });
       updateCharSidebarContent(container);
       window.toast && window.toast((_state.companionChar ? _state.companionChar.name : '伴侣') + ' 已开启贴身伴读');
     } else {
       sidebar.classList.add('collapsed');
       if (backdrop) backdrop.classList.remove('visible');
-      if (dot) dot.style.display = 'none';
+      container.querySelectorAll('.wb-companion-dot').forEach(function(d) { d.style.display = 'none'; });
     }
   }
 
@@ -2296,6 +2364,18 @@
             '<button type="button" class="wb-drawer-close" id="wb-more-close"><i class="fa-solid fa-xmark"></i></button>' +
           '</div>' +
           '<div class="wb-drawer-body" style="padding:16px;gap:8px;">' +
+            (_state.tabs.length > 1 ? (
+              '<div style="font-size:11px;font-weight:600;color:var(--c-sub);margin:2px 0;">已打开的标签页 (' + _state.tabs.length + ')</div>' +
+              '<div style="display:flex;flex-direction:column;gap:5px;max-height:140px;overflow-y:auto;margin-bottom:6px;">' +
+              _state.tabs.map(function(t) {
+                var isCur = t.id === _state.activeTabId;
+                return '<button type="button" class="pl-btn-secondary wb-menu-tab-btn" data-tid="' + t.id + '" style="justify-content:space-between;padding:7px 10px;font-size:11px;' + (isCur ? 'border-color:var(--c-text);font-weight:600;' : '') + '">' +
+                  '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px;">' + (isCur ? '● ' : '') + esc(t.title || '新标签页') + '</span>' +
+                  '<span style="font-size:9px;color:var(--c-hint);">' + (isCur ? '当前标签' : '切换') + '</span>' +
+                '</button>';
+              }).join('') +
+              '</div>'
+            ) : '') +
             '<button type="button" class="pl-btn-secondary" id="wb-menu-restore"' + (hasClosed ? '' : ' disabled style="opacity:0.4;cursor:not-allowed;"') + '>' +
               '<i class="fa-solid fa-rotate-left"></i> 恢复关闭的标签页 ' + (hasClosed ? ('(' + esc(lastClosedTitle) + ')') : '(无)') +
             '</button>' +
@@ -2330,6 +2410,21 @@
     root.querySelector('#wb-more-close').onclick = function() {
       closeDrawer(container);
     };
+
+    root.querySelectorAll('.wb-menu-tab-btn').forEach(function(tBtn) {
+      tBtn.onclick = function() {
+        var tid = tBtn.getAttribute('data-tid');
+        closeDrawer(container);
+        if (_state.activeTabId !== tid) {
+          _state.activeTabId = tid;
+          saveTabsState();
+          renderTabsList(container);
+          updateOmniboxAndControls(container);
+          renderActiveTabContent(container);
+          updateCharSidebarContent(container);
+        }
+      };
+    });
 
     var restoreBtn = root.querySelector('#wb-menu-restore');
     if (restoreBtn && hasClosed) {
