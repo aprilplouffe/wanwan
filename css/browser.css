@@ -1,9 +1,20 @@
 /* browser.css — 弯弯浏览器 MVP 核心样式表 (阶段 2 高保真完备版) */
 /* 包含多标签、智能地址栏、伴读侧边栏、无痕模式、内部/设备全屏、阅读模式、受限降级与历史收藏 */
 
+#browser-page,
+#browser-page *,
+#browser-page *::before,
+#browser-page *::after {
+  box-sizing: border-box;
+}
+
 #browser-page {
   position: absolute;
   inset: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 100%;
   background: var(--c-bg);
   color: var(--c-text);
   display: flex;
@@ -50,6 +61,10 @@
 
 /* ===== 顶部主工具栏 ===== */
 .wb-toolbar {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -63,6 +78,10 @@
 
 /* 行 1：多标签栏 (Tab Bar) */
 .wb-tab-bar {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
   padding: 4px 8px 2px;
@@ -85,7 +104,9 @@
 }
 
 .wb-tabs-scroll {
-  flex: 1;
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -98,12 +119,13 @@
 }
 
 .wb-tab {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
   max-width: 140px;
-  min-width: 76px;
+  min-width: 0;
   height: 28px;
   border-radius: 6px 6px 0 0;
   background: transparent;
@@ -194,16 +216,22 @@
 
 /* 行 2：导航控制器与地址栏 (Omnibox) */
 .wb-nav-bar {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
-  padding: 6px 10px;
-  gap: 5px;
+  padding: 5px 8px;
+  gap: 6px;
   background: var(--c-bg);
 }
 
 .wb-nav-action-btn {
-  width: 28px;
-  height: 28px;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -241,16 +269,17 @@
 
 /* 地址栏外框 */
 .wb-omnibox {
-  flex: 1;
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 5px;
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
   border-radius: var(--r-pill);
-  padding: 3px 8px;
+  padding: 2px 8px;
   height: 32px;
-  min-width: 0;
   transition: border-color var(--dur), box-shadow var(--dur);
 }
 .wb-omnibox:focus-within {
@@ -283,13 +312,14 @@
 }
 
 .wb-input {
-  flex: 1;
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-width: 0;
   border: none;
   background: transparent;
   font-size: 12px;
   color: var(--c-text);
   outline: none;
-  min-width: 0;
   font-family: inherit;
 }
 .wb-input::placeholder {
@@ -1438,4 +1468,142 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+/* ===== 行 3：手机版底部快捷操作栏 (第三层快捷栏) ===== */
+.wb-bottom-bar {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 48px;
+  padding: 0 6px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--c-surface-2);
+  border-top: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  z-index: 35;
+}
+
+.wb-bottom-action-btn {
+  flex: 1 1 0;
+  max-width: 70px;
+  min-width: 0;
+  height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: none;
+  background: transparent;
+  color: var(--c-sub);
+  cursor: pointer;
+  font-size: 13px;
+  position: relative;
+  border-radius: 6px;
+  transition: color var(--dur), background var(--dur);
+  user-select: none;
+}
+.wb-bottom-action-btn:active {
+  background: var(--c-surface);
+  color: var(--c-text);
+}
+.wb-bottom-action-btn span {
+  font-size: 9px;
+  line-height: 1;
+  color: inherit;
+}
+.wb-bottom-action-btn .wb-companion-dot {
+  position: absolute;
+  top: 4px;
+  right: calc(50% - 12px);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ec4899;
+}
+
+/* 宽屏 / 横屏模式（双栏模式）：隐藏底部快捷栏，顶栏展示全套完整按键 */
+@media (min-width: 681px) and (orientation: landscape), (min-width: 768px) {
+  .wb-bottom-bar {
+    display: none !important;
+  }
+  .wb-nav-bar .wb-desktop-only {
+    display: inline-flex !important;
+  }
+  .wb-tab:not(.active) {
+    display: inline-flex !important;
+  }
+}
+
+/* 手机竖屏 / 窄屏独立响应式模式：按层级解构布局，彻底杜绝单行挤压重叠 */
+@media (max-width: 680px), (orientation: portrait) {
+  .wb-bottom-bar {
+    display: flex !important;
+  }
+  .wb-nav-bar .wb-desktop-only {
+    display: none !important;
+  }
+  /* 第一层标签栏：仅突出显示当前激活标签，超长自动省略，不挤压新建与更多菜单 */
+  .wb-tab:not(.active) {
+    display: none !important;
+  }
+  .wb-tab.active {
+    flex: 1 1 0 !important;
+    max-width: none !important;
+    min-width: 0 !important;
+  }
+  /* 搜索引擎微标在手机竖屏仅显示图标和微下拉箭头，节省宝贵宽度 */
+  .wb-engine-badge span {
+    display: none !important;
+  }
+  .wb-engine-badge {
+    padding: 2px 4px !important;
+    gap: 2px !important;
+  }
+}
+
+/* 显式通过 .wb-mobile-layout 类名生效，确保不论 CSS 媒体查询还是容器可用宽度判定均 100% 触发 */
+#browser-page.wb-mobile-layout .wb-bottom-bar {
+  display: flex !important;
+}
+#browser-page.wb-mobile-layout .wb-nav-bar .wb-desktop-only {
+  display: none !important;
+}
+#browser-page.wb-mobile-layout .wb-tab:not(.active) {
+  display: none !important;
+}
+#browser-page.wb-mobile-layout .wb-tab.active {
+  flex: 1 1 0 !important;
+  max-width: none !important;
+  min-width: 0 !important;
+}
+#browser-page.wb-mobile-layout .wb-engine-badge span {
+  display: none !important;
+}
+#browser-page.wb-mobile-layout .wb-engine-badge {
+  padding: 2px 4px !important;
+  gap: 2px !important;
+}
+
+/* 全屏模式适配 */
+#browser-page.wb-internal-fullscreen .wb-tab-bar,
+#browser-page.wb-internal-fullscreen .wb-bottom-bar {
+  display: none !important;
+}
+#browser-page.wb-internal-fullscreen .wb-toolbar {
+  padding-top: 0 !important;
+}
+
+/* 隐私模式底部栏暗色主题 */
+#browser-page.wb-inprivate-mode .wb-bottom-bar {
+  background: #181528 !important;
+  border-top-color: rgba(255, 255, 255, 0.12) !important;
+}
+#browser-page.wb-inprivate-mode .wb-bottom-action-btn {
+  color: #a78bfa !important;
 }
