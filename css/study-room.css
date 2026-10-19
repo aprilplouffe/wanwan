@@ -1,0 +1,1135 @@
+/* study-room.css — 陪伴自习室 MVP 核心样式表 (阶段 3 高保真版) */
+/* 包含自习大厅、双人专注舞台、立绘与场景、三种陪伴模式、题库、错题本、报告与设置 */
+
+#study-room-page {
+  position: absolute;
+  inset: 0;
+  background: var(--c-bg);
+  color: var(--c-text);
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+  overflow: hidden;
+  font-family: var(--font, -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Text", sans-serif);
+}
+
+/* 顶部导航与标签栏 */
+.sr-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--c-bg);
+  border-bottom: 1px solid var(--c-border);
+  z-index: 30;
+  padding-top: env(safe-area-inset-top, 10px);
+}
+.sr-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sr-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  transition: background var(--dur);
+}
+.sr-back-btn:hover {
+  background: var(--c-surface-2);
+}
+.sr-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sr-icon-mini {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--c-text);
+}
+.sr-header-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+/* 页面切换横向导航条 */
+.sr-nav-tabs {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.sr-nav-tabs::-webkit-scrollbar {
+  display: none;
+}
+.sr-tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  font-size: 11px;
+  color: var(--c-sub);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all var(--dur) var(--ease);
+}
+.sr-tab-item:hover {
+  color: var(--c-text);
+}
+.sr-tab-item.active {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border-color: var(--c-text);
+  font-weight: 500;
+}
+
+/* 核心滚动内容区域 */
+.sr-content-viewport {
+  flex: 1;
+  position: relative;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ====================================================
+   1. 自习大厅 (Hall)
+   ==================================================== */
+.sr-hall-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.sr-hall-hero {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sr-hall-stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+.sr-stat-card {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 10px 8px;
+  text-align: center;
+}
+.sr-stat-val {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--c-text);
+}
+.sr-stat-lbl {
+  font-size: 10px;
+  color: var(--c-sub);
+  margin-top: 2px;
+}
+
+.sr-enter-duo-btn {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 12px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition: transform var(--dur), opacity var(--dur);
+}
+.sr-enter-duo-btn:active {
+  transform: scale(0.98);
+}
+
+.sr-grid-menu {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.sr-menu-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: transform var(--dur), background var(--dur);
+}
+.sr-menu-card:active {
+  transform: scale(0.96);
+  background: var(--c-surface-2);
+}
+.sr-menu-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: var(--c-text);
+}
+.sr-menu-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-text);
+}
+.sr-menu-desc {
+  font-size: 9px;
+  color: var(--c-sub);
+  text-align: center;
+}
+
+/* 今日待办清单 */
+.sr-todo-box {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sr-todo-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--c-border);
+}
+.sr-todo-item:last-child {
+  border-bottom: none;
+}
+.sr-todo-checkbox {
+  cursor: pointer;
+  color: var(--c-sub);
+}
+.sr-todo-checkbox.checked {
+  color: var(--c-text);
+}
+.sr-todo-text {
+  flex: 1;
+}
+.sr-todo-text.done {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+/* ====================================================
+   2. 双人专注舞台 (Duo Focus Stage)
+   ==================================================== */
+.sr-duo-stage {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background-size: cover;
+  background-position: center;
+  overflow: hidden;
+  user-select: none;
+  min-height: 480px;
+}
+
+/* 场景蒙层与光晕 */
+.sr-stage-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(15, 15, 20, 0.45) 0%, rgba(15, 15, 20, 0.72) 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 顶部浮动工具条：场景切换、立绘微调、全屏 */
+.sr-stage-top-bar {
+  position: relative;
+  z-index: 10;
+  padding: 12px 14px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sr-stage-task-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--r-pill);
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+}
+.sr-stage-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sr-stage-icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* 舞台中央：Char 立绘与专注气泡 */
+.sr-stage-actor-area {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  z-index: 5;
+  padding-bottom: 8px;
+}
+
+/* Char 角色对话气泡 */
+.sr-actor-bubble {
+  position: absolute;
+  top: 10px;
+  max-width: 260px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #222;
+  border-radius: 14px;
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  animation: srBubbleFloat 3s ease-in-out infinite alternate;
+  z-index: 12;
+  text-align: center;
+  backdrop-filter: blur(4px);
+}
+.sr-actor-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 10px;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.92);
+}
+@keyframes srBubbleFloat {
+  from { transform: translateY(0); }
+  to { transform: translateY(-4px); }
+}
+
+/* 立绘外框与交互 */
+.sr-actor-standee-box {
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+  max-height: 250px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.sr-actor-standee-img {
+  max-height: 240px;
+  max-width: 220px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.45));
+  transition: transform 0.2s ease;
+}
+
+/* 下半部分：番茄钟表盘与控制面板 */
+.sr-stage-control-panel {
+  position: relative;
+  z-index: 10;
+  background: rgba(20, 20, 26, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 14px 18px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 三种陪伴模式切换胶囊 */
+.sr-mode-selector-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--r-pill);
+  padding: 3px;
+}
+.sr-mode-opt-btn {
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--dur);
+}
+.sr-mode-opt-btn.active {
+  background: #ffffff;
+  color: #111115;
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* 表盘时间显示 */
+.sr-timer-time-display {
+  font-size: 44px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+.sr-timer-status-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 控制按钮群组 */
+.sr-timer-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 2px;
+}
+.sr-timer-main-btn {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: none;
+  background: #ffffff;
+  color: #111115;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(255, 255, 255, 0.2);
+  transition: transform var(--dur), background var(--dur);
+}
+.sr-timer-main-btn:active {
+  transform: scale(0.92);
+}
+.sr-timer-sub-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.sr-timer-sub-btn:active {
+  transform: scale(0.92);
+}
+
+/* ====================================================
+   3. 资料库 (Resource Library)
+   ==================================================== */
+.sr-lib-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sr-lib-top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sr-lib-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-pill);
+  font-size: 12px;
+}
+.sr-lib-search input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: var(--c-text);
+  font-size: 12px;
+}
+.sr-lib-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  transition: background var(--dur);
+}
+.sr-lib-card:active {
+  background: var(--c-surface-2);
+}
+.sr-lib-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sr-lib-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.sr-lib-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-sub);
+}
+.sr-lib-preview {
+  font-size: 11px;
+  color: var(--c-sub);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ====================================================
+   4. 学习助手 (Study Assistant)
+   ==================================================== */
+.sr-assistant-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  gap: 10px;
+}
+.sr-chat-history-box {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 8px;
+}
+.sr-msg-bubble {
+  max-width: 82%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.sr-msg-char {
+  align-self: flex-start;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  border-bottom-left-radius: 4px;
+}
+.sr-msg-user {
+  align-self: flex-end;
+  background: var(--c-text);
+  color: var(--c-bg);
+  border-bottom-right-radius: 4px;
+}
+.sr-assistant-prompts {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+.sr-prompt-chip {
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  font-size: 11px;
+  color: var(--c-sub);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sr-prompt-chip:active {
+  background: var(--c-surface-2);
+}
+.sr-assistant-input-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-pill);
+  padding: 4px 10px;
+}
+.sr-assistant-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 12px;
+  color: var(--c-text);
+}
+
+/* ====================================================
+   5. 智能题库 (Question Bank)
+   ==================================================== */
+.sr-quiz-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.sr-quiz-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sr-quiz-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--c-sub);
+}
+.sr-quiz-question {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--c-text);
+}
+.sr-quiz-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sr-quiz-opt-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  font-size: 12px;
+  color: var(--c-text);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--dur);
+}
+.sr-quiz-opt-btn:hover {
+  background: var(--c-bg);
+}
+.sr-quiz-opt-btn.correct {
+  background: rgba(34, 197, 94, 0.15) !important;
+  border-color: #22c55e !important;
+  color: #15803d !important;
+  font-weight: 600;
+}
+.sr-quiz-opt-btn.wrong {
+  background: rgba(239, 68, 68, 0.15) !important;
+  border-color: #ef4444 !important;
+  color: #b91c1c !important;
+  font-weight: 600;
+}
+.sr-quiz-explain-box {
+  background: var(--c-surface-2);
+  border-radius: var(--r-sm);
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  border-left: 3px solid var(--c-text);
+}
+
+/* ====================================================
+   6. 错题本 (Mistake Notebook)
+   ==================================================== */
+.sr-mistake-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sr-mistake-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sr-mistake-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--c-sub);
+}
+.sr-mistake-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.sr-mistake-ans-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+}
+.sr-ans-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+/* ====================================================
+   7. 学习报告 (Study Analytics Report)
+   ==================================================== */
+.sr-report-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.sr-report-badge-box {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.sr-badge-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--c-border);
+  background: var(--c-surface-2);
+}
+.sr-report-comment-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.sr-report-comment-body {
+  font-size: 11px;
+  color: var(--c-sub);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+
+/* 7日专注趋势柱状图 */
+.sr-chart-box {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sr-chart-bars-wrap {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  height: 100px;
+  padding-top: 10px;
+}
+.sr-chart-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+.sr-chart-bar {
+  width: 14px;
+  border-radius: 4px 4px 0 0;
+  background: var(--c-text);
+  min-height: 4px;
+  transition: height 0.3s ease;
+}
+.sr-chart-day {
+  font-size: 9px;
+  color: var(--c-sub);
+}
+
+/* 任务类型分布条 */
+.sr-distrib-row {
+  display: flex;
+  align-items: center;
+  height: 10px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  background: var(--c-surface-2);
+}
+
+/* ====================================================
+   8. 设置页面 (Settings)
+   ==================================================== */
+.sr-settings-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.sr-set-group {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.sr-set-group-title {
+  padding: 10px 14px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--c-sub);
+  text-transform: uppercase;
+}
+.sr-set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--c-border);
+  font-size: 12px;
+}
+.sr-set-row:last-child {
+  border-bottom: none;
+}
+.sr-set-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sr-set-row-title {
+  color: var(--c-text);
+  font-weight: 500;
+}
+.sr-set-row-desc {
+  font-size: 10px;
+  color: var(--c-sub);
+}
+.sr-set-select {
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  font-size: 12px;
+  outline: none;
+}
+
+/* 立绘与场景配置弹窗 */
+.sr-modal-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.sr-modal-panel {
+  background: var(--c-bg);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  border-top: 1px solid var(--c-border);
+  padding: 16px;
+  max-height: 80%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sr-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+/* ====================================================
+   阶段 4 学习资料与 AI 引擎专属样式
+   ==================================================== */
+
+/* 资料库文档解析与索引状态微标 */
+.sr-doc-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.sr-doc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-sub);
+}
+.sr-doc-badge.quality-high {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #15803d;
+}
+.sr-doc-badge.quality-ocr {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #b45309;
+}
+
+/* 来源引用标签与卡片 (Citation) */
+.sr-citation-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  color: #2563eb;
+  font-size: 11px;
+  cursor: pointer;
+  margin-top: 6px;
+  transition: all var(--dur);
+}
+.sr-citation-badge:hover {
+  background: rgba(59, 130, 246, 0.18);
+}
+.sr-citation-box {
+  background: var(--c-surface-2);
+  border: 1px dashed var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--c-sub);
+  margin-top: 6px;
+  border-left: 3px solid #3b82f6;
+}
+
+/* 助手模式切换横条 (专业助手 vs Char伴读) */
+.sr-ast-mode-tabs {
+  display: flex;
+  background: var(--c-surface-2);
+  border-radius: var(--r-pill);
+  padding: 2px;
+  border: 1px solid var(--c-border);
+}
+.sr-ast-mode-tab {
+  flex: 1;
+  text-align: center;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: transparent;
+  color: var(--c-sub);
+  cursor: pointer;
+  transition: all var(--dur);
+}
+.sr-ast-mode-tab.active {
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+/* 隐私与传输范围指示器 */
+.sr-scope-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+  font-size: 10px;
+  color: var(--c-sub);
+}
+.sr-scope-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 资料不足说明与通识补充选项卡 */
+.sr-insufficient-card {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #b45309;
+  margin-top: 6px;
+}
+
+/* Char 考官抽查模式舞台 */
+.sr-examiner-stage {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.sr-examiner-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sr-examiner-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--c-border);
+}
+.sr-examiner-speech {
+  flex: 1;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-text);
+  position: relative;
+}
+.sr-examiner-speech::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: -5px;
+  width: 8px;
+  height: 8px;
+  background: var(--c-surface-2);
+  border-top: 1px solid var(--c-border);
+  border-left: 1px solid var(--c-border);
+  transform: rotate(-45deg);
+}
+
+/* 主观题作答与打分反馈 */
+.sr-subjective-input {
+  width: 100%;
+  height: 72px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+}
+.sr-subjective-input:focus {
+  border-color: var(--c-text);
+  background: var(--c-bg);
+}
+.sr-score-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 700;
+  background: #22c55e;
+  color: #fff;
+}
+

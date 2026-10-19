@@ -160,6 +160,9 @@
   // 2. 陪伴自习室
   // ====================================================
   function showStudyRoomPage() {
+    if (window.WanwanStudyRoom && typeof window.WanwanStudyRoom.open === 'function') {
+      return window.WanwanStudyRoom.open();
+    }
     var existing = document.getElementById('study-room-page');
     if (existing) existing.remove();
 
