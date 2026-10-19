@@ -1235,3 +1235,62 @@
   padding-left: 6px;
   flex-shrink: 0;
 }
+
+/* ====================================================
+   AI 提示词管理中心专属样式 (P0 完备版)
+   ==================================================== */
+.sr-pm-modal-panel {
+  max-height: 88% !important;
+  gap: 10px !important;
+}
+
+.sr-pm-char-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+}
+
+.sr-pm-meta-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sr-pm-textarea {
+  width: 100%;
+  min-height: 220px;
+  max-height: 360px;
+  resize: vertical;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 10px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  color: var(--c-text);
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.sr-pm-textarea:focus {
+  border-color: var(--c-primary, #6366f1);
+}
+
+.sr-pm-status-dirty {
+  color: #f59e0b !important;
+  background: rgba(245, 158, 11, 0.12) !important;
+  border-color: #f59e0b !important;
+  font-weight: 600;
+}
