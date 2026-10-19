@@ -19,27 +19,28 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 13px 18px;
+  min-height: 56px;
   background: var(--c-bg);
   border-bottom: 1px solid var(--c-border);
   z-index: 30;
-  padding-top: env(safe-area-inset-top, 10px);
+  padding-top: max(13px, env(safe-area-inset-top, 13px));
 }
 .sr-header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 .sr-back-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   border: none;
   background: transparent;
   color: var(--c-text);
   font-size: 14px;
   cursor: pointer;
-  padding: 4px 6px;
+  padding: 6px 10px;
   border-radius: var(--r-sm);
   transition: background var(--dur);
 }
@@ -52,21 +53,22 @@
   gap: 8px;
 }
 .sr-icon-mini {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--c-text);
 }
 .sr-header-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--c-text);
+  letter-spacing: 0.2px;
 }
 
 /* 页面切换横向导航条 */
@@ -74,8 +76,9 @@
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: 8px;
+  padding: 8px 16px;
+  min-height: 44px;
   background: var(--c-surface);
   border-bottom: 1px solid var(--c-border);
   overflow-x: auto;
@@ -88,12 +91,12 @@
 .sr-tab-item {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
+  gap: 6px;
+  padding: 6px 14px;
   border-radius: var(--r-pill);
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--c-sub);
   cursor: pointer;
   white-space: nowrap;
@@ -282,7 +285,7 @@
 .sr-stage-top-bar {
   position: relative;
   z-index: 25;
-  padding: 12px 14px 6px;
+  padding: 16px 18px 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -291,15 +294,16 @@
 .sr-stage-task-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
+  gap: 7px;
+  padding: 7px 15px;
   border-radius: var(--r-pill);
   background: rgba(0, 0, 0, 0.65);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: #fff;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
 }
 .sr-stage-quick-actions {
@@ -309,8 +313,8 @@
 }
 /* 唯一图片配置入口按钮 */
 .sr-stage-icon-btn {
-  height: 32px;
-  padding: 0 12px;
+  height: 36px;
+  padding: 0 15px;
   border-radius: var(--r-pill);
   background: rgba(99, 102, 241, 0.85);
   backdrop-filter: blur(8px);
@@ -318,8 +322,8 @@
   color: #fff;
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
+  gap: 7px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   box-shadow: 0 2px 10px rgba(99, 102, 241, 0.4);
@@ -1373,6 +1377,12 @@
     font-size: 16px;
   }
   .sr-stage-top-bar {
-    padding: 8px 12px 4px;
-  }
+  position: relative;
+  z-index: 25;
+  padding: 16px 18px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: auto;
+}
 }
