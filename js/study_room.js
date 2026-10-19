@@ -636,12 +636,12 @@
       }
     }
 
-    // 更新立绘与同桌名称
+    // 更新立绘与同桌名称（按直观像素偏移与比例缩放）
     var standeeImg = container.querySelector('#sr-standee-img');
     if (standeeImg) {
       standeeImg.src = getActiveStandeeImg();
       var conf = getCurrentCharStandeeConfig();
-      standeeImg.style.transform = 'scale(' + (conf.scale / 100) + ') translate(' + conf.offsetX + 'px, ' + conf.offsetY + 'px)';
+      standeeImg.style.transform = 'translate(' + (conf.offsetX || 0) + 'px, ' + (conf.offsetY || 0) + 'px) scale(' + ((conf.scale || 100) / 100) + ')';
     }
 
     var standeeBox = container.querySelector('#sr-standee-box');
@@ -1033,10 +1033,74 @@
 
     viewport.appendChild(stageEl);
 
-    // 绑定事件
-    stageEl.querySelector('#sr-standee-box').onclick = function() {
-      triggerCharReaction('user_tap_char');
-    };
+    // 绑定立绘直观触控拖拽与互动（在整个自习场景内自由移动摆放）
+    var standeeImg = stageEl.querySelector('#sr-standee-img');
+    var isDragging = false;
+    var startX = 0, startY = 0;
+    var initOx = 0, initOy = 0;
+    var hasMoved = false;
+
+    function getPointerCoord(e) {
+      if (e.touches && e.touches.length > 0) {
+        return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }
+      return { x: e.clientX, y: e.clientY };
+    }
+
+    function onDragStart(e) {
+      if (e.touches && e.touches.length > 1) return;
+      var pt = getPointerCoord(e);
+      startX = pt.x;
+      startY = pt.y;
+      isDragging = true;
+      hasMoved = false;
+      var conf = getCurrentCharStandeeConfig();
+      initOx = conf.offsetX || 0;
+      initOy = conf.offsetY || 0;
+    }
+
+    function onDragMove(e) {
+      if (!isDragging) return;
+      if (!stageEl.isConnected || !standeeImg || !standeeImg.isConnected) {
+        isDragging = false;
+        return;
+      }
+      var pt = getPointerCoord(e);
+      var dx = pt.x - startX;
+      var dy = pt.y - startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        hasMoved = true;
+      }
+      if (hasMoved) {
+        if (e.cancelable && e.type && e.type.indexOf('touch') === 0) e.preventDefault();
+        var conf = getCurrentCharStandeeConfig();
+        conf.offsetX = Math.round(initOx + dx);
+        conf.offsetY = Math.round(initOy + dy);
+        standeeImg.style.transform = 'translate(' + conf.offsetX + 'px, ' + conf.offsetY + 'px) scale(' + ((conf.scale || 100) / 100) + ')';
+      }
+    }
+
+    function onDragEnd() {
+      if (!isDragging) return;
+      isDragging = false;
+      if (hasMoved) {
+        var cid = _state.companionChar ? _state.companionChar.id : 'char_default';
+        _state.charStandees[cid] = getCurrentCharStandeeConfig();
+        saveStorage(STORAGE_KEYS.STANDEES, _state.charStandees);
+      } else {
+        triggerCharReaction('user_tap_char');
+      }
+    }
+
+    if (standeeImg) {
+      standeeImg.addEventListener('mousedown', onDragStart);
+      window.addEventListener('mousemove', onDragMove);
+      window.addEventListener('mouseup', onDragEnd);
+
+      standeeImg.addEventListener('touchstart', onDragStart, { passive: false });
+      window.addEventListener('touchmove', onDragMove, { passive: false });
+      window.addEventListener('touchend', onDragEnd);
+    }
 
     stageEl.querySelectorAll('.sr-mode-opt-btn').forEach(function(btn) {
       btn.onclick = function() {
@@ -1142,7 +1206,7 @@
     };
   }
 
-  // 场景切换弹窗
+  // 场景切换弹窗（保留唯美预设自习场景切换，移除重复的自定义图片上传与URL导入）
   function openSceneSelectorModal(container) {
     var root = container.querySelector('#sr-modal-root');
     if (!root) return;
@@ -1153,22 +1217,19 @@
       '<div class="sr-modal-mask" id="sr-scene-mask">' +
         '<div class="sr-modal-panel">' +
           '<div class="sr-modal-header">' +
-            '<span>自定义学习场景与背景</span>' +
+            '<span>切换自习背景场景</span>' +
             '<button type="button" class="pl-btn-secondary" id="sr-scene-close" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
           '</div>' +
-          '<div style="font-size:12px;color:var(--c-sub);">预设唯美自习场景：</div>' +
-          '<div style="display:flex;flex-direction:column;gap:8px;">' +
+          '<div style="font-size:12px;color:var(--c-sub);margin-bottom:8px;">预设唯美自习场景：</div>' +
+          '<div style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto;">' +
             scenes.map(function(sc) {
-              var isCur = sc.id === _state.currentSceneId && !_state.customBgUrl;
-              return '<button type="button" class="pl-btn-secondary" data-sc-id="' + sc.id + '" style="justify-content:flex-start;padding:10px;' + (isCur ? 'border-color:var(--c-text);font-weight:600;' : '') + '">' +
+              var isCur = sc.id === _state.currentSceneId;
+              return '<button type="button" class="pl-btn-secondary" data-sc-id="' + sc.id + '" style="justify-content:flex-start;padding:10px;' + (isCur ? 'border-color:var(--c-text);font-weight:600;background:rgba(255,255,255,0.1);' : '') + '">' +
                 '<span>' + esc(sc.name) + '</span>' +
                 '<span style="font-size:10px;color:var(--c-sub);margin-left:auto;">' + esc(sc.desc) + '</span>' +
               '</button>';
             }).join('') +
           '</div>' +
-          '<div style="font-size:12px;color:var(--c-sub);margin-top:8px;">或输入自定义背景图片 URL：</div>' +
-          '<input type="text" class="input-field" id="sr-custom-bg-input" value="' + esc(_state.customBgUrl) + '" placeholder="https://... 填入图片链接">' +
-          '<button type="button" class="pl-btn-primary" id="sr-scene-save" style="margin-top:6px;">应用背景</button>' +
         '</div>' +
       '</div>';
 
@@ -1190,131 +1251,221 @@
         window.toast && window.toast('自习场景已切换为：「' + PRESET_SCENES[scId].name + '」');
       };
     });
-
-    root.querySelector('#sr-scene-save').onclick = function() {
-      var val = root.querySelector('#sr-custom-bg-input').value.trim();
-      _state.customBgUrl = val;
-      saveAllSettings();
-      root.innerHTML = '';
-      renderActiveTabPage(container);
-      window.toast && window.toast('自定义场景背景已更新');
-    };
   }
 
-  // 立绘微调与上传弹窗 (支持多状态立绘、透明背景、缩放、偏移)
+  // 立绘微调与上传弹窗 (统一图片导入中心，支持专注/微笑/休息多状态、URL与本地导入、全场景自由定位)
   function openStandeeAdjustModal(container) {
     var root = container.querySelector('#sr-modal-root');
     if (!root) return;
 
     var conf = getCurrentCharStandeeConfig();
+    var curChar = _state.companionChar || { name: '林弯弯', avatar: 'img/wanwan.png' };
 
-    root.innerHTML =
-      '<div class="sr-modal-mask" id="sr-standee-mask">' +
-        '<div class="sr-modal-panel">' +
-          '<div class="sr-modal-header">' +
-            '<span>Char 伴读立绘多状态与微调</span>' +
-            '<button type="button" class="pl-btn-secondary" id="sr-standee-close" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
+    function renderModalContent() {
+      var curSt = _state.currentStandeeState || 'focus';
+      var currentImgSrc = conf[curSt] || (conf.focus || conf.smile || conf.rest || curChar.avatar || 'img/wanwan.png');
+      var hasCustomImg = !!conf[curSt];
+
+      root.innerHTML =
+        '<div class="sr-modal-mask" id="sr-standee-mask">' +
+          '<div class="sr-modal-panel" style="max-height:88vh;overflow-y:auto;">' +
+            '<div class="sr-modal-header">' +
+              '<span>Char 伴读立绘多状态与微调</span>' +
+              '<button type="button" class="pl-btn-secondary" id="sr-standee-close" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
+            '</div>' +
+
+            '<div style="font-size:11px;color:var(--c-sub);margin-bottom:8px;">' +
+              '当前伴读角色：<b style="color:var(--c-text);">' + esc(curChar.name) + '</b>（立绘与位置按角色独立保存）' +
+            '</div>' +
+
+            // 1. 伴读状态选择 (专注 / 微笑 / 休息)
+            '<div style="font-size:12px;font-weight:600;margin-bottom:6px;">1. 选择配置的伴读状态</div>' +
+            '<div style="display:flex;gap:6px;margin-bottom:10px;">' +
+              '<button type="button" class="pl-btn-secondary' + (curSt === 'focus' ? ' active' : '') + '" data-st="focus" style="flex:1;padding:8px 4px;' + (curSt === 'focus' ? 'border-color:var(--c-text);font-weight:600;background:rgba(255,255,255,0.1);' : '') + '">专注状态</button>' +
+              '<button type="button" class="pl-btn-secondary' + (curSt === 'smile' ? ' active' : '') + '" data-st="smile" style="flex:1;padding:8px 4px;' + (curSt === 'smile' ? 'border-color:var(--c-text);font-weight:600;background:rgba(255,255,255,0.1);' : '') + '">微笑状态</button>' +
+              '<button type="button" class="pl-btn-secondary' + (curSt === 'rest' ? ' active' : '') + '" data-st="rest" style="flex:1;padding:8px 4px;' + (curSt === 'rest' ? 'border-color:var(--c-text);font-weight:600;background:rgba(255,255,255,0.1);' : '') + '">休息状态</button>' +
+            '</div>' +
+
+            // 2. 图片导入（唯一入口：支持本地上传与URL导入，不受正方形限制）
+            '<div style="font-size:12px;font-weight:600;margin-bottom:6px;">2. 立绘图片导入与管理</div>' +
+            '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,0.05);border-radius:8px;border:1px solid rgba(255,255,255,0.08);margin-bottom:8px;">' +
+              '<div style="width:44px;height:44px;border-radius:6px;background:rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;">' +
+                '<img id="sr-standee-preview-thumb" src="' + currentImgSrc + '" style="width:100%;height:100%;object-fit:contain;" onerror="this.src=\'img/wanwan.png\'">' +
+              '</div>' +
+              '<div style="flex:1;min-width:0;">' +
+                '<div style="font-size:12px;font-weight:600;">' + (hasCustomImg ? '已配置自定义立绘' : '当前使用默认头像') + '</div>' +
+                '<div style="font-size:10px;color:var(--c-sub);margin-top:2px;">支持半身/全身透明 PNG 或普通 JPG，可在场景内自由缩放摆放</div>' +
+              '</div>' +
+            '</div>' +
+
+            '<div style="display:flex;gap:8px;margin-bottom:8px;">' +
+              '<button type="button" class="pl-btn-primary" id="sr-upload-file-btn" style="flex:1;padding:7px 10px;font-size:12px;"><i class="fa-solid fa-upload"></i> 上传本地图片</button>' +
+              '<button type="button" class="pl-btn-secondary" id="sr-clear-standee-btn" style="flex:1;padding:7px 10px;font-size:12px;">恢复默认头像</button>' +
+            '</div>' +
+            '<input type="file" id="sr-standee-file-input" accept="image/*" style="display:none;">' +
+
+            '<div style="display:flex;gap:6px;margin-bottom:12px;">' +
+              '<input type="text" class="input-field" id="sr-standee-url-input" value="' + (hasCustomImg && !conf[curSt].startsWith('data:') ? esc(conf[curSt]) : '') + '" placeholder="或粘贴网络图片 URL 链接..." style="font-size:11px;padding:6px 8px;flex:1;">' +
+              '<button type="button" class="pl-btn-secondary" id="sr-standee-apply-url" style="font-size:11px;padding:6px 12px;white-space:nowrap;">应用链接</button>' +
+            '</div>' +
+
+            // 3. 自由大小与位置调节 (广阔范围，支持全场景定位)
+            '<div style="font-size:12px;font-weight:600;margin-bottom:6px;">3. 场景区域大小与位置微调</div>' +
+
+            '<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--c-sub);">' +
+              '<span>立绘缩放大小：</span>' +
+              '<span id="sr-scale-val" style="font-weight:700;color:var(--c-text);">' + (conf.scale || 100) + '%</span>' +
+            '</div>' +
+            '<input type="range" min="30" max="250" value="' + (conf.scale || 100) + '" id="sr-range-scale" style="width:100%;margin:4px 0 8px;">' +
+
+            '<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--c-sub);">' +
+              '<span>水平位置偏移 (左右)：</span>' +
+              '<span id="sr-offsetx-val" style="font-weight:700;color:var(--c-text);">' + (conf.offsetX || 0) + 'px</span>' +
+            '</div>' +
+            '<input type="range" min="-220" max="220" value="' + (conf.offsetX || 0) + '" id="sr-range-offsetx" style="width:100%;margin:4px 0 8px;">' +
+
+            '<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--c-sub);">' +
+              '<span>垂直位置偏移 (上下)：</span>' +
+              '<span id="sr-offsety-val" style="font-weight:700;color:var(--c-text);">' + (conf.offsetY || 0) + 'px</span>' +
+            '</div>' +
+            '<input type="range" min="-220" max="220" value="' + (conf.offsetY || 0) + '" id="sr-range-offsety" style="width:100%;margin:4px 0 10px;">' +
+
+            // 快捷预设按钮
+            '<div style="display:flex;gap:6px;margin-bottom:12px;">' +
+              '<button type="button" class="pl-btn-secondary" id="sr-pos-center" style="flex:1;font-size:11px;padding:6px 4px;">水平居中</button>' +
+              '<button type="button" class="pl-btn-secondary" id="sr-pos-left" style="flex:1;font-size:11px;padding:6px 4px;">靠左同桌</button>' +
+              '<button type="button" class="pl-btn-secondary" id="sr-pos-right" style="flex:1;font-size:11px;padding:6px 4px;">靠右同桌</button>' +
+              '<button type="button" class="pl-btn-secondary" id="sr-pos-reset" style="flex:1;font-size:11px;padding:6px 4px;">重置位置</button>' +
+            '</div>' +
+
+            '<button type="button" class="pl-btn-primary" id="sr-standee-save-btn" style="width:100%;padding:10px;font-weight:600;font-size:13px;">保存立绘配置并应用</button>' +
           '</div>' +
-          '<div style="font-size:11px;color:var(--c-sub);">支持透明背景 PNG / JPG，按角色保存：</div>' +
+        '</div>';
 
-          // 状态选择
-          '<div style="display:flex;gap:6px;">' +
-            '<button type="button" class="pl-btn-secondary' + (_state.currentStandeeState === 'focus' ? ' active' : '') + '" data-st="focus" style="' + (_state.currentStandeeState === 'focus' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">专注状态</button>' +
-            '<button type="button" class="pl-btn-secondary' + (_state.currentStandeeState === 'smile' ? ' active' : '') + '" data-st="smile" style="' + (_state.currentStandeeState === 'smile' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">微笑状态</button>' +
-            '<button type="button" class="pl-btn-secondary' + (_state.currentStandeeState === 'rest' ? ' active' : '') + '" data-st="rest" style="' + (_state.currentStandeeState === 'rest' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">休息状态</button>' +
-          '</div>' +
+      bindModalEvents();
+    }
 
-          // 图片上传或 URL
-          '<div style="display:flex;gap:8px;margin-top:6px;">' +
-            '<button type="button" class="pl-btn-secondary" id="sr-upload-file-btn" style="flex:1;"><i class="fa-solid fa-upload"></i> 上传本地图片</button>' +
-            '<button type="button" class="pl-btn-secondary" id="sr-clear-standee-btn" style="flex:1;">恢复默认头像</button>' +
-          '</div>' +
-          '<input type="file" id="sr-standee-file-input" accept="image/*" style="display:none;">' +
+    function bindModalEvents() {
+      root.querySelector('#sr-standee-mask').onclick = function(e) {
+        if (e.target.id === 'sr-standee-mask') root.innerHTML = '';
+      };
+      root.querySelector('#sr-standee-close').onclick = function() {
+        root.innerHTML = '';
+      };
 
-          // 缩放与位置微调滑块
-          '<div style="font-size:11px;color:var(--c-sub);margin-top:6px;">立绘缩放比例：<span id="sr-scale-val">' + conf.scale + '%</span></div>' +
-          '<input type="range" min="50" max="150" value="' + conf.scale + '" id="sr-range-scale" style="width:100%;">' +
+      var scaleInput = root.querySelector('#sr-range-scale');
+      var oxInput = root.querySelector('#sr-range-offsetx');
+      var oyInput = root.querySelector('#sr-range-offsety');
 
-          '<div style="font-size:11px;color:var(--c-sub);">水平位置偏移 (X)：<span id="sr-offsetx-val">' + conf.offsetX + 'px</span></div>' +
-          '<input type="range" min="-80" max="80" value="' + conf.offsetX + '" id="sr-range-offsetx" style="width:100%;">' +
-
-          '<div style="font-size:11px;color:var(--c-sub);">垂直位置偏移 (Y)：<span id="sr-offsety-val">' + conf.offsetY + 'px</span></div>' +
-          '<input type="range" min="-80" max="80" value="' + conf.offsetY + '" id="sr-range-offsety" style="width:100%;">' +
-
-          '<button type="button" class="pl-btn-primary" id="sr-standee-save-btn" style="margin-top:6px;">保存配置并应用</button>' +
-        '</div>' +
-      '</div>';
-
-    root.querySelector('#sr-standee-mask').onclick = function(e) {
-      if (e.target.id === 'sr-standee-mask') root.innerHTML = '';
-    };
-    root.querySelector('#sr-standee-close').onclick = function() {
-      root.innerHTML = '';
-    };
-
-    var scaleInput = root.querySelector('#sr-range-scale');
-    var oxInput = root.querySelector('#sr-range-offsetx');
-    var oyInput = root.querySelector('#sr-range-offsety');
-
-    scaleInput.oninput = function() {
-      conf.scale = parseInt(scaleInput.value, 10);
-      root.querySelector('#sr-scale-val').textContent = conf.scale + '%';
-      updateDuoControls(container);
-    };
-    oxInput.oninput = function() {
-      conf.offsetX = parseInt(oxInput.value, 10);
-      root.querySelector('#sr-offsetx-val').textContent = conf.offsetX + 'px';
-      updateDuoControls(container);
-    };
-    oyInput.oninput = function() {
-      conf.offsetY = parseInt(oyInput.value, 10);
-      root.querySelector('#sr-offsety-val').textContent = conf.offsetY + 'px';
-      updateDuoControls(container);
-    };
-
-    // 状态切换
-    root.querySelectorAll('button[data-st]').forEach(function(b) {
-      b.onclick = function() {
-        _state.currentStandeeState = b.getAttribute('data-st');
-        root.querySelectorAll('button[data-st]').forEach(function(x) { x.style.fontWeight = 'normal'; x.style.borderColor = ''; });
-        b.style.fontWeight = '600';
-        b.style.borderColor = 'var(--c-text)';
+      scaleInput.oninput = function() {
+        conf.scale = parseInt(scaleInput.value, 10);
+        root.querySelector('#sr-scale-val').textContent = conf.scale + '%';
         updateDuoControls(container);
       };
-    });
-
-    // 文件上传
-    var fileInput = root.querySelector('#sr-standee-file-input');
-    root.querySelector('#sr-upload-file-btn').onclick = function() {
-      fileInput.click();
-    };
-
-    fileInput.onchange = function() {
-      var file = fileInput.files && fileInput.files[0];
-      if (!file) return;
-      var reader = new FileReader();
-      reader.onload = function(e) {
-        var base64 = e.target.result;
-        conf[_state.currentStandeeState] = base64;
+      oxInput.oninput = function() {
+        conf.offsetX = parseInt(oxInput.value, 10);
+        root.querySelector('#sr-offsetx-val').textContent = conf.offsetX + 'px';
         updateDuoControls(container);
-        window.toast && window.toast('立绘图片已读取，请点击保存');
       };
-      reader.readAsDataURL(file);
-    };
+      oyInput.oninput = function() {
+        conf.offsetY = parseInt(oyInput.value, 10);
+        root.querySelector('#sr-offsety-val').textContent = conf.offsetY + 'px';
+        updateDuoControls(container);
+      };
 
-    root.querySelector('#sr-clear-standee-btn').onclick = function() {
-      conf[_state.currentStandeeState] = '';
-      updateDuoControls(container);
-      window.toast && window.toast('已重置为默认头像');
-    };
+      // 快捷位置按钮
+      root.querySelector('#sr-pos-center').onclick = function() {
+        conf.offsetX = 0;
+        oxInput.value = 0;
+        root.querySelector('#sr-offsetx-val').textContent = '0px';
+        updateDuoControls(container);
+      };
+      root.querySelector('#sr-pos-left').onclick = function() {
+        conf.offsetX = -90;
+        oxInput.value = -90;
+        root.querySelector('#sr-offsetx-val').textContent = '-90px';
+        updateDuoControls(container);
+      };
+      root.querySelector('#sr-pos-right').onclick = function() {
+        conf.offsetX = 90;
+        oxInput.value = 90;
+        root.querySelector('#sr-offsetx-val').textContent = '90px';
+        updateDuoControls(container);
+      };
+      root.querySelector('#sr-pos-reset').onclick = function() {
+        conf.offsetX = 0;
+        conf.offsetY = 0;
+        conf.scale = 100;
+        oxInput.value = 0;
+        oyInput.value = 0;
+        scaleInput.value = 100;
+        root.querySelector('#sr-offsetx-val').textContent = '0px';
+        root.querySelector('#sr-offsety-val').textContent = '0px';
+        root.querySelector('#sr-scale-val').textContent = '100%';
+        updateDuoControls(container);
+      };
 
-    root.querySelector('#sr-standee-save-btn').onclick = function() {
-      var cid = _state.companionChar ? _state.companionChar.id : 'char_default';
-      _state.charStandees[cid] = conf;
-      saveStorage(STORAGE_KEYS.STANDEES, _state.charStandees);
-      root.innerHTML = '';
-      window.toast && window.toast('立绘配置已永久保存！');
-    };
+      // 伴读状态切换
+      root.querySelectorAll('button[data-st]').forEach(function(b) {
+        b.onclick = function() {
+          _state.currentStandeeState = b.getAttribute('data-st');
+          updateDuoControls(container);
+          renderModalContent();
+        };
+      });
+
+      // 文件上传
+      var fileInput = root.querySelector('#sr-standee-file-input');
+      root.querySelector('#sr-upload-file-btn').onclick = function() {
+        fileInput.click();
+      };
+
+      fileInput.onchange = function() {
+        var file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function(e) {
+          var base64 = e.target.result;
+          conf[_state.currentStandeeState] = base64;
+          updateDuoControls(container);
+          renderModalContent();
+          window.toast && window.toast('立绘图片已读取，请点击保存');
+        };
+        reader.readAsDataURL(file);
+      };
+
+      // 网络 URL 导入
+      root.querySelector('#sr-standee-apply-url').onclick = function() {
+        var urlVal = root.querySelector('#sr-standee-url-input').value.trim();
+        if (!urlVal) {
+          window.toast && window.toast('请输入有效的图片链接');
+          return;
+        }
+        conf[_state.currentStandeeState] = urlVal;
+        updateDuoControls(container);
+        renderModalContent();
+        window.toast && window.toast('图片链接已应用');
+      };
+
+      // 恢复默认头像
+      root.querySelector('#sr-clear-standee-btn').onclick = function() {
+        conf[_state.currentStandeeState] = '';
+        updateDuoControls(container);
+        renderModalContent();
+        window.toast && window.toast('已重置为默认头像');
+      };
+
+      // 保存配置并永久持久化
+      root.querySelector('#sr-standee-save-btn').onclick = function() {
+        var cid = _state.companionChar ? _state.companionChar.id : 'char_default';
+        _state.charStandees[cid] = conf;
+        saveStorage(STORAGE_KEYS.STANDEES, _state.charStandees);
+        root.innerHTML = '';
+        window.toast && window.toast('立绘配置已永久保存！');
+      };
+    }
+
+    renderModalContent();
   }
 
   // ====================================================
