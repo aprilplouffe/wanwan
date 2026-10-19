@@ -408,14 +408,14 @@
         focus: '',
         smile: '',
         rest: '',
-        displayMode: 'cover', // 'cover' (直接铺满覆盖上方整块背景) | 'contain' (等比居中)
+        displayMode: 'contain', // 'cover' (填满场景) | 'contain' (等比立绘；默认，避免宽屏异常放大)
         scale: 100,
         offsetX: 0,
         offsetY: 0
       };
     }
     if (!_state.charStandees[cid].displayMode) {
-      _state.charStandees[cid].displayMode = 'cover';
+      _state.charStandees[cid].displayMode = 'contain';
     }
     return _state.charStandees[cid];
   }
@@ -868,16 +868,6 @@
       // 快捷功能导航格
       '<div style="font-size:13px;font-weight:600;color:var(--c-text);"><i class="fa-solid fa-compass"></i> 功能导航</div>' +
       '<div class="sr-grid-menu">' +
-        '<div class="sr-menu-card" data-goto="duo">' +
-          '<div class="sr-menu-icon"><i class="fa-solid fa-user-group"></i></div>' +
-          '<div class="sr-menu-title">双人专注</div>' +
-          '<div class="sr-menu-desc">核心自习舞台</div>' +
-        '</div>' +
-        '<div class="sr-menu-card" data-goto="resources">' +
-          '<div class="sr-menu-icon"><i class="fa-solid fa-book-bookmark"></i></div>' +
-          '<div class="sr-menu-title">资料库</div>' +
-          '<div class="sr-menu-desc">复习重点备忘</div>' +
-        '</div>' +
         '<div class="sr-menu-card" data-goto="assistant">' +
           '<div class="sr-menu-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></div>' +
           '<div class="sr-menu-title">学习助手</div>' +
@@ -1467,10 +1457,10 @@
         var reader = new FileReader();
         reader.onload = function(e) {
           conf[_state.currentStandeeState] = e.target.result;
-          conf.displayMode = 'cover'; // 上传后默认直接铺满覆盖上面整块背景
+          conf.displayMode = 'contain'; // 上传后默认等比显示，避免电脑宽屏异常放大
           updateDuoControls(container);
           renderModalContent();
-          window.toast && window.toast('图片已成功覆盖上方背景！');
+          window.toast && window.toast('图片已导入，可直接拖动、缩放和调整位置');
         };
         reader.readAsDataURL(file);
       };
@@ -1487,7 +1477,7 @@
         _state.charStandees[cid] = conf;
         saveStorage(STORAGE_KEYS.STANDEES, _state.charStandees);
         root.innerHTML = '';
-        window.toast && window.toast('已保存！图片已成功应用到上方背景');
+        window.toast && window.toast('已保存！Char 图片配置已应用');
       };
     }
 
