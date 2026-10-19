@@ -51,80 +51,13 @@
   };
 
   // 智能题库初始题库
-  var DEFAULT_QUIZ_QUESTIONS = [
-    {
-      id: 'q_1',
-      category: '英语高频',
-      question: '在学术语境中，单词 "meticulous" 最准确的含义是？',
-      options: ['极其严谨细致的', '犹豫不决的', '粗枝大叶的', '富有激情的'],
-      answerIndex: 0,
-      explain: '"meticulous" 意为一丝不苟的、极其注重细节与准确性的（very careful and precise）。'
-    },
-    {
-      id: 'q_2',
-      category: '逻辑思维',
-      question: '“所有的白鹅都是鸟，有些鸟不会飞”，据此必然能推导出的是？',
-      options: ['有些不会飞的鸟是白鹅', '有些鸟会飞', '白鹅都是鸟', '所有白鹅都不会飞'],
-      answerIndex: 2,
-      explain: '根据三段论与命题直述，原前提明确指出“所有的白鹅都是鸟”，直接成立。'
-    },
-    {
-      id: 'q_3',
-      category: '综合通识',
-      question: '番茄工作法（Pomodoro Technique）的核心基础专注与休息节奏通常是？',
-      options: ['专注 45 分钟，休息 15 分钟', '专注 25 分钟，休息 5 分钟', '专注 60 分钟，休息 10 分钟', '专注 30 分钟，无休息'],
-      answerIndex: 1,
-      explain: '弗朗西斯科·西里洛创立的标准番茄工作法以 25 分钟为一个番茄时间，之后休息 5 分钟。'
-    },
-    {
-      id: 'q_4',
-      category: '文史通识',
-      question: '“博学之，审问之，慎思之，明辨之，笃行之”出自儒家经典中的哪一部？',
-      options: ['《论语》', '《孟子》', '《礼记·中庸》', '《大学》'],
-      answerIndex: 2,
-      explain: '该名言出自《礼记·中庸》，概括了为学的五个渐进阶段。'
-    },
-    {
-      id: 'q_5',
-      category: '计算机科学',
-      question: '在时间复杂度表示中，O(n log n) 通常对应于下列哪种排序算法的最佳或平均性能？',
-      options: ['归并排序 (Merge Sort)', '冒泡排序 (Bubble Sort)', '选择排序 (Selection Sort)', '插入排序 (Insertion Sort)'],
-      answerIndex: 0,
-      explain: '归并排序采用分治法，其最好、最坏与平均时间复杂度均为 O(n log n)。'
-    }
-  ];
+  var DEFAULT_QUIZ_QUESTIONS = [];
 
   // 初始资料库数据
-  var DEFAULT_RESOURCES = [
-    {
-      id: 'res_1',
-      title: '高分番茄专注法心法手册',
-      tag: '专注心法',
-      date: '2026-10-15',
-      content: '1. 单核工作，杜绝多任务频繁切换；\n2. 专注钟响前不处理任何突发琐事，列入备忘；\n3. 休息时必须离开屏幕，闭目眺望或活动肩颈。'
-    },
-    {
-      id: 'res_2',
-      title: '英语考研核心词根与词缀脉络',
-      tag: '语言学习',
-      date: '2026-10-18',
-      content: '前缀 re-（再、重复）、con-/com-（共同）、trans-（穿过、转变）；\n后缀 -tion（名词化）、-ous（形容词化，充满…的）。掌握构词法记忆效率翻倍。'
-    },
-    {
-      id: 'res_3',
-      title: '深度工作与心流状态触发指南',
-      tag: '效率思维',
-      date: '2026-10-19',
-      content: '心流触发三要素：清晰无歧义的目标、即时的正向反馈、挑战难度与个人技能水平的最佳匹配（略高于舒适区）。'
-    }
-  ];
+  var DEFAULT_RESOURCES = [];
 
   // 初始今日待办
-  var DEFAULT_TODOS = [
-    { id: 'todo_1', text: '完成 2 个深度专注番茄钟', done: false },
-    { id: 'todo_2', text: '梳理智能题库今日 5 道练习', done: false },
-    { id: 'todo_3', text: '向 Char 学习助手总结今日核心知识点', done: false }
-  ];
+  var DEFAULT_TODOS = [];
 
   // 全局运行时状态
   var _state = {
@@ -139,7 +72,7 @@
     timerStatus: 'idle', // 'idle' | 'running' | 'paused'
     timerPhase: 'focus', // 'focus' | 'break' | 'long_break'
     taskType: '学习', // '学习' | '工作' | '阅读' | '写作'
-    taskName: '考研政治与专业课复习',
+    taskName: '自主深度专注',
     // 计时时间戳核心
     targetDurationSec: 25 * 60,
     remainingSec: 25 * 60,
@@ -147,9 +80,9 @@
     startTimestamp: 0,
     accumulatedSecBeforeResume: 0,
     lastActiveTimestamp: Date.now(),
-    pomodorosToday: 3,
-    totalMinutesToday: 75,
-    streakDays: 5,
+    pomodorosToday: 0,
+    totalMinutesToday: 0,
+    streakDays: 0,
     // 角色与立绘
     companionChar: null,
     charStandees: {}, // { [charId]: { focus: '', smile: '', rest: '', scale: 100, offsetX: 0, offsetY: 0 } }
@@ -318,17 +251,79 @@
     var savedStandees = await loadStorage(STORAGE_KEYS.STANDEES, {});
     _state.charStandees = savedStandees || {};
 
+    // 自动清理历史预置的 mock 数据（待办/资料/旧预置教材），保证纯净空白
+    var CLEANUP_MOCK_FLAG = 'wanwan_study_mock_cleaned_v3';
+    var hasCleanedMocks = await loadStorage(CLEANUP_MOCK_FLAG, false);
+    if (!hasCleanedMocks) {
+      var curDocs = await loadStorage('wanwan_study_documents_v2', []);
+      if (Array.isArray(curDocs)) {
+        var cleanDocs = curDocs.filter(function(d) {
+          return d && d.id !== 'doc_core_1' && d.id !== 'doc_core_2';
+        });
+        await saveStorage('wanwan_study_documents_v2', cleanDocs);
+        if (window.StudySearchIndex) {
+          window.StudySearchIndex.documents = cleanDocs;
+          window.StudySearchIndex.rebuildIndex();
+        }
+      }
+      var curTodos = await loadStorage(STORAGE_KEYS.TODOS, []);
+      if (Array.isArray(curTodos)) {
+        var cleanTodos = curTodos.filter(function(t) {
+          return t && t.id !== 'todo_1' && t.id !== 'todo_2' && t.id !== 'todo_3';
+        });
+        await saveStorage(STORAGE_KEYS.TODOS, cleanTodos);
+      }
+      var curRes = await loadStorage(STORAGE_KEYS.RESOURCES, []);
+      if (Array.isArray(curRes)) {
+        var cleanRes = curRes.filter(function(r) {
+          return r && r.id !== 'res_1' && r.id !== 'res_2' && r.id !== 'res_3';
+        });
+        await saveStorage(STORAGE_KEYS.RESOURCES, cleanRes);
+      }
+      await saveStorage(CLEANUP_MOCK_FLAG, true);
+    }
+
     var savedTodos = await loadStorage(STORAGE_KEYS.TODOS, null);
-    _state.todos = Array.isArray(savedTodos) ? savedTodos : DEFAULT_TODOS.slice();
+    _state.todos = Array.isArray(savedTodos) ? savedTodos.filter(function(t) { return t && t.id !== 'todo_1' && t.id !== 'todo_2' && t.id !== 'todo_3'; }) : [];
 
     var savedResources = await loadStorage(STORAGE_KEYS.RESOURCES, null);
-    _state.resources = Array.isArray(savedResources) ? savedResources : DEFAULT_RESOURCES.slice();
+    _state.resources = Array.isArray(savedResources) ? savedResources.filter(function(r) { return r && r.id !== 'res_1' && r.id !== 'res_2' && r.id !== 'res_3'; }) : [];
 
     var savedMistakes = await loadStorage(STORAGE_KEYS.MISTAKES, []);
     _state.mistakes = Array.isArray(savedMistakes) ? savedMistakes : [];
 
     var savedRecords = await loadStorage(STORAGE_KEYS.RECORDS, []);
     _state.records = Array.isArray(savedRecords) ? savedRecords : [];
+
+    // 动态计算真实的今日专注分钟数与完成番茄数
+    var todayStr = new Date().toISOString().slice(0, 10);
+    var todayRecords = _state.records.filter(function(r) {
+      return r && r.date && r.date.slice(0, 10) === todayStr;
+    });
+
+    _state.pomodorosToday = todayRecords.length;
+    _state.totalMinutesToday = todayRecords.reduce(function(sum, r) {
+      return sum + (Number(r.durationMinutes) || 0);
+    }, 0);
+
+    // 动态计算真实连续打卡天数
+    var daySet = new Set();
+    _state.records.forEach(function(r) {
+      if (r && r.date) daySet.add(r.date.slice(0, 10));
+    });
+    var streak = 0;
+    var checkDate = new Date();
+    var checkDateStr = checkDate.toISOString().slice(0, 10);
+    if (!daySet.has(checkDateStr)) {
+      checkDate.setDate(checkDate.getDate() - 1);
+      checkDateStr = checkDate.toISOString().slice(0, 10);
+    }
+    while (daySet.has(checkDateStr)) {
+      streak++;
+      checkDate.setDate(checkDate.getDate() - 1);
+      checkDateStr = checkDate.toISOString().slice(0, 10);
+    }
+    _state.streakDays = streak;
 
     var savedMsgs = await loadStorage(STORAGE_KEYS.ASSISTANT_MSGS, null);
     if (Array.isArray(savedMsgs) && savedMsgs.length) {
@@ -1985,6 +1980,16 @@
     if (!slot) return;
     slot.innerHTML = '';
 
+    if (!_state.activeQuizList || !_state.activeQuizList.length) {
+      slot.innerHTML =
+        '<div style="text-align:center;padding:48px 16px;color:var(--c-sub);font-size:12px;">' +
+          '<i class="fa-solid fa-brain" style="font-size:32px;margin-bottom:10px;display:block;opacity:0.3;"></i>' +
+          '题库当前为空白状态' +
+          '<div style="font-size:11px;color:var(--c-hint);margin-top:6px;">请先在「资料库」中导入你的教材或笔记，AI 即可为你智能生成专属练习题！</div>' +
+        '</div>';
+      return;
+    }
+
     if (_state.quizMode === 'examiner') {
       renderExaminerModeStage(slot, container);
     } else {
@@ -2437,7 +2442,9 @@
         '<div>' +
           '<div class="sr-report-comment-title">' + esc(char.name) + ' 的伴读评语</div>' +
           '<div class="sr-report-comment-body">' +
-            '“今天专注力非常卓越，已经坚持完成了 ' + _state.pomodorosToday + ' 个番茄钟！思维清晰敏捷，继续保持这个节奏，期待明天也和你并肩自习～”' +
+            (_state.pomodorosToday > 0 ?
+              ('“今天专注力非常卓越，已经坚持完成了 ' + _state.pomodorosToday + ' 个番茄钟！思维清晰敏捷，继续保持这个节奏，期待明天也和你并肩自习～”') :
+              ('“今天还没有开启专注打卡哦，准备好了就点击进入双人自习，我们一起开启今天的自习之旅吧～”')) +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -2484,12 +2491,26 @@
   }
 
   function renderWeeklyBars() {
-    var days = ['周一', '周二', '周三', '周四', '周五', '周六', '今天'];
-    var heights = [45, 60, 50, 75, 40, 90, Math.min(100, Math.max(20, _state.totalMinutesToday))];
+    var days = ['6天前', '5天前', '4天前', '3天前', '前天', '昨天', '今天'];
+    var dayMinutes = [0, 0, 0, 0, 0, 0, 0];
+    var now = new Date();
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(now);
+      d.setDate(d.getDate() - (6 - i));
+      var dStr = d.toISOString().slice(0, 10);
+      dayMinutes[i] = (_state.records || []).filter(function(r) {
+        return r && r.date && r.date.slice(0, 10) === dStr;
+      }).reduce(function(sum, r) {
+        return sum + (Number(r.durationMinutes) || 0);
+      }, 0);
+    }
+    dayMinutes[6] = Math.max(dayMinutes[6], _state.totalMinutesToday);
 
     return days.map(function(d, i) {
+      var m = dayMinutes[i];
+      var barH = m > 0 ? Math.min(100, Math.max(10, Math.round(m * 1.2))) : 4;
       return '<div class="sr-chart-col">' +
-        '<div class="sr-chart-bar" style="height:' + heights[i] + 'px;"></div>' +
+        '<div class="sr-chart-bar" style="height:' + barH + 'px;' + (m === 0 ? 'opacity:0.25;' : '') + '" title="' + d + ': ' + m + ' 分钟"></div>' +
         '<div class="sr-chart-day">' + d + '</div>' +
       '</div>';
     }).join('');
@@ -3234,6 +3255,18 @@
         '</div>' +
       '</div>' +
 
+      // 数据管理与清空重置
+      '<div class="sr-set-group">' +
+        '<div class="sr-set-group-title">自习室数据管理</div>' +
+        '<div class="sr-set-row" id="sr-set-row-reset-data" style="cursor:pointer;">' +
+          '<div class="sr-set-row-info">' +
+            '<div class="sr-set-row-title" style="color:#ef4444;"><i class="fa-solid fa-trash-can"></i> 清空自习室所有记录与数据</div>' +
+            '<div class="sr-set-row-desc">一键清空自习记录、教材资料、待办事项与错题本，恢复初始空白</div>' +
+          '</div>' +
+          '<i class="fa-solid fa-angle-right" style="color:var(--c-sub);"></i>' +
+        '</div>' +
+      '</div>' +
+
       // 场景与立绘快捷入口
       '<div class="sr-set-group">' +
         '<div class="sr-set-group-title">视觉场景与立绘管理</div>' +
@@ -3278,6 +3311,34 @@
       saveAllSettings();
       window.toast && window.toast('提问时机偏好已保存');
     };
+
+    var resetDataRow = setEl.querySelector('#sr-set-row-reset-data');
+    if (resetDataRow) {
+      resetDataRow.onclick = async function() {
+        if (!confirm('确定要清空自习室的所有专注记录、教材资料库、待办事项和错题本吗？\n\n此操作将让自习室彻底恢复为空白初始状态（角色档案与人设不受影响）。')) {
+          return;
+        }
+        _state.records = [];
+        _state.todos = [];
+        _state.resources = [];
+        _state.mistakes = [];
+        _state.activeQuizList = [];
+        _state.pomodorosToday = 0;
+        _state.totalMinutesToday = 0;
+        _state.streakDays = 0;
+        await saveStorage(STORAGE_KEYS.RECORDS, []);
+        await saveStorage(STORAGE_KEYS.TODOS, []);
+        await saveStorage(STORAGE_KEYS.RESOURCES, []);
+        await saveStorage(STORAGE_KEYS.MISTAKES, []);
+        await saveStorage('wanwan_study_documents_v2', []);
+        if (window.StudySearchIndex) {
+          window.StudySearchIndex.documents = [];
+          window.StudySearchIndex.rebuildIndex();
+        }
+        window.toast && window.toast('自习室数据已全部清空，已恢复为空白初始状态！');
+        renderActiveTabPage(container);
+      };
+    }
 
     var promptMgrRow = setEl.querySelector('#sr-set-row-prompt-manager');
     if (promptMgrRow) {

@@ -441,55 +441,25 @@
 
     init: async function() {
       var savedDocs = await loadStorage(STORAGE_KEYS.DOCUMENTS, null);
-      if (Array.isArray(savedDocs) && savedDocs.length) {
-        this.documents = savedDocs;
-        this.rebuildIndex();
+      if (Array.isArray(savedDocs)) {
+        // 自动清理历史预置的 mock 教材数据，保持纯净空白
+        this.documents = savedDocs.filter(function(d) {
+          return d && d.id !== 'doc_core_1' && d.id !== 'doc_core_2';
+        });
+        if (this.documents.length !== savedDocs.length) {
+          await saveStorage(STORAGE_KEYS.DOCUMENTS, this.documents);
+        }
       } else {
-        // 装载默认教材文档
-        this.documents = this.getDefaultDocuments();
-        this.rebuildIndex();
-        saveStorage(STORAGE_KEYS.DOCUMENTS, this.documents);
+        // 默认初始化为空白资料库，由用户自主按需导入
+        this.documents = [];
+        await saveStorage(STORAGE_KEYS.DOCUMENTS, []);
       }
+      this.rebuildIndex();
     },
 
     getDefaultDocuments: function() {
-      var defaultDoc1 = StudyDocParser.chunkPlainTextOrMarkdown({
-        id: 'doc_core_1',
-        title: '计算机操作系统核心考点与心流笔记.md',
-        course: '计算机考研',
-        format: 'markdown',
-        fileSize: '32 KB',
-        parseQuality: '优 · 官方精修版教材',
-        importedAt: Date.now() - 3600000 * 24
-      },
-        '# 进程与线程管理\n' +
-        '进程是系统进行资源分配和调度的一个独立单位。线程是CPU调度和分派的基本单位。\n' +
-        '线程拥有自己独立的栈空间和程序计数器（PC），但与所属进程的其他线程共享堆内存和全局变量。\n\n' +
-        '# 死锁四要素与规避策略\n' +
-        '死锁产生的四大必要条件：互斥条件、请求与保持条件、不剥夺条件、循环等待条件。\n' +
-        '经典的银行家算法通过预判系统是否处于安全状态，从而在动态分配资源时有效避免死锁发生。\n\n' +
-        '# 虚拟内存与分页机制\n' +
-        '虚拟内存允许进程逻辑空间大于物理内存空间，通过请求调页和页面置换算法（如LRU、FIFO、CLOCK）实现大程序的流畅加载。'
-      );
-
-      var defaultDoc2 = StudyDocParser.chunkPlainTextOrMarkdown({
-        id: 'doc_core_2',
-        title: '高频英语词汇构词法与真题考点.txt',
-        course: '考研英语',
-        format: 'txt',
-        fileSize: '18 KB',
-        parseQuality: '优 · 文本层清晰',
-        importedAt: Date.now() - 3600000 * 12
-      },
-        '# 核心前缀辨析\n' +
-        '前缀 sub- 表示“在……下方、次等”，例如 subconscious（潜意识）、subordinate（从属的）。\n' +
-        '前缀 trans- 表示“跨越、转变”，例如 transcend（超越）、transform（改变形态）。\n\n' +
-        '# 核心词根溯源\n' +
-        '词根 spec/spect 意为“看”，例如 introspect（内省、自省）、retrospect（回顾）。\n' +
-        '词根 vert/vers 意为“转动、改变方向”，例如 introvert（内向者）、extrovert（外向者）。'
-      );
-
-      return [defaultDoc1, defaultDoc2];
+      // 默认初始为空白教材库
+      return [];
     },
 
     // 重建倒排索引
@@ -1009,7 +979,8 @@
       }
 
       if (!availableChunks.length) {
-        availableChunks = StudySearchIndex.chunks.slice();
+        // 资料库暂无教材切片时，返回空试题列表，提示用户导入教材
+        return [];
       }
 
       var generated = [];
