@@ -12,7 +12,8 @@
     TODOS: 'wanwan_study_todos',
     RESOURCES: 'wanwan_study_resources',
     MISTAKES: 'wanwan_study_mistakes',
-    ASSISTANT_MSGS: 'wanwan_study_assistant_msgs'
+    ASSISTANT_MSGS: 'wanwan_study_assistant_msgs',
+    PROMPT_PROFILES: 'wanwan_study_prompt_profiles'
   };
 
   // 预置场景
@@ -2647,7 +2648,497 @@
 
   // 8. 设置页面 (Settings)
   // ====================================================
-  function renderSettingsPage(container, viewport) {
+
+  // ====================================================
+  // AI 提示词管理中心弹窗 (P0 核心交互)
+  // 路径：自习室 → 设置 → AI 提示词管理中心
+  // 支持两套分开存储：专业学习助手 vs Char 自习室附加规则
+  // 支持按角色隔离、查看、编辑、保存、恢复默认、离开前未保存拦截
+  // ====================================================
+  async function openPromptManagerModal(container) {
+    var root = container.querySelector('#sr-modal-root');
+    if (!root) return;
+
+    var allChars = [];
+    try {
+      if (window.db && db.characters) {
+        allChars = await db.characters.toArray();
+      }
+    } catch (e) {}
+    if (!allChars || !allChars.length) {
+      allChars = [
+        {
+          id: 'char_default',
+          name: '林弯弯',
+          avatar: 'img/wanwan.png',
+          personality: '温柔体贴、善解人意，专注时默默守护，休息时悉心关怀',
+          type: 'char'
+        }
+      ];
+    }
+
+    var activeScope = 'study_assistant'; // 'study_assistant' | 'study_char_overlay'
+    var selectedCharId = _state.companionChar ? String(_state.companionChar.id) : String(allChars[0].id);
+    var selectedChar = allChars.find(function(c) { return String(c.id) === selectedCharId; }) || allChars[0];
+
+    var currentProfile = null;
+    var initialContent = '';
+    var isDirty = false;
+
+    // 辅助函数：格式化时间
+    function formatTime(isoStr) {
+      if (!isoStr || isoStr === '系统内置默认模板') return '系统内置默认模板';
+      try {
+        var d = new Date(isoStr);
+        if (isNaN(d.getTime())) return isoStr;
+        var pad = function(n) { return n < 10 ? '0' + n : n; };
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      } catch (e) {
+        return isoStr;
+      }
+    }
+
+    // 未保存修改确认弹窗（拦截切换标签、切换角色、关闭离开）
+    function guardUnsavedChanges(onProceed) {
+      if (!isDirty) {
+        onProceed();
+        return;
+      }
+
+      var confirmMask = document.createElement('div');
+      confirmMask.className = 'sr-modal-mask';
+      confirmMask.style.zIndex = '10001';
+      confirmMask.innerHTML =
+        '<div class="sr-modal-panel" style="max-width:380px;margin:auto;">' +
+          '<div class="sr-modal-header">' +
+            '<span><i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b;"></i> 未保存修改提醒</span>' +
+            '<button type="button" class="pl-btn-secondary sr-guard-close" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
+          '</div>' +
+          '<div style="font-size:12px;color:var(--c-text);line-height:1.6;">' +
+            '当前提示词已被修改但尚未保存。切换或离开将丢失当前的编辑内容。' +
+          '</div>' +
+          '<div style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">' +
+            '<button type="button" class="pl-btn-primary sr-guard-save"><i class="fa-solid fa-floppy-disk"></i> 保存修改并继续</button>' +
+            '<button type="button" class="pl-btn-secondary sr-guard-discard" style="color:#ef4444;"><i class="fa-solid fa-trash-can"></i> 放弃修改</button>' +
+            '<button type="button" class="pl-btn-secondary sr-guard-cancel">继续编辑</button>' +
+          '</div>' +
+        '</div>';
+
+      root.appendChild(confirmMask);
+
+      confirmMask.querySelector('.sr-guard-close').onclick = function() {
+        confirmMask.remove();
+      };
+      confirmMask.querySelector('.sr-guard-cancel').onclick = function() {
+        confirmMask.remove();
+      };
+      confirmMask.querySelector('.sr-guard-discard').onclick = function() {
+        isDirty = false;
+        confirmMask.remove();
+        onProceed();
+      };
+      confirmMask.querySelector('.sr-guard-save').onclick = async function() {
+        confirmMask.remove();
+        var success = await executeSave();
+        if (success) {
+          onProceed();
+        }
+      };
+    }
+
+    // 执行保存
+    async function executeSave() {
+      var textarea = root.querySelector('#sr-pm-editor');
+      if (!textarea) return false;
+      var text = textarea.value.trim();
+      if (!text) {
+        window.toast && window.toast('⚠️ 提示词内容不能为空');
+        return false;
+      }
+      if (text.length > 10000) {
+        window.toast && window.toast('⚠️ 提示词过长（上限 10000 字）');
+        return false;
+      }
+
+      try {
+        currentProfile = await window.StudyPromptManager.savePromptProfile(
+          activeScope,
+          selectedChar.id,
+          text,
+          selectedChar.name
+        );
+        initialContent = currentProfile.content;
+        isDirty = false;
+        updateMetaDisplay();
+        window.toast && window.toast('🎉 提示词已保存成功！下一次 AI 请求即刻生效');
+        return true;
+      } catch (err) {
+        alert('保存失败：' + (err.message || '存储异常，请稍后重试'));
+        return false;
+      }
+    }
+
+    // 执行恢复默认
+    function executeRestoreDefault() {
+      var targetName = activeScope === 'study_assistant' ? '「专业学习助手」' : '「' + esc(selectedChar.name) + ' 的自习室规则」';
+      if (!confirm('确定将 ' + targetName + ' 恢复为系统官方默认模板吗？\n\n注意：当前自定义的内容将被清除，重新载入内置默认版本。（不会影响另一类提示词或其他 Char）')) {
+        return;
+      }
+
+      (async function() {
+        try {
+          currentProfile = await window.StudyPromptManager.resetPromptProfile(
+            activeScope,
+            selectedChar.id,
+            selectedChar.name
+          );
+          initialContent = currentProfile.content;
+          isDirty = false;
+
+          var textarea = root.querySelector('#sr-pm-editor');
+          if (textarea) textarea.value = currentProfile.content;
+
+          updateMetaDisplay();
+          window.toast && window.toast('已成功还原为系统内置默认提示词！');
+        } catch (err) {
+          alert('恢复默认失败：' + (err.message || '请重试'));
+        }
+      })();
+    }
+
+    // 复制提示词内容
+    function executeCopy() {
+      var textarea = root.querySelector('#sr-pm-editor');
+      if (!textarea) return;
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(textarea.value);
+        window.toast && window.toast('提示词已复制到剪贴板！');
+      } else {
+        textarea.select();
+        document.execCommand('copy');
+        window.toast && window.toast('提示词已复制到剪贴板！');
+      }
+    }
+
+    // 说明弹窗
+    function showHelpModal() {
+      var helpMask = document.createElement('div');
+      helpMask.className = 'sr-modal-mask';
+      helpMask.style.zIndex = '10002';
+      helpMask.innerHTML =
+        '<div class="sr-modal-panel" style="max-height:85%;">' +
+          '<div class="sr-modal-header">' +
+            '<span><i class="fa-solid fa-circle-question" style="color:var(--c-primary, #6366f1);"></i> 自习室 AI 提示词管理说明</span>' +
+            '<button type="button" class="pl-btn-secondary sr-help-close" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
+          '</div>' +
+          '<div style="font-size:12px;line-height:1.7;color:var(--c-text);display:flex;flex-direction:column;gap:8px;">' +
+            '<div><b>1. 两套独立提示词存储：</b><br><span style="color:var(--c-sub);">「专业学习助手」负责客观严谨的教材答疑、梳理、出题与批改；「Char 附加规则」负责角色在自习室中的伴读人设、鼓励与互动，两者完全隔离独立保存。</span></div>' +
+            '<div><b>2. 按角色独立隔离：</b><br><span style="color:var(--c-sub);">每个 Char 的附加规则按其角色 ID 独立存储，修改林弯弯的规则绝不会改变苏星河或其他角色的自习行为。</span></div>' +
+            '<div><b>3. 主线人设绝对安全：</b><br><span style="color:var(--c-sub);">自习室附加规则仅在陪伴自习室场景下叠加生效，绝不修改、覆盖或重置角色档案、世界书、人设背景、主线关系与私密记忆。</span></div>' +
+            '<div><b>4. 即时生效与升级防丢：</b><br><span style="color:var(--c-sub);">保存后下一次向 AI 提问即可即刻读取最新提示词；用户自定义内容单独存储，系统升级绝不覆盖，随时可一键还原默认模板。</span></div>' +
+          '</div>' +
+          '<button type="button" class="pl-btn-primary sr-help-close" style="margin-top:6px;">我知道了</button>' +
+        '</div>';
+
+      root.appendChild(helpMask);
+      helpMask.querySelectorAll('.sr-help-close').forEach(function(btn) {
+        btn.onclick = function() { helpMask.remove(); };
+      });
+      helpMask.onclick = function(e) {
+        if (e.target === helpMask) helpMask.remove();
+      };
+    }
+
+    // 切换目标角色选择弹窗（自习室附加规则专属）
+    function openCharPickerModal() {
+      guardUnsavedChanges(function() {
+        var pickerMask = document.createElement('div');
+        pickerMask.className = 'sr-modal-mask';
+        pickerMask.style.zIndex = '10001';
+        pickerMask.innerHTML =
+          '<div class="sr-modal-panel">' +
+            '<div class="sr-modal-header">' +
+              '<span>选择要配置提示词的目标角色</span>' +
+              '<button type="button" class="pl-btn-secondary sr-picker-close" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
+            '</div>' +
+            '<div style="font-size:11px;color:var(--c-sub);">每个角色拥有独立的自习室附加提示词，互不影响：</div>' +
+            '<div class="sr-char-select-list" style="max-height:320px;overflow-y:auto;">' +
+              allChars.map(function(c) {
+                var isCur = String(c.id) === String(selectedChar.id);
+                return (
+                  '<div class="sr-char-select-item' + (isCur ? ' selected' : '') + '" data-cid="' + esc(c.id) + '">' +
+                    '<img class="sr-char-select-avatar" src="' + esc(c.avatar || 'img/wanwan.png') + '" onerror="this.src=\'img/wanwan.png\'" style="width:34px;height:34px;border-radius:50%;object-fit:cover;">' +
+                    '<div class="sr-char-select-info">' +
+                      '<div class="sr-char-select-name-row">' +
+                        '<span class="sr-char-select-name">' + esc(c.name || '未命名角色') + '</span>' +
+                        '<span class="sr-char-select-type">' + esc(getCharTypeLabel(c.type || 'char')) + '</span>' +
+                        (isCur ? '<span style="font-size:10px;color:var(--c-primary, #6366f1);font-weight:600;margin-left:auto;">当前选定</span>' : '') +
+                      '</div>' +
+                      '<div class="sr-char-select-desc">' + esc(c.personality || c.bio || '无简介') + '</div>' +
+                    '</div>' +
+                  '</div>'
+                );
+              }).join('') +
+            '</div>' +
+          '</div>';
+
+        root.appendChild(pickerMask);
+
+        pickerMask.querySelector('.sr-picker-close').onclick = function() {
+          pickerMask.remove();
+        };
+        pickerMask.onclick = function(e) {
+          if (e.target === pickerMask) pickerMask.remove();
+        };
+
+        pickerMask.querySelectorAll('.sr-char-select-item').forEach(function(item) {
+          item.onclick = function() {
+            var cid = item.getAttribute('data-cid');
+            var chosen = allChars.find(function(c) { return String(c.id) === String(cid); });
+            if (chosen) {
+              selectedChar = chosen;
+              selectedCharId = String(chosen.id);
+              pickerMask.remove();
+              loadAndRenderEditor();
+            }
+          };
+        });
+      });
+    }
+
+    // 刷新元数据状态展示
+    function updateMetaDisplay() {
+      if (!currentProfile) return;
+      var titleLbl = root.querySelector('#sr-pm-title-lbl');
+      if (titleLbl) {
+        titleLbl.textContent = activeScope === 'study_assistant' ? '专业学习助手提示词' : selectedChar.name + ' · 自习室附加规则';
+      }
+
+      var verBadge = root.querySelector('#sr-pm-version-badge');
+      if (verBadge) {
+        verBadge.textContent = 'V' + (currentProfile.version || 1);
+      }
+
+      var typeBadge = root.querySelector('#sr-pm-type-badge');
+      if (typeBadge) {
+        if (currentProfile.isCustom) {
+          typeBadge.textContent = '用户自定义版';
+          typeBadge.style.color = '#22c55e';
+          typeBadge.style.borderColor = '#22c55e';
+        } else {
+          typeBadge.textContent = '系统默认版';
+          typeBadge.style.color = 'var(--c-sub)';
+          typeBadge.style.borderColor = 'var(--c-border)';
+        }
+      }
+
+      var statusBadge = root.querySelector('#sr-pm-status-badge');
+      if (statusBadge) {
+        statusBadge.style.display = isDirty ? 'inline-flex' : 'none';
+      }
+
+      var timeEl = root.querySelector('#sr-pm-updated-at');
+      if (timeEl) {
+        timeEl.textContent = '最后保存：' + formatTime(currentProfile.updatedAt);
+      }
+
+      var wordEl = root.querySelector('#sr-pm-word-count');
+      var textarea = root.querySelector('#sr-pm-editor');
+      if (wordEl && textarea) {
+        wordEl.textContent = '当前字数：' + textarea.value.length + ' 字 (建议 100~2000 字)';
+      }
+    }
+
+    // 载入当前作用域数据并渲染编辑器
+    async function loadAndRenderEditor() {
+      currentProfile = await window.StudyPromptManager.getPromptProfile(
+        activeScope,
+        selectedChar.id,
+        selectedChar.name
+      );
+      initialContent = currentProfile.content;
+      isDirty = false;
+
+      // 更新标签状态
+      root.querySelectorAll('.sr-pm-tab').forEach(function(tab) {
+        tab.classList.toggle('active', tab.getAttribute('data-scope') === activeScope);
+      });
+
+      // 更新 Char 选择卡显示
+      var charPickerEl = root.querySelector('#sr-pm-char-picker');
+      if (charPickerEl) {
+        if (activeScope === 'study_char_overlay') {
+          charPickerEl.style.display = 'flex';
+          var av = charPickerEl.querySelector('#sr-pm-char-avatar');
+          if (av) av.src = selectedChar.avatar || 'img/wanwan.png';
+          var nm = charPickerEl.querySelector('#sr-pm-char-name');
+          if (nm) nm.textContent = selectedChar.name;
+          var tp = charPickerEl.querySelector('#sr-pm-char-type');
+          if (tp) tp.textContent = getCharTypeLabel(selectedChar.type || 'char');
+        } else {
+          charPickerEl.style.display = 'none';
+        }
+      }
+
+      // 文本框赋值
+      var textarea = root.querySelector('#sr-pm-editor');
+      if (textarea) {
+        textarea.value = currentProfile.content;
+      }
+
+      updateMetaDisplay();
+    }
+
+    // 主弹窗框架渲染
+    root.innerHTML =
+      '<div class="sr-modal-mask" id="sr-prompt-mgr-mask">' +
+        '<div class="sr-modal-panel sr-pm-modal-panel">' +
+          // 头部标题栏
+          '<div class="sr-modal-header">' +
+            '<div style="display:flex;align-items:center;gap:6px;">' +
+              '<i class="fa-solid fa-wand-magic-sparkles" style="color:var(--c-primary, #6366f1);"></i>' +
+              '<span>AI 提示词管理中心</span>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;">' +
+              '<button type="button" class="pl-btn-secondary" id="sr-pm-help-btn" style="padding:2px 8px;font-size:11px;" title="查看管理中心说明">' +
+                '<i class="fa-solid fa-circle-question"></i> 说明' +
+              '</button>' +
+              '<button type="button" class="pl-btn-secondary" id="sr-pm-close-btn" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
+            '</div>' +
+          '</div>' +
+
+          // 核心双标签切换条
+          '<div class="sr-ast-mode-tabs" id="sr-pm-scope-tabs" style="width:100%;margin-bottom:0;">' +
+            '<button type="button" class="sr-ast-mode-tab sr-pm-tab active" data-scope="study_assistant">' +
+              '<i class="fa-solid fa-graduation-cap"></i> 专业学习助手' +
+            '</button>' +
+            '<button type="button" class="sr-ast-mode-tab sr-pm-tab" data-scope="study_char_overlay">' +
+              '<i class="fa-solid fa-heart"></i> Char 自习室附加规则' +
+            '</button>' +
+          '</div>' +
+
+          // Char 目标选择器卡片
+          '<div class="sr-pm-char-picker" id="sr-pm-char-picker" style="display:none;">' +
+            '<div style="display:flex;align-items:center;gap:8px;">' +
+              '<img id="sr-pm-char-avatar" src="' + esc(selectedChar.avatar || 'img/wanwan.png') + '" onerror="this.src=\'img/wanwan.png\'" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:1.5px solid var(--c-primary, #6366f1);flex-shrink:0;">' +
+              '<div>' +
+                '<div style="display:flex;align-items:center;gap:6px;">' +
+                  '<span id="sr-pm-char-name" style="font-weight:600;font-size:12px;color:var(--c-text);">' + esc(selectedChar.name) + '</span>' +
+                  '<span class="sr-doc-badge" id="sr-pm-char-type">' + esc(getCharTypeLabel(selectedChar.type || 'char')) + '</span>' +
+                '</div>' +
+                '<div style="font-size:10px;color:var(--c-sub);">仅影响该角色的自习室伴读互动，修改不影响其他角色</div>' +
+              '</div>' +
+            '</div>' +
+            '<button type="button" class="pl-btn-secondary" id="sr-pm-switch-char-btn" style="padding:3px 8px;font-size:10px;">' +
+              '<i class="fa-solid fa-repeat"></i> 切换角色' +
+            '</button>' +
+          '</div>' +
+
+          // 元信息栏
+          '<div class="sr-pm-meta-bar">' +
+            '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+              '<span style="font-weight:600;font-size:12px;color:var(--c-text);" id="sr-pm-title-lbl">专业学习助手提示词</span>' +
+              '<span class="sr-doc-badge" id="sr-pm-version-badge">V1</span>' +
+              '<span class="sr-doc-badge" id="sr-pm-type-badge">系统默认版</span>' +
+              '<span class="sr-doc-badge sr-pm-status-dirty" id="sr-pm-status-badge" style="display:none;">未保存修改</span>' +
+            '</div>' +
+            '<div style="font-size:10px;color:var(--c-hint);" id="sr-pm-updated-at">最后保存：系统内置默认模板</div>' +
+          '</div>' +
+
+          // 编辑文本域
+          '<div style="position:relative;width:100%;">' +
+            '<textarea class="sr-pm-textarea" id="sr-pm-editor" placeholder="在此查看、编辑或自定义提示词正文..."></textarea>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--c-sub);margin-top:-6px;">' +
+            '<span id="sr-pm-word-count">当前字数：0 字</span>' +
+            '<span style="color:var(--c-hint);"><i class="fa-solid fa-bolt" style="color:#22c55e;"></i> 保存后下一次 AI 提问即生效</span>' +
+          '</div>' +
+
+          // 底部操作按钮行
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px;flex-wrap:wrap;">' +
+            '<div style="display:flex;gap:6px;">' +
+              '<button type="button" class="pl-btn-secondary" id="sr-pm-btn-restore" style="padding:5px 10px;font-size:11px;color:#ef4444;" title="还原为系统内置默认模板">' +
+                '<i class="fa-solid fa-rotate-left"></i> 恢复默认' +
+              '</button>' +
+              '<button type="button" class="pl-btn-secondary" id="sr-pm-btn-copy" style="padding:5px 10px;font-size:11px;" title="复制提示词到剪贴板">' +
+                '<i class="fa-solid fa-copy"></i> 复制' +
+              '</button>' +
+            '</div>' +
+            '<button type="button" class="pl-btn-primary" id="sr-pm-btn-save" style="padding:5px 16px;font-size:11px;">' +
+              '<i class="fa-solid fa-floppy-disk"></i> 保存修改' +
+            '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    // 绑定事件
+    root.querySelector('#sr-prompt-mgr-mask').onclick = function(e) {
+      if (e.target.id === 'sr-prompt-mgr-mask') {
+        guardUnsavedChanges(function() {
+          root.innerHTML = '';
+        });
+      }
+    };
+
+    root.querySelector('#sr-pm-close-btn').onclick = function() {
+      guardUnsavedChanges(function() {
+        root.innerHTML = '';
+      });
+    };
+
+    root.querySelector('#sr-pm-help-btn').onclick = function() {
+      showHelpModal();
+    };
+
+    // 标签切换
+    root.querySelectorAll('.sr-pm-tab').forEach(function(tab) {
+      tab.onclick = function() {
+        var targetScope = tab.getAttribute('data-scope');
+        if (targetScope !== activeScope) {
+          guardUnsavedChanges(function() {
+            activeScope = targetScope;
+            loadAndRenderEditor();
+          });
+        }
+      };
+    });
+
+    // 切换角色按钮
+    var switchCharBtn = root.querySelector('#sr-pm-switch-char-btn');
+    if (switchCharBtn) {
+      switchCharBtn.onclick = function() {
+        openCharPickerModal();
+      };
+    }
+
+    // 文本域输入监听（标记未保存状态与字数统计）
+    var textareaEl = root.querySelector('#sr-pm-editor');
+    if (textareaEl) {
+      textareaEl.oninput = function() {
+        isDirty = (textareaEl.value !== initialContent);
+        updateMetaDisplay();
+      };
+    }
+
+    // 保存按钮
+    root.querySelector('#sr-pm-btn-save').onclick = function() {
+      executeSave();
+    };
+
+    // 恢复默认按钮
+    root.querySelector('#sr-pm-btn-restore').onclick = function() {
+      executeRestoreDefault();
+    };
+
+    // 复制按钮
+    root.querySelector('#sr-pm-btn-copy').onclick = function() {
+      executeCopy();
+    };
+
+    await loadAndRenderEditor();
+  }
+
+    function renderSettingsPage(container, viewport) {
     var setEl = document.createElement('div');
     setEl.className = 'sr-settings-container';
 
@@ -2728,6 +3219,21 @@
         '</div>' +
       '</div>' +
 
+      // AI 提示词管理中心（P0 核心配置）
+      '<div class="sr-set-group">' +
+        '<div class="sr-set-group-title">AI 提示词管理</div>' +
+        '<div class="sr-set-row" id="sr-set-row-prompt-manager" style="cursor:pointer;">' +
+          '<div class="sr-set-row-info">' +
+            '<div class="sr-set-row-title"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--c-primary, #6366f1);margin-right:4px;"></i> AI 提示词管理中心</div>' +
+            '<div class="sr-set-row-desc">独立配置「专业学习助手」与「Char 自习室附加规则」</div>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:6px;">' +
+            '<span style="font-size:11px;color:var(--c-sub);">两套独立存储</span>' +
+            '<i class="fa-solid fa-angle-right" style="color:var(--c-sub);"></i>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
       // 场景与立绘快捷入口
       '<div class="sr-set-group">' +
         '<div class="sr-set-group-title">视觉场景与立绘管理</div>' +
@@ -2772,6 +3278,13 @@
       saveAllSettings();
       window.toast && window.toast('提问时机偏好已保存');
     };
+
+    var promptMgrRow = setEl.querySelector('#sr-set-row-prompt-manager');
+    if (promptMgrRow) {
+      promptMgrRow.onclick = function() {
+        openPromptManagerModal(container);
+      };
+    }
 
     setEl.querySelector('#sr-set-row-companion').onclick = function() {
       openCompanionSelectorModal(container);
