@@ -266,31 +266,22 @@
 /* ====================================================
    2. 双人专注舞台 (Duo Focus Stage)
    ==================================================== */
+/* 核心自习舞台 */
 .sr-duo-stage {
   flex: 1;
   position: relative;
   display: flex;
   flex-direction: column;
-  background-size: cover;
-  background-position: center;
+  background: #111118;
   overflow: hidden;
   user-select: none;
-  min-height: 480px;
+  min-height: 0;
 }
 
-/* 场景蒙层与光晕 */
-.sr-stage-overlay {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(15, 15, 20, 0.45) 0%, rgba(15, 15, 20, 0.72) 100%);
-  pointer-events: none;
-  z-index: 1;
-}
-
-/* 顶部浮动工具条：场景切换、立绘微调、全屏 */
+/* 顶部工具栏 (层级25，去除了场景切换，只保留任务与Char图片设置) */
 .sr-stage-top-bar {
   position: relative;
-  z-index: 20;
+  z-index: 25;
   padding: 12px 14px 6px;
   display: flex;
   align-items: center;
@@ -301,11 +292,12 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px;
+  padding: 5px 12px;
   border-radius: var(--r-pill);
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   color: #fff;
   font-size: 11px;
   cursor: pointer;
@@ -313,55 +305,106 @@
 .sr-stage-quick-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
+/* 唯一图片配置入口按钮 */
 .sr-stage-icon-btn {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(6px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  background: rgba(99, 102, 241, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
   color: #fff;
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 12px;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.4);
+  transition: transform 0.1s, background 0.2s;
+}
+.sr-stage-icon-btn:active {
+  transform: scale(0.94);
+  background: rgba(99, 102, 241, 1);
 }
 
-/* 舞台中央：Char 立绘与专注气泡 (取消固定正方形限制，全场景自由尺寸与定位) */
+/* 上方整块自习舞台区域：Char 图片可完全覆盖铺满整块背景 */
 .sr-stage-actor-area {
   position: relative;
   flex: 1;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   z-index: 5;
-  width: 100%;
   overflow: hidden;
-  min-height: 240px;
+  min-height: 200px;
 }
 
-/* Char 角色对话气泡 */
+/* Char 立绘与整块背景层：直接覆盖铺满上方整块区域 */
+.sr-actor-standee-box {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  overflow: hidden;
+}
+.sr-actor-standee-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* 核心：完美覆盖上面一整块背景 */
+  object-position: center center;
+  transition: transform 0.1s ease-out;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+/* 当切换为自由等比立绘模式时的样式 */
+.sr-actor-standee-img.fit-contain {
+  object-fit: contain;
+  width: auto;
+  height: 85%;
+  max-height: 90%;
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.6));
+}
+
+/* 渐变遮罩，让顶部工具条与底部控制面板与背景自然过渡 */
+.sr-stage-actor-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(10, 10, 15, 0.35) 0%, rgba(10, 10, 15, 0.05) 40%, rgba(10, 10, 15, 0.75) 100%);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Char 对话气泡 (层级15) */
 .sr-actor-bubble {
   position: absolute;
-  top: 10px;
+  top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  max-width: 260px;
-  background: rgba(255, 255, 255, 0.94);
-  color: #222;
+  max-width: 280px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #111115;
   border-radius: 14px;
-  padding: 8px 12px;
+  padding: 8px 14px;
   font-size: 11px;
+  font-weight: 500;
   line-height: 1.45;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
   animation: srBubbleFloat 3s ease-in-out infinite alternate;
   z-index: 15;
   text-align: center;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(6px);
   pointer-events: auto;
 }
 .sr-actor-bubble::after {
@@ -372,57 +415,52 @@
   transform: translateX(-50%) rotate(45deg);
   width: 10px;
   height: 10px;
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.95);
 }
 @keyframes srBubbleFloat {
   from { transform: translateX(-50%) translateY(0); }
   to { transform: translateX(-50%) translateY(-4px); }
 }
 
-/* 立绘外框与交互：解绑正方形容器限制，全场景自由缩放与定位 */
-.sr-actor-standee-box {
+/* 伴读同桌名牌 (层级15) */
+.sr-actor-name-tag {
   position: absolute;
-  inset: 0;
-  cursor: grab;
-  display: flex;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 4px 14px;
+  border-radius: 100px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 6;
-  overflow: visible;
-}
-.sr-actor-standee-box:active {
-  cursor: grabbing;
-}
-.sr-actor-standee-img {
-  max-height: none;
-  max-width: none;
-  height: 280px;
-  width: auto;
-  object-fit: contain;
-  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.45));
-  transition: transform 0.08s ease-out;
-  transform-origin: center center;
+  gap: 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  z-index: 15;
   pointer-events: auto;
-  touch-action: none;
-  user-select: none;
-  -webkit-user-drag: none;
+  white-space: nowrap;
 }
 
-/* 下半部分：番茄钟表盘与控制面板 (最高层级，确保按钮不被立绘遮挡) */
+/* 下半部分：番茄钟控制面板 (最高层级25，毛玻璃高保真，按钮绝不被遮挡) */
 .sr-stage-control-panel {
   position: relative;
-  z-index: 20;
-  background: rgba(20, 20, 26, 0.82);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  z-index: 25;
+  background: rgba(14, 14, 20, 0.88);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
   padding: 14px 18px 20px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   pointer-events: auto;
+  flex-shrink: 0;
 }
 
 /* 三种陪伴模式切换胶囊 */
