@@ -1607,3 +1607,71 @@
 #browser-page.wb-inprivate-mode .wb-bottom-action-btn {
   color: #a78bfa !important;
 }
+
+/* ===== 浏览器设置面板与开关组件 ===== */
+.wb-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  margin-bottom: 8px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.wb-setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  padding-right: 12px;
+}
+.wb-setting-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.wb-setting-desc {
+  font-size: 11px;
+  color: var(--c-sub);
+  line-height: 1.4;
+}
+.wb-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.wb-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.wb-switch-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--c-border);
+  transition: .25s ease;
+  border-radius: 24px;
+}
+.wb-switch-slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: .25s ease;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.wb-switch input:checked + .wb-switch-slider {
+  background-color: var(--c-primary, #6366f1);
+}
+.wb-switch input:checked + .wb-switch-slider:before {
+  transform: translateX(20px);
+}
