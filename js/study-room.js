@@ -179,6 +179,12 @@
   var _timerInterval = null;
 
   // 工具函数
+
+  function getCharTypeLabel(type) {
+    if (type === 'npc') return 'NPC 配角';
+    if (type === 'user') return 'USER 用户';
+    return 'CHAR 主角';
+  }
   function esc(str) {
     if (!str) return '';
     return String(str)
@@ -227,19 +233,26 @@
     } catch (e) {}
   }
 
-  // 加载当前伴侣角色档案
-  async function loadCompanionChar() {
+  // 加载当前伴侣角色档案（支持按指定或保存的角色 ID 载入）
+  async function loadCompanionChar(targetCharId) {
     try {
       if (window.db && db.characters) {
         var all = await db.characters.toArray();
-        var main = all.find(function(c) { return c.type === 'char' || c.isCompanion; }) || all[0];
+        var main = null;
+        if (targetCharId) {
+          main = all.find(function(c) { return String(c.id) === String(targetCharId); });
+        }
+        if (!main) {
+          main = all.find(function(c) { return c.type === 'char' || c.isCompanion; }) || all[0];
+        }
         if (main) {
           _state.companionChar = {
             id: main.id,
             name: main.name || '林弯弯',
             avatar: main.avatar || 'img/wanwan.png',
-            personality: main.personality || '温柔体贴、善解人意，专注时默默守护，休息时悉心关怀',
-            lorebook: main.lorebook || '弯弯手机伴侣'
+            personality: main.personality || main.bio || '温柔体贴、善解人意，专注时默默守护，休息时悉心关怀',
+            lorebook: main.lorebook || '弯弯手机伴侣',
+            type: main.type || 'char'
           };
           return;
         }
@@ -250,15 +263,48 @@
       name: '林弯弯',
       avatar: 'img/wanwan.png',
       personality: '温柔体贴、善解人意，专注时默默守护，休息时悉心关怀',
-      lorebook: '弯弯手机伴侣'
+      lorebook: '弯弯手机伴侣',
+      type: 'char'
     };
+  }
+
+  // 切换自习同桌伴侣角色（自习室设置专属）
+  function switchCompanionChar(character, container) {
+    if (!character) return;
+    _state.companionChar = {
+      id: character.id,
+      name: character.name || '未命名角色',
+      avatar: character.avatar || 'img/wanwan.png',
+      personality: character.personality || character.bio || '温柔体贴、善解人意，专注时默默守护，休息时悉心关怀',
+      lorebook: character.lorebook || '',
+      type: character.type || 'char'
+    };
+    saveAllSettings();
+
+    // 更新设置页当前同桌信息展示
+    if (container) {
+      var av = container.querySelector('#sr-set-companion-avatar');
+      if (av) av.src = _state.companionChar.avatar || 'img/wanwan.png';
+      var nm = container.querySelector('#sr-set-companion-name');
+      if (nm) nm.textContent = _state.companionChar.name;
+      var tp = container.querySelector('#sr-set-companion-type');
+      if (tp) tp.textContent = getCharTypeLabel(_state.companionChar.type);
+      var stDesc = container.querySelector('#sr-set-standee-desc');
+      if (stDesc) stDesc.textContent = '当前针对：' + _state.companionChar.name + ' · 自定义立绘与微调';
+
+      // 实时更新双人舞台
+      updateDuoControls(container);
+    }
+
+    _state.actorSpeech = '';
+    window.toast && window.toast('自习陪伴对象已切换为「' + _state.companionChar.name + '」');
   }
 
   // 初始化持久化数据
   async function initStudyState() {
-    await loadCompanionChar();
-
     var savedSettings = await loadStorage(STORAGE_KEYS.SETTINGS, null);
+    var savedCharId = savedSettings ? savedSettings.companionCharId : null;
+    await loadCompanionChar(savedCharId);
     if (savedSettings) {
       if (savedSettings.studyMode) _state.studyMode = savedSettings.studyMode;
       if (savedSettings.modePreferences) _state.modePreferences = Object.assign(_state.modePreferences, savedSettings.modePreferences);
@@ -349,7 +395,8 @@
       currentSceneId: _state.currentSceneId,
       customBgUrl: _state.customBgUrl,
       taskType: _state.taskType,
-      taskName: _state.taskName
+      taskName: _state.taskName,
+      companionCharId: _state.companionChar ? _state.companionChar.id : null
     });
   }
 
@@ -593,12 +640,22 @@
       }
     }
 
-    // 更新立绘
+    // 更新立绘与同桌名称
     var standeeImg = container.querySelector('#sr-standee-img');
     if (standeeImg) {
       standeeImg.src = getActiveStandeeImg();
       var conf = getCurrentCharStandeeConfig();
       standeeImg.style.transform = 'scale(' + (conf.scale / 100) + ') translate(' + conf.offsetX + 'px, ' + conf.offsetY + 'px)';
+    }
+
+    var standeeBox = container.querySelector('#sr-standee-box');
+    if (standeeBox && _state.companionChar) {
+      standeeBox.title = '点击与 ' + esc(_state.companionChar.name) + ' 互动';
+    }
+
+    var nameTag = container.querySelector('#sr-actor-name-tag');
+    if (nameTag && _state.companionChar) {
+      nameTag.innerHTML = '<i class="fa-solid fa-heart" style="font-size:9px;color:#f43f5e;"></i> ' + esc(_state.companionChar.name);
     }
   }
 
@@ -935,14 +992,15 @@
         '</div>' +
       '</div>' +
 
-      // 舞台中区：Char 对话气泡与立绘
+      // 舞台中区：Char 对话气泡、立绘与同桌名牌
       '<div class="sr-stage-actor-area">' +
         '<div class="sr-actor-bubble" id="sr-actor-bubble" style="display:' + (_state.actorSpeech ? 'block' : 'none') + ';">' +
           esc(_state.actorSpeech || '') +
         '</div>' +
-        '<div class="sr-actor-standee-box" id="sr-standee-box" title="点击与TA互动">' +
+        '<div class="sr-actor-standee-box" id="sr-standee-box" title="点击与 ' + esc((_state.companionChar && _state.companionChar.name) || 'TA') + ' 互动">' +
           '<img class="sr-actor-standee-img" id="sr-standee-img" src="' + getActiveStandeeImg() + '" onerror="this.src=\'img/wanwan.png\'">' +
         '</div>' +
+        '<div class="sr-actor-name-tag" id="sr-actor-name-tag"><i class="fa-solid fa-heart" style="font-size:9px;color:#f43f5e;"></i> ' + esc((_state.companionChar && _state.companionChar.name) || '林弯弯') + '</div>' +
       '</div>' +
 
       // 下部控制板
@@ -2437,13 +2495,184 @@
   }
 
   // ====================================================
+
+  // 角色档案选择弹窗（自习室切换陪伴对象专属）
+  async function openCompanionSelectorModal(container) {
+    var root = container.querySelector('#sr-modal-root');
+    if (!root) return;
+
+    var allChars = [];
+    try {
+      if (window.db && db.characters) {
+        allChars = await db.characters.toArray();
+      }
+    } catch (e) {}
+
+    // 如果数据库中尚无角色，提供兜底角色林弯弯
+    if (!allChars || allChars.length === 0) {
+      allChars = [
+        {
+          id: 'char_default',
+          name: '林弯弯',
+          avatar: 'img/wanwan.png',
+          personality: '温柔体贴、善解人意，专注时默默守护，休息时悉心关怀',
+          type: 'char'
+        }
+      ];
+    }
+
+    var currentFilter = 'all'; // 'all' | 'char' | 'npc' | 'user'
+    var searchKeyword = '';
+
+    function getFilteredList() {
+      return allChars.filter(function(c) {
+        var matchType = currentFilter === 'all' || (c.type || 'char') === currentFilter;
+        if (!matchType) return false;
+        if (!searchKeyword) return true;
+        var kw = searchKeyword.toLowerCase();
+        var nameMatch = (c.name || '').toLowerCase().indexOf(kw) !== -1;
+        var descMatch = (c.personality || c.bio || c.lorebook || '').toLowerCase().indexOf(kw) !== -1;
+        return nameMatch || descMatch;
+      });
+    }
+
+    function renderModalContent() {
+      var filtered = getFilteredList();
+      var curId = _state.companionChar ? String(_state.companionChar.id) : '';
+
+      root.innerHTML =
+        '<div class="sr-modal-mask" id="sr-companion-mask">' +
+          '<div class="sr-modal-panel">' +
+            '<div class="sr-modal-header">' +
+              '<span>选择双人自习陪伴对象</span>' +
+              '<button type="button" class="pl-btn-secondary" id="sr-companion-close" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
+            '</div>' +
+
+            // 分类筛选标签
+            '<div style="display:flex;gap:6px;align-items:center;overflow-x:auto;padding-bottom:2px;">' +
+              '<button type="button" class="pl-btn-secondary sr-cfilter-btn' + (currentFilter === 'all' ? ' active' : '') + '" data-filter="all" style="padding:4px 10px;font-size:11px;' + (currentFilter === 'all' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">全部 (' + allChars.length + ')</button>' +
+              '<button type="button" class="pl-btn-secondary sr-cfilter-btn' + (currentFilter === 'char' ? ' active' : '') + '" data-filter="char" style="padding:4px 10px;font-size:11px;' + (currentFilter === 'char' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">CHAR 主角</button>' +
+              '<button type="button" class="pl-btn-secondary sr-cfilter-btn' + (currentFilter === 'npc' ? ' active' : '') + '" data-filter="npc" style="padding:4px 10px;font-size:11px;' + (currentFilter === 'npc' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">NPC 配角</button>' +
+              '<button type="button" class="pl-btn-secondary sr-cfilter-btn' + (currentFilter === 'user' ? ' active' : '') + '" data-filter="user" style="padding:4px 10px;font-size:11px;' + (currentFilter === 'user' ? 'border-color:var(--c-text);font-weight:600;' : '') + '">USER 用户</button>' +
+            '</div>' +
+
+            // 搜索框
+            '<div style="position:relative;">' +
+              '<input type="text" class="input-field" id="sr-companion-search" value="' + esc(searchKeyword) + '" placeholder="搜索角色名称、性格或简介..." style="width:100%;padding-right:28px;">' +
+              (searchKeyword ? '<i class="fa-solid fa-circle-xmark" id="sr-clear-search" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--c-sub);"></i>' : '') +
+            '</div>' +
+
+            // 角色卡片列表
+            '<div class="sr-char-select-list" id="sr-char-list">' +
+              (filtered.length === 0
+                ? '<div style="text-align:center;padding:24px 0;color:var(--c-sub);font-size:12px;"><i class="fa-solid fa-user-slash" style="font-size:24px;margin-bottom:8px;display:block;opacity:0.4;"></i>未找到匹配的角色档案</div>'
+                : filtered.map(function(c) {
+                    var isSelected = String(c.id) === curId;
+                    var typeLabel = getCharTypeLabel(c.type || 'char');
+                    var desc = c.personality || c.bio || c.lorebook || '暂无设定简介';
+                    return (
+                      '<div class="sr-char-select-item' + (isSelected ? ' selected' : '') + '" data-char-id="' + esc(c.id) + '">' +
+                        '<img class="sr-char-select-avatar" src="' + esc(c.avatar || 'img/wanwan.png') + '" onerror="this.src=\'img/wanwan.png\'">' +
+                        '<div class="sr-char-select-info">' +
+                          '<div class="sr-char-select-name-row">' +
+                            '<span class="sr-char-select-name">' + esc(c.name || '未命名角色') + '</span>' +
+                            '<span class="sr-char-select-type">' + esc(typeLabel) + '</span>' +
+                            (isSelected ? '<span style="font-size:10px;color:var(--c-primary, #6366f1);font-weight:600;margin-left:auto;">当前同桌</span>' : '') +
+                          '</div>' +
+                          '<div class="sr-char-select-desc" title="' + esc(desc) + '">' + esc(desc) + '</div>' +
+                        '</div>' +
+                        (isSelected ? '<div class="sr-char-select-check"><i class="fa-solid fa-circle-check"></i></div>' : '') +
+                      '</div>'
+                    );
+                  }).join('')) +
+            '</div>' +
+
+            '<div style="font-size:11px;color:var(--c-sub);display:flex;align-items:center;justify-content:space-between;padding-top:4px;border-top:1px solid var(--c-border);">' +
+              '<span><i class="fa-solid fa-lightbulb" style="color:#f59e0b;"></i> 直接关联桌面「角色档案」中的全部角色</span>' +
+              '<span style="font-size:10px;color:var(--c-hint);">选定后立绘与自习状态自动保存</span>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+
+      // 绑定交互事件
+      root.querySelector('#sr-companion-mask').onclick = function(e) {
+        if (e.target.id === 'sr-companion-mask') root.innerHTML = '';
+      };
+      root.querySelector('#sr-companion-close').onclick = function() {
+        root.innerHTML = '';
+      };
+
+      root.querySelectorAll('.sr-cfilter-btn').forEach(function(btn) {
+        btn.onclick = function() {
+          currentFilter = btn.getAttribute('data-filter') || 'all';
+          renderModalContent();
+        };
+      });
+
+      var sInput = root.querySelector('#sr-companion-search');
+      if (sInput) {
+        sInput.oninput = function() {
+          searchKeyword = sInput.value.trim();
+          renderModalContent();
+          var newIn = root.querySelector('#sr-companion-search');
+          if (newIn) {
+            newIn.focus();
+            newIn.setSelectionRange(newIn.value.length, newIn.value.length);
+          }
+        };
+      }
+
+      var clearBtn = root.querySelector('#sr-clear-search');
+      if (clearBtn) {
+        clearBtn.onclick = function() {
+          searchKeyword = '';
+          renderModalContent();
+        };
+      }
+
+      root.querySelectorAll('.sr-char-select-item').forEach(function(item) {
+        item.onclick = function() {
+          var cid = item.getAttribute('data-char-id');
+          var chosen = allChars.find(function(c) { return String(c.id) === String(cid); });
+          if (chosen) {
+            switchCompanionChar(chosen, container);
+            root.innerHTML = '';
+          }
+        };
+      });
+    }
+
+    renderModalContent();
+  }
+
   // 8. 设置页面 (Settings)
   // ====================================================
   function renderSettingsPage(container, viewport) {
     var setEl = document.createElement('div');
     setEl.className = 'sr-settings-container';
 
+    var curChar = _state.companionChar || { name: '林弯弯', avatar: 'img/wanwan.png', type: 'char' };
+
     setEl.innerHTML =
+      // 双人自习同桌与陪伴角色选择（角色档案互通）
+      '<div class="sr-set-group">' +
+        '<div class="sr-set-group-title">双人自习陪伴对象</div>' +
+        '<div class="sr-set-row" id="sr-set-row-companion" style="cursor:pointer;">' +
+          '<div class="sr-set-row-info">' +
+            '<div class="sr-set-row-title">当前自习陪伴角色</div>' +
+            '<div class="sr-set-row-desc">点击可选择角色档案中的角色作为双人专注同桌</div>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<img id="sr-set-companion-avatar" src="' + esc(curChar.avatar || 'img/wanwan.png') + '" onerror="this.src=\'img/wanwan.png\'" style="width:34px;height:34px;border-radius:50%;object-fit:cover;border:1.5px solid var(--c-primary, #6366f1);flex-shrink:0;">' +
+            '<div style="text-align:right;">' +
+              '<div id="sr-set-companion-name" style="font-size:13px;font-weight:600;color:var(--c-text);">' + esc(curChar.name) + '</div>' +
+              '<div id="sr-set-companion-type" style="font-size:10px;color:var(--c-sub);">' + esc(getCharTypeLabel(curChar.type || 'char')) + '</div>' +
+            '</div>' +
+            '<i class="fa-solid fa-angle-right" style="color:var(--c-sub);margin-left:4px;"></i>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
       // 番茄钟时长配置
       '<div class="sr-set-group">' +
         '<div class="sr-set-group-title">专注与休息周期配置</div>' +
@@ -2512,7 +2741,7 @@
         '<div class="sr-set-row" id="sr-set-row-standee" style="cursor:pointer;">' +
           '<div class="sr-set-row-info">' +
             '<div class="sr-set-row-title">Char 立绘多状态与微调</div>' +
-            '<div class="sr-set-row-desc">上传透明背景图片、调整位置与大小</div>' +
+            '<div class="sr-set-row-desc" id="sr-set-standee-desc">当前针对：' + esc(curChar.name) + ' · 自定义立绘与微调</div>' +
           '</div>' +
           '<i class="fa-solid fa-angle-right" style="color:var(--c-sub);"></i>' +
         '</div>' +
@@ -2542,6 +2771,10 @@
       _state.modePreferences.interactive.questionTiming = qTimingSelect.value;
       saveAllSettings();
       window.toast && window.toast('提问时机偏好已保存');
+    };
+
+    setEl.querySelector('#sr-set-row-companion').onclick = function() {
+      openCompanionSelectorModal(container);
     };
 
     setEl.querySelector('#sr-set-row-scene').onclick = function() {
