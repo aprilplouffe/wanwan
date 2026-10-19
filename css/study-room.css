@@ -1584,3 +1584,106 @@
 }
 
 /* 键盘弹起时由浏览器缩小可视区；底栏保持在应用布局内，不使用 fixed 遮挡输入框。 */
+
+
+/* ====================================================
+   V2 修复：底部四入口必须始终可见
+   ==================================================== */
+#study-room-page {
+  position: absolute !important;
+  inset: 0 !important;
+  overflow: hidden !important;
+  box-sizing: border-box;
+}
+
+/* 内容只占主区域；底部预留导航高度，避免专注页把导航挤出屏幕。 */
+#study-room-page .sr-content-viewport {
+  flex: 1 1 auto;
+  min-height: 0 !important;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding-bottom: calc(68px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+/* 关键修复：不再依赖 flex 排版把导航排到最后，而是钉在自习室页面底部。 */
+#study-room-page .sr-bottom-nav {
+  position: absolute !important;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100 !important;
+  min-height: 58px;
+  box-sizing: border-box;
+  padding: 5px 8px calc(5px + env(safe-area-inset-bottom, 0px));
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  background: var(--c-bg);
+  border-top: 1px solid var(--c-border);
+  box-shadow: 0 -8px 24px rgba(0,0,0,.10);
+}
+
+/* 双人专注页只能使用内容视口高度，不得把底栏推出页面。 */
+#study-room-page .sr-duo-stage {
+  flex: 1 1 auto;
+  min-height: 0 !important;
+  height: 100%;
+  max-height: 100%;
+  box-sizing: border-box;
+}
+
+/* 上方 Char 场景允许收缩，避免图片把整个专注页撑高。 */
+#study-room-page .sr-stage-actor-area {
+  flex: 1 1 0;
+  min-height: 150px;
+  height: auto !important;
+  overflow: hidden;
+}
+
+/* 普通 Char 立绘默认等比显示，宽屏不再被拉成巨幅背景。 */
+#study-room-page .sr-actor-standee-img.fit-contain {
+  width: auto !important;
+  height: auto !important;
+  max-width: min(92%, 900px);
+  max-height: 92%;
+  object-fit: contain !important;
+}
+
+/* 抽屉相对整个自习室覆盖，并高于底部导航。 */
+#study-room-page .sr-drawer-mask {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 160 !important;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+#study-room-page .sr-all-drawer {
+  max-height: min(78%, 680px);
+}
+
+/* 首页现在只保留四个快捷功能，桌面/手机都更自然。 */
+#study-room-page .sr-grid-menu {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (min-width: 720px) {
+  #study-room-page .sr-grid-menu {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  /* 桌面宽屏下控制 Char 场景高度，避免视觉被单张图片完全占满。 */
+  #study-room-page .sr-stage-actor-area {
+    min-height: 240px;
+  }
+}
+
+@media (max-height: 620px) {
+  #study-room-page .sr-content-viewport {
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  #study-room-page .sr-bottom-nav {
+    min-height: 52px;
+  }
+  #study-room-page .sr-stage-actor-area {
+    min-height: 120px;
+  }
+}
