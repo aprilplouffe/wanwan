@@ -290,11 +290,12 @@
 /* 顶部浮动工具条：场景切换、立绘微调、全屏 */
 .sr-stage-top-bar {
   position: relative;
-  z-index: 10;
+  z-index: 20;
   padding: 12px 14px 6px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  pointer-events: auto;
 }
 .sr-stage-task-pill {
   display: inline-flex;
@@ -329,24 +330,28 @@
   cursor: pointer;
 }
 
-/* 舞台中央：Char 立绘与专注气泡 */
+/* 舞台中央：Char 立绘与专注气泡 (取消固定正方形限制，全场景自由尺寸与定位) */
 .sr-stage-actor-area {
   position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   z-index: 5;
-  padding-bottom: 8px;
+  width: 100%;
+  overflow: hidden;
+  min-height: 240px;
 }
 
 /* Char 角色对话气泡 */
 .sr-actor-bubble {
   position: absolute;
   top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
   max-width: 260px;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.94);
   color: #222;
   border-radius: 14px;
   padding: 8px 12px;
@@ -354,9 +359,10 @@
   line-height: 1.45;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   animation: srBubbleFloat 3s ease-in-out infinite alternate;
-  z-index: 12;
+  z-index: 15;
   text-align: center;
   backdrop-filter: blur(4px);
+  pointer-events: auto;
 }
 .sr-actor-bubble::after {
   content: '';
@@ -366,36 +372,48 @@
   transform: translateX(-50%) rotate(45deg);
   width: 10px;
   height: 10px;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.94);
 }
 @keyframes srBubbleFloat {
-  from { transform: translateY(0); }
-  to { transform: translateY(-4px); }
+  from { transform: translateX(-50%) translateY(0); }
+  to { transform: translateX(-50%) translateY(-4px); }
 }
 
-/* 立绘外框与交互 */
+/* 立绘外框与交互：解绑正方形容器限制，全场景自由缩放与定位 */
 .sr-actor-standee-box {
-  position: relative;
-  cursor: pointer;
-  transition: transform 0.2s ease;
-  max-height: 250px;
+  position: absolute;
+  inset: 0;
+  cursor: grab;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
+  pointer-events: none;
+  z-index: 6;
+  overflow: visible;
+}
+.sr-actor-standee-box:active {
+  cursor: grabbing;
 }
 .sr-actor-standee-img {
-  max-height: 240px;
-  max-width: 220px;
+  max-height: none;
+  max-width: none;
+  height: 280px;
+  width: auto;
   object-fit: contain;
-  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.45));
-  transition: transform 0.2s ease;
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.45));
+  transition: transform 0.08s ease-out;
+  transform-origin: center center;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
-/* 下半部分：番茄钟表盘与控制面板 */
+/* 下半部分：番茄钟表盘与控制面板 (最高层级，确保按钮不被立绘遮挡) */
 .sr-stage-control-panel {
   position: relative;
-  z-index: 10;
-  background: rgba(20, 20, 26, 0.78);
+  z-index: 20;
+  background: rgba(20, 20, 26, 0.82);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-top: 1px solid rgba(255, 255, 255, 0.1);
@@ -404,6 +422,7 @@
   flex-direction: column;
   align-items: center;
   gap: 12px;
+  pointer-events: auto;
 }
 
 /* 三种陪伴模式切换胶囊 */
@@ -1138,23 +1157,29 @@
    双人专注陪伴对象与角色选择弹窗样式
    ==================================================== */
 
-/* 伴读角色同桌名牌 */
+/* 伴读角色同桌名牌：浮动于立绘前方底部，不遮挡任何操作按钮 */
 .sr-actor-name-tag {
-  margin-top: 6px;
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
   font-size: 11px;
   font-weight: 600;
   color: #fff;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  padding: 3px 10px;
+  padding: 3px 12px;
   border-radius: 100px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   letter-spacing: 0.2px;
+  z-index: 15;
+  pointer-events: auto;
+  white-space: nowrap;
 }
 
 /* 角色选择弹窗列表 */
@@ -1293,4 +1318,23 @@
   background: rgba(245, 158, 11, 0.12) !important;
   border-color: #f59e0b !important;
   font-weight: 600;
+}
+
+/* 移动端与小屏 Android 手机显示与按钮防遮挡适配保障 */
+@media (max-height: 660px) {
+  .sr-stage-control-panel {
+    padding: 8px 14px 12px;
+    gap: 8px;
+  }
+  .sr-timer-time-display {
+    font-size: 36px;
+  }
+  .sr-timer-main-btn {
+    width: 46px;
+    height: 46px;
+    font-size: 16px;
+  }
+  .sr-stage-top-bar {
+    padding: 8px 12px 4px;
+  }
 }
