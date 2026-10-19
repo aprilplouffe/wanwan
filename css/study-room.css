@@ -1133,3 +1133,105 @@
   color: #fff;
 }
 
+
+/* ====================================================
+   双人专注陪伴对象与角色选择弹窗样式
+   ==================================================== */
+
+/* 伴读角色同桌名牌 */
+.sr-actor-name-tag {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 3px 10px;
+  border-radius: 100px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  letter-spacing: 0.2px;
+}
+
+/* 角色选择弹窗列表 */
+.sr-char-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.sr-char-select-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.sr-char-select-item:hover {
+  background: var(--c-surface-2);
+  border-color: var(--c-primary, #6366f1);
+}
+.sr-char-select-item.selected {
+  border-color: var(--c-primary, #6366f1);
+  background: rgba(99, 102, 241, 0.08);
+}
+.sr-char-select-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--c-border);
+  flex-shrink: 0;
+}
+.sr-char-select-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sr-char-select-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sr-char-select-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sr-char-select-type {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 100px;
+  background: var(--c-surface-2);
+  color: var(--c-sub);
+  border: 1px solid var(--c-border);
+}
+.sr-char-select-desc {
+  font-size: 11px;
+  color: var(--c-sub);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.sr-char-select-check {
+  color: var(--c-primary, #6366f1);
+  font-size: 16px;
+  padding-left: 6px;
+  flex-shrink: 0;
+}
