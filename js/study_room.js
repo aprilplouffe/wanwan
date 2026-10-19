@@ -714,20 +714,19 @@
         '</div>' +
       '</div>' +
 
-      // 8 大模块横向切换选项卡
-      '<div class="sr-nav-tabs" id="sr-tabs-bar">' +
-        '<div class="sr-tab-item' + (_state.activeTab === 'hall' ? ' active' : '') + '" data-tab="hall"><i class="fa-solid fa-hotel"></i> 自习大厅</div>' +
-        '<div class="sr-tab-item' + (_state.activeTab === 'duo' ? ' active' : '') + '" data-tab="duo"><i class="fa-solid fa-user-group"></i> 双人专注</div>' +
-        '<div class="sr-tab-item' + (_state.activeTab === 'resources' ? ' active' : '') + '" data-tab="resources"><i class="fa-solid fa-book-bookmark"></i> 资料库</div>' +
-        '<div class="sr-tab-item' + (_state.activeTab === 'assistant' ? ' active' : '') + '" data-tab="assistant"><i class="fa-solid fa-wand-magic-sparkles"></i> 学习助手</div>' +
-        '<div class="sr-tab-item' + (_state.activeTab === 'quiz' ? ' active' : '') + '" data-tab="quiz"><i class="fa-solid fa-brain"></i> 智能题库</div>' +
-        '<div class="sr-tab-item' + (_state.activeTab === 'mistakes' ? ' active' : '') + '" data-tab="mistakes"><i class="fa-solid fa-book-open-reader"></i> 错题本 (' + _state.mistakes.length + ')</div>' +
-        '<div class="sr-tab-item' + (_state.activeTab === 'report' ? ' active' : '') + '" data-tab="report"><i class="fa-solid fa-chart-line"></i> 学习报告</div>' +
-        '<div class="sr-tab-item' + (_state.activeTab === 'settings' ? ' active' : '') + '" data-tab="settings"><i class="fa-solid fa-gear"></i> 设置</div>' +
-      '</div>' +
-
       // 核心视口
       '<div class="sr-content-viewport" id="sr-viewport"></div>' +
+
+      // 底部固定四入口：大厅 / 双人专注 / 资料库 / 全部
+      '<nav class="sr-bottom-nav" id="sr-bottom-nav" aria-label="陪伴自习室主导航">' +
+        '<button type="button" class="sr-bottom-nav-item" data-tab="hall"><i class="fa-solid fa-house"></i><span>首页</span></button>' +
+        '<button type="button" class="sr-bottom-nav-item" data-tab="duo"><i class="fa-solid fa-user-group"></i><span>双人专注</span></button>' +
+        '<button type="button" class="sr-bottom-nav-item" data-tab="resources"><i class="fa-solid fa-book-bookmark"></i><span>资料库</span></button>' +
+        '<button type="button" class="sr-bottom-nav-item" id="sr-open-all-drawer"><i class="fa-solid fa-grip"></i><span>全部</span></button>' +
+      '</nav>' +
+
+      // 全部功能抽屉挂载点
+      '<div id="sr-drawer-root"></div>' +
 
       // 弹窗挂载点
       '<div id="sr-modal-root"></div>';
@@ -741,18 +740,20 @@
       }
     };
 
-    // 绑定 Tab 切换
-    container.querySelectorAll('.sr-tab-item').forEach(function(item) {
+    // 绑定底部固定导航
+    container.querySelectorAll('.sr-bottom-nav-item[data-tab]').forEach(function(item) {
       item.onclick = function() {
-        var targetTab = item.getAttribute('data-tab');
-        if (_state.activeTab !== targetTab) {
-          _state.activeTab = targetTab;
-          container.querySelectorAll('.sr-tab-item').forEach(function(el) { el.classList.remove('active'); });
-          item.classList.add('active');
-          renderActiveTabPage(container);
-        }
+        switchTab(container, item.getAttribute('data-tab'));
       };
     });
+
+    var allDrawerBtn = container.querySelector('#sr-open-all-drawer');
+    if (allDrawerBtn) {
+      allDrawerBtn.onclick = function() {
+        openAllFeaturesDrawer(container);
+      };
+    }
+    updateBottomNavState(container);
 
     container.querySelector('#sr-quick-mode-badge').onclick = function() {
       cycleStudyMode(container);
@@ -790,6 +791,7 @@
   function renderActiveTabPage(container) {
     var viewport = container.querySelector('#sr-viewport');
     if (!viewport) return;
+    updateBottomNavState(container);
     viewport.innerHTML = '';
 
     switch (_state.activeTab) {
@@ -930,12 +932,90 @@
     };
   }
 
+  function updateBottomNavState(container) {
+    if (!container) return;
+    container.querySelectorAll('.sr-bottom-nav-item[data-tab]').forEach(function(el) {
+      el.classList.toggle('active', el.getAttribute('data-tab') === _state.activeTab);
+    });
+    var allBtn = container.querySelector('#sr-open-all-drawer');
+    if (allBtn) {
+      var isSecondary = ['assistant', 'quiz', 'mistakes', 'report', 'settings'].indexOf(_state.activeTab) >= 0;
+      allBtn.classList.toggle('active', isSecondary);
+    }
+  }
+
   function switchTab(container, tabName) {
     _state.activeTab = tabName;
-    container.querySelectorAll('.sr-tab-item').forEach(function(el) {
-      el.classList.toggle('active', el.getAttribute('data-tab') === tabName);
-    });
+    closeAllFeaturesDrawer(container);
+    updateBottomNavState(container);
     renderActiveTabPage(container);
+  }
+
+  function closeAllFeaturesDrawer(container) {
+    var root = container && container.querySelector('#sr-drawer-root');
+    if (root) root.innerHTML = '';
+  }
+
+  function openAllFeaturesDrawer(container) {
+    var root = container.querySelector('#sr-drawer-root');
+    if (!root) return;
+
+    var items = [
+      { tab: 'hall', icon: 'fa-house', title: '自习大厅', desc: '今日自习与待办' },
+      { tab: 'duo', icon: 'fa-user-group', title: '双人专注', desc: 'Char 陪伴专注' },
+      { tab: 'resources', icon: 'fa-book-bookmark', title: '资料库', desc: '学习资料与笔记' },
+      { tab: 'assistant', icon: 'fa-wand-magic-sparkles', title: '学习助手', desc: 'AI 提问与学习' },
+      { tab: 'quiz', icon: 'fa-brain', title: '智能题库', desc: '练习与自测' },
+      { tab: 'mistakes', icon: 'fa-book-open-reader', title: '错题本', desc: '查漏补缺 · ' + _state.mistakes.length + ' 题' },
+      { tab: 'report', icon: 'fa-chart-line', title: '学习报告', desc: '专注统计与记录' },
+      { tab: 'settings', icon: 'fa-gear', title: '自习室设置', desc: '偏好与 Char 设置' }
+    ];
+
+    root.innerHTML =
+      '<div class="sr-drawer-mask" id="sr-all-drawer-mask">' +
+        '<section class="sr-all-drawer" role="dialog" aria-modal="true" aria-label="全部功能">' +
+          '<div class="sr-drawer-handle" aria-hidden="true"></div>' +
+          '<div class="sr-drawer-header">' +
+            '<div><div class="sr-drawer-title">全部功能</div><div class="sr-drawer-subtitle">学习与练习</div></div>' +
+            '<button type="button" class="sr-drawer-close" id="sr-all-drawer-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
+          '</div>' +
+          '<div class="sr-drawer-grid">' +
+            items.map(function(item) {
+              return '<button type="button" class="sr-drawer-feature' + (_state.activeTab === item.tab ? ' active' : '') + '" data-tab="' + item.tab + '">' +
+                '<span class="sr-drawer-feature-icon"><i class="fa-solid ' + item.icon + '"></i></span>' +
+                '<span class="sr-drawer-feature-title">' + item.title + '</span>' +
+                '<span class="sr-drawer-feature-desc">' + item.desc + '</span>' +
+              '</button>';
+            }).join('') +
+          '</div>' +
+        '</section>' +
+      '</div>';
+
+    var mask = root.querySelector('#sr-all-drawer-mask');
+    var panel = root.querySelector('.sr-all-drawer');
+    root.querySelector('#sr-all-drawer-close').onclick = function() {
+      closeAllFeaturesDrawer(container);
+    };
+    mask.onclick = function(e) {
+      if (e.target === mask) closeAllFeaturesDrawer(container);
+    };
+    root.querySelectorAll('.sr-drawer-feature[data-tab]').forEach(function(btn) {
+      btn.onclick = function() {
+        switchTab(container, btn.getAttribute('data-tab'));
+      };
+    });
+
+    // 向下滑动关闭抽屉（移动端）
+    var startY = null;
+    panel.addEventListener('touchstart', function(e) {
+      if (e.touches && e.touches.length === 1) startY = e.touches[0].clientY;
+    }, { passive: true });
+    panel.addEventListener('touchend', function(e) {
+      if (startY == null || !e.changedTouches || !e.changedTouches.length) return;
+      var dy = e.changedTouches[0].clientY - startY;
+      startY = null;
+      if (dy > 80) closeAllFeaturesDrawer(container);
+    }, { passive: true });
   }
 
   function renderTodoList(parentEl) {
@@ -1232,12 +1312,12 @@
         '<div class="sr-modal-mask" id="sr-standee-mask">' +
           '<div class="sr-modal-panel" style="max-height:88vh;overflow-y:auto;">' +
             '<div class="sr-modal-header">' +
-              '<span><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--c-primary, #6366f1);"></i> Char 伴读图片与背景设置</span>' +
+              '<span><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--c-primary, #6366f1);"></i> Char 伴读图片设置</span>' +
               '<button type="button" class="pl-btn-secondary" id="sr-standee-close" style="padding:2px 8px;"><i class="fa-solid fa-xmark"></i></button>' +
             '</div>' +
 
             '<div style="font-size:11px;color:var(--c-sub);">' +
-              '当前同桌角色：<b style="color:var(--c-text);">' + esc(curChar.name) + '</b>（图片直接铺满上方整块背景，按角色独立保存）' +
+              '当前同桌角色：<b style="color:var(--c-text);">' + esc(curChar.name) + '</b>（唯一图片导入入口，按角色独立保存）' +
             '</div>' +
 
             // 1. 伴读状态选择 (专注 / 微笑 / 休息)
@@ -1249,14 +1329,14 @@
             '</div>' +
 
             // 2. 图片导入（全自习室唯一入口：覆盖上面一整块背景）
-            '<div style="font-size:12px;font-weight:600;margin-top:4px;">2. 当前状态图片导入（覆盖上面一整块背景）：</div>' +
+            '<div style="font-size:12px;font-weight:600;margin-top:4px;">2. 当前状态图片导入（唯一入口）：</div>' +
             '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,0.05);border-radius:8px;border:1px solid rgba(255,255,255,0.08);">' +
               '<div style="width:52px;height:52px;border-radius:6px;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;">' +
                 '<img id="sr-preview-thumb" src="' + currentImgSrc + '" style="width:100%;height:100%;object-fit:cover;" onerror="this.src=\'img/wanwan.png\'">' +
               '</div>' +
               '<div style="flex:1;min-width:0;">' +
-                '<div style="font-size:12px;font-weight:600;">' + (hasCustomImg ? '已设置自定义伴读图' : '当前使用默认全景伴读图') + '</div>' +
-                '<div style="font-size:10px;color:var(--c-sub);margin-top:2px;">上传你喜欢的角色立绘或插画，会自动覆盖铺满上方整块背景！</div>' +
+                '<div style="font-size:12px;font-weight:600;">' + (hasCustomImg ? '已设置自定义伴读图' : '当前使用默认角色图片') + '</div>' +
+                '<div style="font-size:10px;color:var(--c-sub);margin-top:2px;">上传本地角色立绘或插画；三种状态共用这一套上传组件。</div>' +
               '</div>' +
             '</div>' +
 
@@ -1265,11 +1345,6 @@
               '<button type="button" class="pl-btn-secondary" id="sr-btn-clear-img" style="flex:1;padding:8px;">恢复默认</button>' +
             '</div>' +
             '<input type="file" id="sr-file-input" accept="image/*" style="display:none;">' +
-
-            '<div style="display:flex;gap:6px;">' +
-              '<input type="text" class="input-field" id="sr-input-url" value="' + (hasCustomImg && !conf[curSt].startsWith('data:') ? esc(conf[curSt]) : '') + '" placeholder="或粘贴网络图片 URL 链接..." style="font-size:11px;padding:6px 8px;flex:1;">' +
-              '<button type="button" class="pl-btn-secondary" id="sr-btn-apply-url" style="font-size:11px;padding:6px 12px;white-space:nowrap;">应用链接</button>' +
-            '</div>' +
 
             // 3. 展现样式与位置微调
             '<div style="font-size:12px;font-weight:600;margin-top:4px;">3. 展现模式与位置微调：</div>' +
@@ -1400,21 +1475,11 @@
         reader.readAsDataURL(file);
       };
 
-      root.querySelector('#sr-btn-apply-url').onclick = function() {
-        var url = root.querySelector('#sr-input-url').value.trim();
-        if (!url) { window.toast && window.toast('请输入有效的图片链接'); return; }
-        conf[_state.currentStandeeState] = url;
-        conf.displayMode = 'cover';
-        updateDuoControls(container);
-        renderModalContent();
-        window.toast && window.toast('图片链接已应用并覆盖上方背景');
-      };
-
       root.querySelector('#sr-btn-clear-img').onclick = function() {
         conf[_state.currentStandeeState] = '';
         updateDuoControls(container);
         renderModalContent();
-        window.toast && window.toast('已恢复为默认全景图');
+        window.toast && window.toast('已恢复为默认角色图片');
       };
 
       root.querySelector('#sr-btn-save-standee').onclick = function() {
@@ -3384,8 +3449,8 @@
         '<div class="sr-set-group-title">视觉与立绘管理</div>' +
         '<div class="sr-set-row" id="sr-set-row-standee" style="cursor:pointer;">' +
           '<div class="sr-set-row-info">' +
-            '<div class="sr-set-row-title">Char 伴读图片与背景设置</div>' +
-            '<div class="sr-set-row-desc" id="sr-set-standee-desc">当前针对：' + esc(curChar.name) + ' · 自定义铺满背景或立绘</div>' +
+            '<div class="sr-set-row-title">Char 伴读图片设置</div>' +
+            '<div class="sr-set-row-desc" id="sr-set-standee-desc">当前针对：' + esc(curChar.name) + ' · 唯一图片导入入口</div>' +
           '</div>' +
           '<i class="fa-solid fa-angle-right" style="color:var(--c-sub);"></i>' +
         '</div>' +
