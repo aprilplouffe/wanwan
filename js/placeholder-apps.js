@@ -281,9 +281,9 @@
   }
 
   // ====================================================
-  // 3. 我们的家
+  // 3. 我们的家 & 弯弯农场 (联动共享经济服务与农场数据)
   // ====================================================
-  function showOurHomePage() {
+  async function showOurHomePage() {
     var existing = document.getElementById('our-home-page');
     if (existing) existing.remove();
 
@@ -291,120 +291,374 @@
     page.id = 'our-home-page';
     page.className = 'full-page';
 
-    page.innerHTML =
-      '<div class="pl-app-container">' +
-        '<div class="pl-app-header">' +
-          '<div class="pl-app-header-left">' +
-            '<button class="pl-app-back-btn">' +
-              '<i class="fa fa-angle-left"></i><span>桌面</span>' +
-            '</button>' +
-            '<div class="pl-app-title-group">' +
-              '<div class="pl-app-icon-mini"><i class="fa-solid fa-house-chimney-heart"></i></div>' +
-              '<div class="pl-app-header-title">我们的家</div>' +
+    var currentSubTab = 'room'; // 'room' | 'farm' | 'backpack'
+
+    // 读取家具与农场状态
+    var ecoState = window.SharedEconomyService ? await window.SharedEconomyService.getState() : { coins: 500, inventory: [] };
+    var farmState = window.WanwanFarmService ? await window.WanwanFarmService.getState() : { plots: [] };
+    var placedFurniture = JSON.parse(localStorage.getItem('wanwan_placed_furniture') || '["item_vinyl", "item_rug"]');
+
+    function renderContent() {
+      var html =
+        '<div class="pl-app-container">' +
+          '<div class="pl-app-header">' +
+            '<div class="pl-app-header-left">' +
+              '<button class="pl-app-back-btn">' +
+                '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+              '</button>' +
+              '<div class="pl-app-title-group">' +
+                '<div class="pl-app-icon-mini"><i class="fa-solid fa-house-chimney-heart"></i></div>' +
+                '<div class="pl-app-header-title">我们的家</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="pl-app-header-right">' +
+              '<span class="pl-app-badge-dev" id="home-comfort-badge"><i class="fa-solid fa-couch"></i> 舒适度 ' + (100 + placedFurniture.length * 25) + '</span>' +
             '</div>' +
           '</div>' +
-          '<div class="pl-app-header-right">' +
-            '<span class="pl-app-badge-dev">小屋 LV.1</span>' +
-          '</div>' +
-        '</div>' +
 
-        '<div class="pl-app-scroll-content">' +
-          // 小屋全景俯视预览
+          '<div class="pl-app-scroll-content">' +
+            // 二级导航：起居室 / 弯弯农场 / 共享背包
+            '<div class="shared-tab-nav">' +
+              '<button type="button" class="shared-tab-btn ' + (currentSubTab === 'room' ? 'active' : '') + '" data-tab="room"><i class="fa-solid fa-couch"></i> 起居室</button>' +
+              '<button type="button" class="shared-tab-btn ' + (currentSubTab === 'farm' ? 'active' : '') + '" data-tab="farm"><i class="fa-solid fa-wheat-awn"></i> 弯弯农场</button>' +
+              '<button type="button" class="shared-tab-btn ' + (currentSubTab === 'backpack' ? 'active' : '') + '" data-tab="backpack"><i class="fa-solid fa-box-open"></i> 共享背包</button>' +
+            '</div>';
+
+      if (currentSubTab === 'room') {
+        html +=
+          // 起居室视觉卡
           '<div class="ourhome-preview-box">' +
-            '<div class="ourhome-room-visual">' +
-              '<i class="fa-solid fa-couch"></i>' +
-              '<i class="fa-solid fa-cat"></i>' +
-              '<i class="fa-solid fa-mug-hot"></i>' +
-              '<i class="fa-solid fa-plant-wilt"></i>' +
+            '<div class="ourhome-room-visual" id="room-visual-icons">' +
+              (placedFurniture.indexOf('item_vinyl') !== -1 ? '<i class="fa-solid fa-record-vinyl" title="复古黑胶机"></i>' : '') +
+              (placedFurniture.indexOf('item_rug') !== -1 ? '<i class="fa-solid fa-rug" title="暖绒云朵毯"></i>' : '') +
+              (placedFurniture.indexOf('item_frame') !== -1 ? '<i class="fa-solid fa-camera-retro" title="拍立得相框"></i>' : '') +
+              '<i class="fa-solid fa-couch" title="主沙发"></i>' +
+              '<i class="fa-solid fa-mug-hot" title="热可可"></i>' +
             '</div>' +
             '<div style="display:flex;justify-content:space-between;align-items:center;">' +
               '<div>' +
                 '<div style="font-size:15px;font-weight:700;color:var(--c-text);">起居室 · 温馨小窝</div>' +
-                '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">舒适度 120 · 窗外晴空万里</div>' +
+                '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">舒适度 ' + (100 + placedFurniture.length * 25) + ' · 窗外微风拂拂</div>' +
               '</div>' +
               '<button type="button" class="pl-btn-primary" id="home-decorate-btn">' +
-                '<i class="fa-solid fa-wand-magic-sparkles"></i><span>布置</span>' +
+                '<i class="fa-solid fa-wand-magic-sparkles"></i><span>布置家具</span>' +
               '</button>' +
             '</div>' +
           '</div>' +
 
-          // 待布置家具展示
-          '<div class="pl-app-section-title"><i class="fa-solid fa-shapes"></i> 待摆放家具与互动小物件</div>' +
+          // 互动家具状态
+          '<div class="pl-app-section-title"><i class="fa-solid fa-shapes"></i> 已装配家具与装饰</div>' +
           '<div class="ourhome-furniture-row">' +
             '<div class="ourhome-f-card">' +
               '<div class="ourhome-f-card-icon"><i class="fa-solid fa-record-vinyl"></i></div>' +
               '<div style="font-weight:600;">复古黑胶机</div>' +
-              '<div style="color:var(--c-sub);font-size:10px;">点击播放双人歌单</div>' +
+              '<div style="color:var(--c-sub);font-size:10px;">' + (placedFurniture.indexOf('item_vinyl') !== -1 ? '✨ 摆放中 (点击播放)' : '未摆放') + '</div>' +
             '</div>' +
             '<div class="ourhome-f-card">' +
               '<div class="ourhome-f-card-icon"><i class="fa-solid fa-rug"></i></div>' +
               '<div style="font-weight:600;">暖绒云朵毯</div>' +
-              '<div style="color:var(--c-sub);font-size:10px;">席地而坐促膝长谈</div>' +
+              '<div style="color:var(--c-sub);font-size:10px;">' + (placedFurniture.indexOf('item_rug') !== -1 ? '✨ 摆放中' : '未摆放') + '</div>' +
             '</div>' +
             '<div class="ourhome-f-card">' +
               '<div class="ourhome-f-card-icon"><i class="fa-solid fa-camera-retro"></i></div>' +
               '<div style="font-weight:600;">拍立得相框</div>' +
-              '<div style="color:var(--c-sub);font-size:10px;">陈列日常名场面</div>' +
-            '</div>' +
-            '<div class="ourhome-f-card">' +
-              '<div class="ourhome-f-card-icon"><i class="fa-solid fa-bowl-food"></i></div>' +
-              '<div style="font-weight:600;">宠物陶瓷碗</div>' +
-              '<div style="color:var(--c-sub);font-size:10px;">喂饱小猫咪曲奇</div>' +
+              '<div style="color:var(--c-sub);font-size:10px;">' + (placedFurniture.indexOf('item_frame') !== -1 ? '✨ 摆放中' : '未摆放') + '</div>' +
             '</div>' +
           '</div>' +
 
           // 核心特性
-          '<div class="pl-app-section-title"><i class="fa-solid fa-heart"></i> 家园互动蓝图</div>' +
+          '<div class="pl-app-section-title"><i class="fa-solid fa-heart"></i> 家园互动体验</div>' +
           '<div class="pl-app-feature-grid">' +
             '<div class="pl-app-feature-card">' +
               '<div class="pl-app-feature-icon"><i class="fa-solid fa-paw"></i></div>' +
-              '<div class="pl-app-feature-name">共同领养萌宠</div>' +
-              '<div class="pl-app-feature-desc">柴犬或布偶猫，角色会跟你一起分工遛狗与添粮。</div>' +
-            '</div>' +
-            '<div class="pl-app-feature-card">' +
-              '<div class="pl-app-feature-icon"><i class="fa-solid fa-shirt"></i></div>' +
-              '<div class="pl-app-feature-name">双人专属衣橱</div>' +
-              '<div class="pl-app-feature-desc">搭配情侣穿搭，外出散步或在家中换上慵懒睡衣。</div>' +
+              '<div class="pl-app-feature-name">陪伴萌宠</div>' +
+              '<div class="pl-app-feature-desc">小猫在沙发边打呼噜，角色会和你分工添粮。</div>' +
             '</div>' +
             '<div class="pl-app-feature-card">' +
               '<div class="pl-app-feature-icon"><i class="fa-solid fa-kitchen-set"></i></div>' +
-              '<div class="pl-app-feature-name">两人深夜小厨房</div>' +
-              '<div class="pl-app-feature-desc">烹饪甜品与热汤，解锁角色吃饱后的满足心声。</div>' +
+              '<div class="pl-app-feature-name">后院果实烹饪</div>' +
+              '<div class="pl-app-feature-desc">将农场收获的甜心草莓制成草莓甜点与暖汤。</div>' +
             '</div>' +
-            '<div class="pl-app-feature-card">' +
-              '<div class="pl-app-feature-icon"><i class="fa-solid fa-image"></i></div>' +
-              '<div class="pl-app-feature-name">纪念拍立得墙</div>' +
-              '<div class="pl-app-feature-desc">在墙面上钉上旅行与日常合照，随心布置相框。</div>' +
+          '</div>';
+
+      } else if (currentSubTab === 'farm') {
+        html +=
+          // 弯弯农场全景展板
+          '<div class="pl-app-hero-card">' +
+            '<div class="pl-app-hero-pill"><i class="fa-solid fa-wheat-awn"></i> 弯弯农场 · 经营工坊</div>' +
+            '<div class="pl-app-hero-title">后院田园劳作与自然收获</div>' +
+            '<div class="pl-app-hero-desc">耕作土地、播撒心动种子、浇灌成长。收获的鲜美作物直接入库共享背包，还可完成人生游戏日常委托并解锁成就！</div>' +
+            '<div class="pl-app-hero-stats">' +
+              '<div class="pl-app-stat-item"><i class="fa-solid fa-seedling"></i> 土地 4 块</div>' +
+              '<div class="pl-app-stat-item"><i class="fa-solid fa-basket-shopping"></i> 累计收获 ' + (farmState.totalHarvests || 0) + ' 次</div>' +
             '</div>' +
           '</div>' +
 
-          '<div class="pl-app-dev-banner">' +
-            '<i class="fa-solid fa-hammer"></i>' +
+          '<div class="pl-app-section-title"><i class="fa-solid fa-seedling"></i> 耕种土地一览</div>' +
+          '<div class="shared-farm-grid">' +
+            farmState.plots.map(function(plot, idx) {
+              var isRipe = (plot.state === 'ripe');
+              var isGrowing = (plot.state === 'growing');
+              var isEmpty = (plot.state === 'empty');
+              var cfg = (plot.cropId && window.WanwanFarmService) ? window.WanwanFarmService.CROPS_CONFIG[plot.cropId] : null;
+
+              var icon = '🌱';
+              var title = '空闲土地 #' + (idx + 1);
+              var status = '等待播种';
+
+              if (isRipe && cfg) {
+                icon = cfg.icon;
+                title = cfg.name;
+                status = '🎉 丰收成熟！';
+              } else if (isGrowing && cfg) {
+                icon = '🌿';
+                title = cfg.name;
+                status = '成长中…';
+              }
+
+              return (
+                '<div class="farm-plot-card ' + (isRipe ? 'ripe' : '') + '">' +
+                  '<div class="farm-plot-visual">' + icon + '</div>' +
+                  '<div class="farm-plot-badge">' + title + '</div>' +
+                  '<div class="farm-plot-status">' + status + '</div>' +
+                  (isRipe ?
+                    '<button type="button" class="farm-plot-btn btn-harvest" data-plot="' + idx + '"><i class="fa-solid fa-hand-holding-heart"></i> 收获入包</button>' :
+                    (isGrowing ?
+                      '<button type="button" class="farm-plot-btn secondary btn-water" data-plot="' + idx + '"><i class="fa-solid fa-droplet"></i> 浇水加速</button>' :
+                      '<button type="button" class="farm-plot-btn btn-plant" data-plot="' + idx + '"><i class="fa-solid fa-plus"></i> 播种</button>'
+                    )
+                  ) +
+                '</div>'
+              );
+            }).join('') +
+          '</div>' +
+
+          '<div class="pl-app-dev-banner" style="margin-top:14px;">' +
+            '<i class="fa-solid fa-store"></i>' +
             '<div class="pl-app-dev-banner-main">' +
-              '<div class="pl-app-dev-banner-title">3D空间渲染与萌宠AI行为树研制中</div>' +
-              '<div>房屋蓝图与家具物理碰撞系统构建中，敬请期待入住！</div>' +
+              '<div class="pl-app-dev-banner-title">种子不足？前往心动商城</div>' +
+              '<div>可使用自习室与人生游戏赚取的金币在心动商城选购草莓、向日葵等种子。</div>' +
+            '</div>' +
+          '</div>';
+
+      } else {
+        // 共享背包
+        var items = (ecoState.inventory || []);
+        html +=
+          '<div class="pl-app-hero-card">' +
+            '<div class="pl-app-hero-pill"><i class="fa-solid fa-box-open"></i> 共享经济服务 · 统一背包</div>' +
+            '<div class="pl-app-hero-title">全域道具与资产统一管理</div>' +
+            '<div class="pl-app-hero-desc">农场收获的作物、商城兑换的家具与自习文具，全部在此唯一存档，各 App 不重复记账。</div>' +
+            '<div class="pl-app-hero-stats">' +
+              '<div class="pl-app-stat-item"><i class="fa-solid fa-coins"></i> 金币 ' + (ecoState.coins || 0) + '</div>' +
+              '<div class="pl-app-stat-item"><i class="fa-solid fa-gem"></i> 星愿石 ' + (ecoState.diamonds || 0) + '</div>' +
+              '<div class="pl-app-stat-item"><i class="fa-solid fa-cube"></i> 道具 ' + items.length + ' 种</div>' +
             '</div>' +
           '</div>' +
-        '</div>' +
-      '</div>';
 
-    mountPage(page);
-    bindBackBtn(page, 'our-home-page');
+          '<div class="pl-app-section-title"><i class="fa-solid fa-boxes-stacked"></i> 背包物品清单</div>' +
+          '<div style="display:flex;flex-direction:column;gap:8px;">' +
+            (items.length === 0 ?
+              '<div style="text-align:center;padding:30px;color:var(--c-sub);font-size:12px;">背包空空如也，快去商城或农场看看吧~</div>' :
+              items.map(function(item) {
+                return (
+                  '<div class="cal-event-card">' +
+                    '<div style="width:36px;height:36px;border-radius:var(--r-md);background:var(--c-surface-2);display:flex;align-items:center;justify-content:center;font-size:18px;">' +
+                      (item.icon.indexOf('fa-') !== -1 ? '<i class="' + item.icon + '"></i>' : item.icon) +
+                    '</div>' +
+                    '<div class="cal-event-main">' +
+                      '<div class="cal-event-title">' + escapeHtml(item.name) + ' <span style="font-size:11px;color:var(--c-sub);">x' + item.count + '</span></div>' +
+                      '<div class="cal-event-meta">' +
+                        '<span class="cal-event-source-tag">' + (item.category === 'farm_crop' ? '农场产出' : (item.category === 'seed' ? '作物种子' : '家具装饰')) + '</span>' +
+                        '<span>' + escapeHtml(item.desc || '') + '</span>' +
+                      '</div>' +
+                    '</div>' +
+                  '</div>'
+                );
+              }).join('')
+            ) +
+          '</div>';
+      }
 
-    page.querySelector('#home-decorate-btn').onclick = function() {
-      window.toast && window.toast('装修功能正在设计中，当前起居室已准备好！');
-    };
-    page.querySelectorAll('.ourhome-f-card').forEach(function(card) {
-      card.onclick = function() {
-        window.toast && window.toast('家具：「' + card.querySelector('div:nth-child(2)').textContent + '」已放入待布置清单');
+      html += '</div></div>';
+      page.innerHTML = html;
+
+      // 重新绑定事件
+      bindBackBtn(page, 'our-home-page');
+
+      // 切换标签
+      page.querySelectorAll('.shared-tab-btn').forEach(function(btn) {
+        btn.onclick = function() {
+          currentSubTab = btn.getAttribute('data-tab');
+          renderContent();
+        };
+      });
+
+      // 布置家具
+      var decoBtn = page.querySelector('#home-decorate-btn');
+      if (decoBtn) {
+        decoBtn.onclick = function() {
+          openDecorateModal();
+        };
+      }
+
+      // 农场收获
+      page.querySelectorAll('.btn-harvest').forEach(function(btn) {
+        btn.onclick = async function() {
+          var pIdx = parseInt(btn.getAttribute('data-plot'), 10);
+          if (window.WanwanFarmService) {
+            var res = await window.WanwanFarmService.harvest(pIdx);
+            if (res.success) {
+              window.toast && window.toast('🎉 丰收！收获了 ' + res.crop.name + '，已直接收入共享背包！');
+              farmState = await window.WanwanFarmService.getState();
+              ecoState = await window.SharedEconomyService.getState();
+              renderContent();
+            } else {
+              window.toast && window.toast(res.msg);
+            }
+          }
+        };
+      });
+
+      // 农场浇水
+      page.querySelectorAll('.btn-water').forEach(function(btn) {
+        btn.onclick = async function() {
+          var pIdx = parseInt(btn.getAttribute('data-plot'), 10);
+          if (farmState.plots[pIdx]) {
+            farmState.plots[pIdx].state = 'ripe';
+            if (window.WanwanFarmService) {
+              await window.WanwanFarmService.getState(); // 触发自动更新与保存
+            }
+            window.toast && window.toast('💧 浇水成功！作物在微风与爱意中迅速成熟了~');
+            renderContent();
+          }
+        };
+      });
+
+      // 农场播种
+      page.querySelectorAll('.btn-plant').forEach(function(btn) {
+        btn.onclick = async function() {
+          var pIdx = parseInt(btn.getAttribute('data-plot'), 10);
+          openPlantModal(pIdx);
+        };
+      });
+    }
+
+    function openDecorateModal() {
+      var modal = document.createElement('div');
+      modal.className = 'sr-modal-backdrop';
+      modal.innerHTML =
+        '<div class="sr-modal-card" style="max-width:340px;">' +
+          '<div class="sr-modal-header">' +
+            '<div class="sr-modal-title"><i class="fa-solid fa-wand-magic-sparkles"></i> 布置小屋起居室</div>' +
+            '<button type="button" class="sr-modal-close" id="dec-close">&times;</button>' +
+          '</div>' +
+          '<div style="font-size:11px;color:var(--c-sub);margin-bottom:10px;">点击家具切换摆放状态，提升温馨舒适度：</div>' +
+          '<div style="display:flex;flex-direction:column;gap:8px;" id="dec-list">' +
+            '<label style="display:flex;align-items:center;justify-content:space-between;padding:8px;background:var(--c-surface-2);border-radius:var(--r-md);cursor:pointer;">' +
+              '<div style="display:flex;align-items:center;gap:8px;">' +
+                '<i class="fa-solid fa-record-vinyl" style="font-size:16px;"></i>' +
+                '<div><div style="font-size:12px;font-weight:600;">复古黑胶机</div><div style="font-size:10px;color:var(--c-sub);">舒适度 +25</div></div>' +
+              '</div>' +
+              '<input type="checkbox" value="item_vinyl" ' + (placedFurniture.indexOf('item_vinyl') !== -1 ? 'checked' : '') + '>' +
+            '</label>' +
+            '<label style="display:flex;align-items:center;justify-content:space-between;padding:8px;background:var(--c-surface-2);border-radius:var(--r-md);cursor:pointer;">' +
+              '<div style="display:flex;align-items:center;gap:8px;">' +
+                '<i class="fa-solid fa-rug" style="font-size:16px;"></i>' +
+                '<div><div style="font-size:12px;font-weight:600;">暖绒云朵毯</div><div style="font-size:10px;color:var(--c-sub);">舒适度 +25</div></div>' +
+              '</div>' +
+              '<input type="checkbox" value="item_rug" ' + (placedFurniture.indexOf('item_rug') !== -1 ? 'checked' : '') + '>' +
+            '</label>' +
+            '<label style="display:flex;align-items:center;justify-content:space-between;padding:8px;background:var(--c-surface-2);border-radius:var(--r-md);cursor:pointer;">' +
+              '<div style="display:flex;align-items:center;gap:8px;">' +
+                '<i class="fa-solid fa-camera-retro" style="font-size:16px;"></i>' +
+                '<div><div style="font-size:12px;font-weight:600;">拍立得相框</div><div style="font-size:10px;color:var(--c-sub);">舒适度 +25</div></div>' +
+              '</div>' +
+              '<input type="checkbox" value="item_frame" ' + (placedFurniture.indexOf('item_frame') !== -1 ? 'checked' : '') + '>' +
+            '</label>' +
+          '</div>' +
+          '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">' +
+            '<button type="button" class="pl-btn-primary" id="dec-save" style="padding:4px 16px;">保存布置</button>' +
+          '</div>' +
+        '</div>';
+
+      document.body.appendChild(modal);
+      modal.querySelector('#dec-close').onclick = function() { modal.remove(); };
+      modal.querySelector('#dec-save').onclick = function() {
+        var checked = [];
+        modal.querySelectorAll('input[type="checkbox"]:checked').forEach(function(ck) {
+          checked.push(ck.value);
+        });
+        placedFurniture = checked;
+        localStorage.setItem('wanwan_placed_furniture', JSON.stringify(placedFurniture));
+        window.toast && window.toast('✨ 起居室布置已更新！舒适度升至 ' + (100 + placedFurniture.length * 25));
+        modal.remove();
+        renderContent();
       };
-    });
+    }
+
+    function openPlantModal(plotIndex) {
+      var modal = document.createElement('div');
+      modal.className = 'sr-modal-backdrop';
+      modal.innerHTML =
+        '<div class="sr-modal-card" style="max-width:320px;">' +
+          '<div class="sr-modal-header">' +
+            '<div class="sr-modal-title"><i class="fa-solid fa-seedling"></i> 选择播种作物</div>' +
+            '<button type="button" class="sr-modal-close" id="plant-close">&times;</button>' +
+          '</div>' +
+          '<div style="display:flex;flex-direction:column;gap:8px;">' +
+            '<button type="button" class="cal-event-card btn-select-crop" data-crop="crop_strawberry" style="cursor:pointer;border:none;width:100%;text-align:left;">' +
+              '<div style="font-size:24px;">🍓</div>' +
+              '<div class="cal-event-main">' +
+                '<div class="cal-event-title">甜心草莓</div>' +
+                '<div class="cal-event-meta">成长期约25秒 · 收益丰厚</div>' +
+              '</div>' +
+            '</button>' +
+            '<button type="button" class="cal-event-card btn-select-crop" data-crop="crop_sunflower" style="cursor:pointer;border:none;width:100%;text-align:left;">' +
+              '<div style="font-size:24px;">🌻</div>' +
+              '<div class="cal-event-main">' +
+                '<div class="cal-event-title">晨光向日葵</div>' +
+                '<div class="cal-event-meta">成长期约40秒 · 金色阳光</div>' +
+              '</div>' +
+            '</button>' +
+            '<button type="button" class="cal-event-card btn-select-crop" data-crop="crop_pumpkin" style="cursor:pointer;border:none;width:100%;text-align:left;">' +
+              '<div style="font-size:24px;">🎃</div>' +
+              '<div class="cal-event-main">' +
+                '<div class="cal-event-title">暖绒黄金南瓜</div>' +
+                '<div class="cal-event-meta">成长期约60秒 · 沉甸甸丰收</div>' +
+              '</div>' +
+            '</button>' +
+          '</div>' +
+        '</div>';
+
+      document.body.appendChild(modal);
+      modal.querySelector('#plant-close').onclick = function() { modal.remove(); };
+      modal.querySelectorAll('.btn-select-crop').forEach(function(b) {
+        b.onclick = async function() {
+          var cId = b.getAttribute('data-crop');
+          if (window.WanwanFarmService) {
+            var res = await window.WanwanFarmService.plant(plotIndex, cId);
+            if (res.success) {
+              window.toast && window.toast('🌱 播种成功！静待作物发芽成长~');
+              farmState = await window.WanwanFarmService.getState();
+              modal.remove();
+              renderContent();
+            } else {
+              window.toast && window.toast(res.msg);
+            }
+          }
+        };
+      });
+    }
+
+    renderContent();
+    mountPage(page);
   }
 
   // ====================================================
-  // 4. 成就馆
+  // 4. 成就馆 (全域成就、勋章、碎片、称号联动)
   // ====================================================
-  function showAchievementPage() {
+  async function showAchievementPage() {
     var existing = document.getElementById('achievement-page');
     if (existing) existing.remove();
 
@@ -412,113 +666,164 @@
     page.id = 'achievement-page';
     page.className = 'full-page';
 
-    page.innerHTML =
-      '<div class="pl-app-container">' +
-        '<div class="pl-app-header">' +
-          '<div class="pl-app-header-left">' +
-            '<button class="pl-app-back-btn">' +
-              '<i class="fa fa-angle-left"></i><span>桌面</span>' +
-            '</button>' +
-            '<div class="pl-app-title-group">' +
-              '<div class="pl-app-icon-mini"><i class="fa-solid fa-award"></i></div>' +
-              '<div class="pl-app-header-title">成就馆</div>' +
-            '</div>' +
-          '</div>' +
-          '<div class="pl-app-header-right">' +
-            '<span class="pl-app-badge-dev"><i class="fa-solid fa-star"></i> 1,280 点</span>' +
-          '</div>' +
-        '</div>' +
+    var currentCategory = 'all'; // 'all' | 'bond' | 'study' | 'farm' | 'parallel'
+    var achState = window.AchievementService ? await window.AchievementService.getState() : { badges: [], totalScore: 700 };
 
-        '<div class="pl-app-scroll-content">' +
-          // 成就积分总览
-          '<div class="pl-app-hero-card">' +
-            '<div class="pl-app-hero-pill"><i class="fa-solid fa-trophy"></i> 羁绊荣耀 · 里程碑</div>' +
-            '<div class="pl-app-hero-title">记录相遇以来的每一座里程碑</div>' +
-            '<div class="pl-app-hero-desc">从初次心动的寒暄，到百万字倾诉与平行世界的生死相许。每一份真挚的情感与抉择，都会化作徽章与记忆碎片在此永恒陈列。</div>' +
-            '<div class="pl-app-hero-stats">' +
-              '<div class="pl-app-stat-item"><i class="fa-solid fa-medal"></i> 已收录 4 / 36 枚勋章</div>' +
-              '<div class="pl-app-stat-item"><i class="fa-solid fa-puzzle-piece"></i> 剧情碎片 12 张</div>' +
-              '<div class="pl-app-stat-item"><i class="fa-solid fa-crown"></i> 佩戴头衔：初涉尘寰的旅人</div>' +
+    function renderAchievement() {
+      var badges = achState.badges || [];
+      var filtered = badges.filter(function(b) {
+        if (currentCategory === 'all') return true;
+        return b.category === currentCategory;
+      });
+      var unlockedCount = badges.filter(function(b) { return b.unlocked; }).length;
+
+      var html =
+        '<div class="pl-app-container">' +
+          '<div class="pl-app-header">' +
+            '<div class="pl-app-header-left">' +
+              '<button class="pl-app-back-btn">' +
+                '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+              '</button>' +
+              '<div class="pl-app-title-group">' +
+                '<div class="pl-app-icon-mini"><i class="fa-solid fa-award"></i></div>' +
+                '<div class="pl-app-header-title">成就馆</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="pl-app-header-right">' +
+              '<span class="pl-app-badge-dev"><i class="fa-solid fa-star"></i> ' + achState.totalScore + ' 点</span>' +
             '</div>' +
           '</div>' +
 
-          // 勋章陈列柜
-          '<div class="pl-app-section-title"><i class="fa-solid fa-medal"></i> 羁绊荣耀陈列橱窗</div>' +
-          '<div class="achieve-badge-grid">' +
-            '<div class="achieve-badge-item">' +
-              '<div class="achieve-badge-icon"><i class="fa-solid fa-handshake-angle"></i></div>' +
-              '<div class="achieve-badge-name">初遇之光</div>' +
-              '<div class="achieve-badge-desc">第一次与角色发送消息</div>' +
+          '<div class="pl-app-scroll-content">' +
+            // 英雄总览
+            '<div class="pl-app-hero-card">' +
+              '<div class="pl-app-hero-pill"><i class="fa-solid fa-trophy"></i> 羁绊荣耀 · 里程碑</div>' +
+              '<div class="pl-app-hero-title">记录相遇以来的每一座里程碑</div>' +
+              '<div class="pl-app-hero-desc">自习室45分钟深度专注、农场丰收、日常陪伴与平行宇宙的每一次深情回响，都会化作荣誉徽章与珍贵记忆碎片。</div>' +
+              '<div class="pl-app-hero-stats">' +
+                '<div class="pl-app-stat-item"><i class="fa-solid fa-medal"></i> 已收录 ' + unlockedCount + ' / ' + badges.length + ' 枚勋章</div>' +
+                '<div class="pl-app-stat-item"><i class="fa-solid fa-puzzle-piece"></i> 剧情碎片 ' + (achState.fragments ? achState.fragments.length : 3) + ' 套</div>' +
+                '<div class="pl-app-stat-item"><i class="fa-solid fa-crown"></i> 佩戴头衔：' + escapeHtml(achState.equippedTitle || '初涉尘寰的旅人') + '</div>' +
+              '</div>' +
             '</div>' +
-            '<div class="achieve-badge-item">' +
-              '<div class="achieve-badge-icon"><i class="fa-solid fa-feather-pointed"></i></div>' +
-              '<div class="achieve-badge-name">百万字羁绊</div>' +
-              '<div class="achieve-badge-desc">累计对话超过 100 轮</div>' +
+
+            // 分类切换
+            '<div class="shared-tab-nav">' +
+              '<button type="button" class="shared-tab-btn ' + (currentCategory === 'all' ? 'active' : '') + '" data-cat="all">全部</button>' +
+              '<button type="button" class="shared-tab-btn ' + (currentCategory === 'bond' ? 'active' : '') + '" data-cat="bond">羁绊日常</button>' +
+              '<button type="button" class="shared-tab-btn ' + (currentCategory === 'study' ? 'active' : '') + '" data-cat="study">学业修养</button>' +
+              '<button type="button" class="shared-tab-btn ' + (currentCategory === 'farm' ? 'active' : '') + '" data-cat="farm">田园慢活</button>' +
+              '<button type="button" class="shared-tab-btn ' + (currentCategory === 'parallel' ? 'active' : '') + '" data-cat="parallel">平行宇宙</button>' +
             '</div>' +
-            '<div class="achieve-badge-item">' +
-              '<div class="achieve-badge-icon"><i class="fa-solid fa-earth-americas"></i></div>' +
-              '<div class="achieve-badge-name">平行宇宙操盘手</div>' +
-              '<div class="achieve-badge-desc">在平行来信开启第一个世界</div>' +
+
+            // 徽章橱窗网格
+            '<div class="pl-app-section-title"><i class="fa-solid fa-medal"></i> 羁绊荣耀陈列橱窗</div>' +
+            '<div class="achieve-badge-grid">' +
+              filtered.map(function(badge) {
+                var isLocked = !badge.unlocked;
+                return (
+                  '<div class="achieve-badge-item ' + (isLocked ? 'locked' : '') + '" data-bid="' + badge.id + '">' +
+                    '<div class="achieve-badge-icon"><i class="' + badge.icon + '"></i></div>' +
+                    '<div class="achieve-badge-name">' + escapeHtml(badge.name) + '</div>' +
+                    '<div class="achieve-badge-desc">' + escapeHtml(badge.desc) + '</div>' +
+                  '</div>'
+                );
+              }).join('') +
             '</div>' +
-            '<div class="achieve-badge-item locked">' +
-              '<div class="achieve-badge-icon"><i class="fa-solid fa-lock"></i></div>' +
-              '<div class="achieve-badge-name">心弦共振</div>' +
-              '<div class="achieve-badge-desc">夜深 2 点依然畅谈</div>' +
-            '</div>' +
-            '<div class="achieve-badge-item locked">' +
-              '<div class="achieve-badge-icon"><i class="fa-solid fa-lock"></i></div>' +
-              '<div class="achieve-badge-name">命定之约</div>' +
-              '<div class="achieve-badge-desc">达成任意角色专属HE结局</div>' +
-            '</div>' +
-            '<div class="achieve-badge-item locked">' +
-              '<div class="achieve-badge-icon"><i class="fa-solid fa-lock"></i></div>' +
-              '<div class="achieve-badge-name">全知导师</div>' +
-              '<div class="achieve-badge-desc">完成世界书全部词条阅读</div>' +
+
+            // 回忆碎片
+            '<div class="pl-app-section-title"><i class="fa-solid fa-puzzle-piece"></i> 剧情回忆碎片</div>' +
+            '<div class="pl-app-feature-grid">' +
+              (achState.fragments || []).map(function(frag) {
+                var isComplete = (frag.pieceCurrent >= frag.pieceTotal);
+                return (
+                  '<div class="pl-app-feature-card">' +
+                    '<div class="pl-app-feature-icon">' + (isComplete ? '<i class="fa-solid fa-sparkles"></i>' : '<i class="fa-solid fa-puzzle-piece"></i>') + '</div>' +
+                    '<div class="pl-app-feature-name">' + escapeHtml(frag.title) + ' (' + frag.pieceCurrent + '/' + frag.pieceTotal + ')</div>' +
+                    '<div class="pl-app-feature-desc">' + escapeHtml(frag.desc) + '</div>' +
+                  '</div>'
+                );
+              }).join('') +
             '</div>' +
           '</div>' +
+        '</div>';
 
-          // 核心特性
-          '<div class="pl-app-section-title"><i class="fa-solid fa-cubes-stacked"></i> 图鉴与碎片特性</div>' +
-          '<div class="pl-app-feature-grid">' +
-            '<div class="pl-app-feature-card">' +
-              '<div class="pl-app-feature-icon"><i class="fa-solid fa-certificate"></i></div>' +
-              '<div class="pl-app-feature-name">专属动态称号</div>' +
-              '<div class="pl-app-feature-desc">装配高阶头衔，在微信、动态广场与自习室佩戴闪耀徽标。</div>' +
-            '</div>' +
-            '<div class="pl-app-feature-card">' +
-              '<div class="pl-app-feature-icon"><i class="fa-solid fa-puzzle-piece"></i></div>' +
-              '<div class="pl-app-feature-name">回忆碎片合成</div>' +
-              '<div class="pl-app-feature-desc">剧情中掉落的神秘残片，集齐解锁独家未公开短篇番外。</div>' +
-            '</div>' +
+      page.innerHTML = html;
+      bindBackBtn(page, 'achievement-page');
+
+      // 切换类别
+      page.querySelectorAll('.shared-tab-btn').forEach(function(btn) {
+        btn.onclick = function() {
+          currentCategory = btn.getAttribute('data-cat');
+          renderAchievement();
+        };
+      });
+
+      // 点击徽章弹窗
+      page.querySelectorAll('.achieve-badge-item').forEach(function(item) {
+        item.onclick = function() {
+          var bId = item.getAttribute('data-bid');
+          var badge = badges.find(function(b) { return b.id === bId; });
+          if (!badge) return;
+          openBadgeModal(badge);
+        };
+      });
+    }
+
+    function openBadgeModal(badge) {
+      var modal = document.createElement('div');
+      modal.className = 'sr-modal-backdrop';
+      var isUnlocked = badge.unlocked;
+      modal.innerHTML =
+        '<div class="sr-modal-card" style="max-width:320px;text-align:center;">' +
+          '<div style="font-size:38px;margin-bottom:8px;color:' + (isUnlocked ? 'var(--c-text)' : 'var(--c-hint)') + ';">' +
+            '<i class="' + badge.icon + '"></i>' +
           '</div>' +
-
-          '<div class="pl-app-dev-banner">' +
-            '<i class="fa-solid fa-trophy"></i>' +
-            '<div class="pl-app-dev-banner-main">' +
-              '<div class="pl-app-dev-banner-title">全域成就事件监听器联调中</div>' +
-              '<div>成就解锁弹窗与闪光动画效果将在后续版本实装！</div>' +
-            '</div>' +
+          '<div style="font-size:16px;font-weight:700;color:var(--c-text);">' + escapeHtml(badge.name) + '</div>' +
+          '<div style="font-size:11px;color:var(--c-sub);margin-top:4px;">' + (isUnlocked ? '✨ 已达成解锁 · 获得 +' + badge.points + ' 点荣誉' : '🔒 尚未达成') + '</div>' +
+          '<div style="margin:14px 0;padding:10px;background:var(--c-surface-2);border-radius:var(--r-md);font-size:12px;line-height:1.5;color:var(--c-text);text-align:left;">' +
+            '<div><strong>达成条件：</strong>' + escapeHtml(badge.desc) + '</div>' +
+            (isUnlocked && badge.unlockedAt ? '<div style="font-size:10px;color:var(--c-sub);margin-top:4px;">达成时间：' + new Date(badge.unlockedAt).toLocaleString() + '</div>' : '') +
           '</div>' +
-        '</div>' +
-      '</div>';
+          '<div style="display:flex;justify-content:center;gap:8px;">' +
+            (isUnlocked ?
+              '<button type="button" class="pl-btn-primary" id="btn-equip-title" style="padding:4px 16px;">佩戴对应头衔</button>' :
+              '<button type="button" class="pl-btn-secondary" id="btn-modal-close" style="padding:4px 16px;">我知道了</button>'
+            ) +
+            (isUnlocked ? '<button type="button" class="pl-btn-secondary" id="btn-modal-close" style="padding:4px 12px;">关闭</button>' : '') +
+          '</div>' +
+        '</div>';
 
+      document.body.appendChild(modal);
+      modal.querySelectorAll('#btn-modal-close').forEach(function(b) {
+        b.onclick = function() { modal.remove(); };
+      });
+      var equipBtn = modal.querySelector('#btn-equip-title');
+      if (equipBtn) {
+        equipBtn.onclick = async function() {
+          if (window.AchievementService) {
+            await window.AchievementService.equipTitle(badge.name);
+            achState.equippedTitle = badge.name;
+            window.toast && window.toast('👑 已成功佩戴头衔：「' + badge.name + '」！');
+            modal.remove();
+            renderAchievement();
+          }
+        };
+      }
+    }
+
+    renderAchievement();
     mountPage(page);
-    bindBackBtn(page, 'achievement-page');
-
-    page.querySelectorAll('.achieve-badge-item').forEach(function(item) {
-      item.onclick = function() {
-        var name = item.querySelector('.achieve-badge-name').textContent;
-        var desc = item.querySelector('.achieve-badge-desc').textContent;
-        var isLocked = item.classList.contains('locked');
-        window.toast && window.toast((isLocked ? '【未解锁】' : '【已达成】') + name + '：' + desc);
-      };
-    });
   }
 
   // ====================================================
-  // 5. 时光日历
+  // 5. 时光日历 (双向编辑同步、倒计时卡区分展示 vs 彻底删除事件)
+  // 唯一来源：TimeCalendarService；自动与恋爱记双向同步
   // ====================================================
-  function showTimeCalendarPage() {
+  async function showTimeCalendarPage(options) {
+    if (window.TimeCalendarApp && typeof window.TimeCalendarApp.open === 'function') {
+      return window.TimeCalendarApp.open(options);
+    }
     var existing = document.getElementById('time-calendar-page');
     if (existing) existing.remove();
 
@@ -526,107 +831,340 @@
     page.id = 'time-calendar-page';
     page.className = 'full-page';
 
-    var now = new Date();
-    var currentYear = now.getFullYear();
-    var currentMonth = now.getMonth() + 1;
-    var currentDay = now.getDate();
+    var viewDate = new Date();
+    var currentYear = viewDate.getFullYear();
+    var currentMonth = viewDate.getMonth() + 1; // 1-12
+    var selectedDayStr = getTodayStr();
 
-    page.innerHTML =
-      '<div class="pl-app-container">' +
-        '<div class="pl-app-header">' +
-          '<div class="pl-app-header-left">' +
-            '<button class="pl-app-back-btn">' +
-              '<i class="fa fa-angle-left"></i><span>桌面</span>' +
-            '</button>' +
-            '<div class="pl-app-title-group">' +
-              '<div class="pl-app-icon-mini"><i class="fa-solid fa-calendar-days"></i></div>' +
-              '<div class="pl-app-header-title">时光日历</div>' +
+    var events = window.TimeCalendarService ? await window.TimeCalendarService.getAllEvents() : [];
+
+    function renderCalendar() {
+      var countdowns = window.TimeCalendarService ? window.TimeCalendarService.getCountdownList(events) : [];
+
+      // 计算当月日历
+      var firstDayWeekday = new Date(currentYear, currentMonth - 1, 1).getDay(); // 0 是周日
+      var daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
+
+      // 提取本月有事件的日期集合
+      var eventDaysMap = {};
+      events.forEach(function(ev) {
+        if (ev.date && ev.date.indexOf(currentYear + '-' + String(currentMonth).padStart(2, '0')) === 0) {
+          var dNum = parseInt(ev.date.split('-')[2], 10);
+          eventDaysMap[dNum] = true;
+        }
+      });
+
+      var todayObj = new Date();
+      var isThisMonth = (todayObj.getFullYear() === currentYear && todayObj.getMonth() + 1 === currentMonth);
+      var todayDayNum = isThisMonth ? todayObj.getDate() : -1;
+
+      // 过滤当前选中日期的日程
+      var selectedEvents = events.filter(function(e) { return e.date === selectedDayStr; });
+
+      var html =
+        '<div class="pl-app-container">' +
+          '<div class="pl-app-header">' +
+            '<div class="pl-app-header-left">' +
+              '<button class="pl-app-back-btn">' +
+                '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+              '</button>' +
+              '<div class="pl-app-title-group">' +
+                '<div class="pl-app-icon-mini"><i class="fa-solid fa-calendar-days"></i></div>' +
+                '<div class="pl-app-header-title">时光日历</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="pl-app-header-right">' +
+              '<button type="button" class="pl-btn-primary" id="cal-add-event-btn" style="padding:2px 10px;font-size:11px;">+ 新建日程</button>' +
             '</div>' +
           '</div>' +
-          '<div class="pl-app-header-right">' +
-            '<span class="pl-app-badge-dev">' + currentYear + '年' + currentMonth + '月</span>' +
-          '</div>' +
-        '</div>' +
 
-        '<div class="pl-app-scroll-content">' +
-          // 月历小视窗
-          '<div class="calendar-month-grid">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
-              '<div style="font-weight:700;font-size:15px;color:var(--c-text);">' + currentYear + ' 年 ' + currentMonth + ' 月</div>' +
-              '<div style="font-size:11px;color:var(--c-sub);"><i class="fa-solid fa-heart"></i> 今日特别纪念</div>' +
+          '<div class="pl-app-scroll-content">' +
+            // 月历小视窗
+            '<div class="calendar-month-grid">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
+                '<div style="display:flex;align-items:center;gap:10px;">' +
+                  '<button type="button" class="pl-btn-secondary" id="cal-prev-month" style="padding:2px 8px;font-size:11px;"><i class="fa-solid fa-chevron-left"></i></button>' +
+                  '<div style="font-weight:700;font-size:15px;color:var(--c-text);">' + currentYear + ' 年 ' + currentMonth + ' 月</div>' +
+                  '<button type="button" class="pl-btn-secondary" id="cal-next-month" style="padding:2px 8px;font-size:11px;"><i class="fa-solid fa-chevron-right"></i></button>' +
+                '</div>' +
+                '<div style="font-size:11px;color:var(--c-sub);"><i class="fa-solid fa-link"></i> 恋爱记双向同步</div>' +
+              '</div>' +
+              '<div class="calendar-week-row">' +
+                '<span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>' +
+              '</div>' +
+              '<div class="calendar-days-grid" id="cal-days-grid">';
+
+      // 填充空白
+      for (var p = 0; p < firstDayWeekday; p++) {
+        html += '<div class="calendar-day-cell" style="opacity:0.2;"></div>';
+      }
+      // 填充当月天数
+      for (var day = 1; day <= daysInMonth; day++) {
+        var isToday = (day === todayDayNum);
+        var hasEv = eventDaysMap[day];
+        var checkStr = currentYear + '-' + String(currentMonth).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+        var isSelected = (checkStr === selectedDayStr);
+
+        html += '<div class="calendar-day-cell ' + (isToday ? 'today ' : '') + (hasEv ? 'event ' : '') + '" data-day="' + day + '" style="' + (isSelected && !isToday ? 'outline:2px solid var(--c-accent);border-radius:50%;' : '') + '">' + day + '</div>';
+      }
+
+      html +=
+              '</div>' +
             '</div>' +
-            '<div class="calendar-week-row">' +
-              '<span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>' +
+
+            // 纪念日倒计时卡区 (showCountdown: true)
+            '<div class="pl-app-section-title"><i class="fa-solid fa-stopwatch-20"></i> 心动纪念日倒数 (倒计时视窗)</div>' +
+            '<div style="display:flex;flex-direction:column;gap:8px;">' +
+              (countdowns.length === 0 ?
+                '<div style="font-size:11px;color:var(--c-sub);padding:10px;text-align:center;">暂无倒计时展示卡片（点击日程可开启展示）</div>' :
+                countdowns.map(function(ev) {
+                  var daysText = (ev.countdownDays === 0 ? '✨ 今天' : (ev.countdownDays > 0 ? ev.countdownDays + ' 天后' : '已过 ' + Math.abs(ev.countdownDays) + ' 天'));
+                  return (
+                    '<div class="calendar-countdown-card card-interactive" data-eid="' + ev.id + '" style="cursor:pointer;">' +
+                      '<div>' +
+                        '<div class="calendar-countdown-title">' +
+                          '<i class="' + (ev.type === 'anniversary' ? 'fa-solid fa-heart' : 'fa-solid fa-cake-candles') + '" style="margin-right:6px;color:var(--c-sub);"></i>' +
+                          escapeHtml(ev.title) +
+                        '</div>' +
+                        '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">' +
+                          '<span class="cal-event-source-tag">' + (ev.sourceApp === 'loveDiary' ? '恋爱记' : (ev.sourceApp === 'studyRoom' ? '自习室' : '时光日历')) + '</span> ' +
+                          escapeHtml(ev.date) + (ev.note ? ' · ' + escapeHtml(ev.note) : '') +
+                        '</div>' +
+                      '</div>' +
+                      '<div class="calendar-countdown-days">' + daysText + '</div>' +
+                    '</div>'
+                  );
+                }).join('')
+              ) +
             '</div>' +
-            '<div class="calendar-days-grid" id="cal-days-grid">' +
-              (function() {
-                var html = '';
-                for (var i = 1; i <= 28; i++) {
-                  var isToday = (i === currentDay);
-                  var isEvent = (i === 14 || i === 20 || i === 25);
-                  html += '<div class="calendar-day-cell ' + (isToday ? 'today' : '') + ' ' + (isEvent ? 'event' : '') + '">' + i + '</div>';
-                }
-                return html;
-              })() +
+
+            // 选中日期日程清单
+            '<div class="pl-app-section-title"><i class="fa-solid fa-list-check"></i> ' + selectedDayStr + ' 日程事项</div>' +
+            '<div class="calendar-events-section">' +
+              (selectedEvents.length === 0 ?
+                '<div style="font-size:11px;color:var(--c-sub);padding:12px;text-align:center;background:var(--c-surface);border-radius:var(--r-md);border:1px solid var(--c-border);">' +
+                  '该日暂无日程安排，点击右上角「+ 新建日程」添加' +
+                '</div>' :
+                selectedEvents.map(function(ev) {
+                  return (
+                    '<div class="cal-event-card card-interactive" data-eid="' + ev.id + '" style="cursor:pointer;">' +
+                      '<div class="cal-event-main">' +
+                        '<div class="cal-event-title">' +
+                          escapeHtml(ev.title) +
+                          (ev.showCountdown ? '<span class="cal-event-source-tag" style="color:var(--c-accent);border-color:var(--c-accent);"><i class="fa-solid fa-stopwatch-20"></i> 倒计时中</span>' : '') +
+                        '</div>' +
+                        '<div class="cal-event-meta">' +
+                          '<span class="cal-event-source-tag">' + (ev.sourceApp === 'loveDiary' ? '恋爱记' : (ev.sourceApp === 'studyRoom' ? '自习室' : '时光日历')) + '</span>' +
+                          '<span>' + (ev.time || '全天') + '</span>' +
+                          '<span>' + escapeHtml(ev.note || '') + '</span>' +
+                        '</div>' +
+                      '</div>' +
+                      '<i class="fa-solid fa-angle-right" style="color:var(--c-sub);font-size:12px;"></i>' +
+                    '</div>'
+                  );
+                }).join('')
+              ) +
             '</div>' +
           '</div>' +
+        '</div>';
 
-          // 纪念日倒计时卡
-          '<div class="pl-app-section-title"><i class="fa-solid fa-stopwatch-20"></i> 心动纪念日倒数</div>' +
-          '<div class="calendar-countdown-card">' +
-            '<div>' +
-              '<div class="calendar-countdown-title"><i class="fa-solid fa-cake-candles" style="margin-right:6px;color:var(--c-sub);"></i>Ta 的生日聚会</div>' +
-              '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">准备一份充满心意的手写书信</div>' +
-            '</div>' +
-            '<div class="calendar-countdown-days">12 天</div>' +
-          '</div>' +
+      page.innerHTML = html;
+      bindBackBtn(page, 'time-calendar-page');
 
-          '<div class="calendar-countdown-card">' +
-            '<div>' +
-              '<div class="calendar-countdown-title"><i class="fa-solid fa-heart" style="margin-right:6px;color:var(--c-sub);"></i>相识 100 天纪念日</div>' +
-              '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">解锁自习室限定专属双人白噪音</div>' +
-            '</div>' +
-            '<div class="calendar-countdown-days">18 天</div>' +
-          '</div>' +
-
-          // 今日待办清单
-          '<div class="pl-app-section-title"><i class="fa-solid fa-list-check"></i> 今日心动 Checklist</div>' +
-          '<div class="pl-app-feature-card" style="gap:10px;">' +
-            '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">' +
-              '<input type="checkbox" checked> <span>发一句晨间问候（早安）</span>' +
-            '</label>' +
-            '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">' +
-              '<input type="checkbox"> <span>在陪伴自习室专注满 30 分钟</span>' +
-            '</label>' +
-            '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">' +
-              '<input type="checkbox"> <span>给平行宇宙推进一步最新剧情</span>' +
-            '</label>' +
-          '</div>' +
-
-          '<div class="pl-app-dev-banner">' +
-            '<i class="fa-solid fa-bell"></i>' +
-            '<div class="pl-app-dev-banner-main">' +
-              '<div class="pl-app-dev-banner-title">双向纪念日通知引擎研制中</div>' +
-              '<div>到期当天角色将会在微信主动发送专属惊喜语音与贺卡！</div>' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
-
-    mountPage(page);
-    bindBackBtn(page, 'time-calendar-page');
-
-    page.querySelectorAll('.calendar-day-cell').forEach(function(cell) {
-      cell.onclick = function() {
-        window.toast && window.toast('选中日期：' + currentMonth + '月' + cell.textContent + '日');
+      // 切换月份
+      page.querySelector('#cal-prev-month').onclick = function() {
+        currentMonth--;
+        if (currentMonth < 1) {
+          currentMonth = 12;
+          currentYear--;
+        }
+        renderCalendar();
       };
-    });
+      page.querySelector('#cal-next-month').onclick = function() {
+        currentMonth++;
+        if (currentMonth > 12) {
+          currentMonth = 1;
+          currentYear++;
+        }
+        renderCalendar();
+      };
+
+      // 选中天数
+      page.querySelectorAll('.calendar-day-cell[data-day]').forEach(function(cell) {
+        cell.onclick = function() {
+          var dNum = parseInt(cell.getAttribute('data-day'), 10);
+          selectedDayStr = currentYear + '-' + String(currentMonth).padStart(2, '0') + '-' + String(dNum).padStart(2, '0');
+          renderCalendar();
+        };
+      });
+
+      // 新建日程按钮
+      page.querySelector('#cal-add-event-btn').onclick = function() {
+        openAddEventModal();
+      };
+
+      // 点击已有日程或倒计时卡
+      page.querySelectorAll('.card-interactive').forEach(function(card) {
+        card.onclick = function() {
+          var eId = card.getAttribute('data-eid');
+          var ev = events.find(function(e) { return e.id === eId; });
+          if (ev) {
+            openEventDetailModal(ev);
+          }
+        };
+      });
+    }
+
+    // 新建日程弹窗
+    function openAddEventModal() {
+      var modal = document.createElement('div');
+      modal.className = 'sr-modal-backdrop';
+      modal.innerHTML =
+        '<div class="sr-modal-card" style="max-width:340px;">' +
+          '<div class="sr-modal-header">' +
+            '<div class="sr-modal-title"><i class="fa-solid fa-calendar-plus"></i> 新建心动日程</div>' +
+            '<button type="button" class="sr-modal-close" id="add-close">&times;</button>' +
+          '</div>' +
+          '<div style="display:flex;flex-direction:column;gap:10px;">' +
+            '<div>' +
+              '<div style="font-size:11px;color:var(--c-sub);margin-bottom:4px;">事件标题：</div>' +
+              '<input type="text" id="ev-title-input" class="sr-set-input" style="width:100%;" placeholder="例如：周末图书博物馆之约">' +
+            '</div>' +
+            '<div style="display:flex;gap:8px;">' +
+              '<div style="flex:1;">' +
+                '<div style="font-size:11px;color:var(--c-sub);margin-bottom:4px;">日期：</div>' +
+                '<input type="date" id="ev-date-input" class="sr-set-input" style="width:100%;" value="' + selectedDayStr + '">' +
+              '</div>' +
+              '<div style="width:100px;">' +
+                '<div style="font-size:11px;color:var(--c-sub);margin-bottom:4px;">时间：</div>' +
+                '<input type="time" id="ev-time-input" class="sr-set-input" style="width:100%;" value="14:00">' +
+              '</div>' +
+            '</div>' +
+            '<div>' +
+              '<div style="font-size:11px;color:var(--c-sub);margin-bottom:4px;">备注或心愿：</div>' +
+              '<input type="text" id="ev-note-input" class="sr-set-input" style="width:100%;" placeholder="带上一杯温红茶">' +
+            '</div>' +
+            '<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding-top:4px;">' +
+              '<input type="checkbox" id="ev-countdown-check" checked>' +
+              '<span>设为倒计时卡展示 (在心动倒数榜显示)</span>' +
+            '</label>' +
+          '</div>' +
+          '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">' +
+            '<button type="button" class="pl-btn-secondary" id="add-cancel">取消</button>' +
+            '<button type="button" class="pl-btn-primary" id="add-submit">保存日程</button>' +
+          '</div>' +
+        '</div>';
+
+      document.body.appendChild(modal);
+      modal.querySelector('#add-close').onclick = function() { modal.remove(); };
+      modal.querySelector('#add-cancel').onclick = function() { modal.remove(); };
+      modal.querySelector('#add-submit').onclick = async function() {
+        var title = modal.querySelector('#ev-title-input').value.trim();
+        var date = modal.querySelector('#ev-date-input').value;
+        var time = modal.querySelector('#ev-time-input').value;
+        var note = modal.querySelector('#ev-note-input').value.trim();
+        var isCountdown = modal.querySelector('#ev-countdown-check').checked;
+
+        if (!title) {
+          window.toast && window.toast('请输入日程标题');
+          return;
+        }
+
+        if (window.TimeCalendarService) {
+          await window.TimeCalendarService.addEvent({
+            title: title,
+            date: date,
+            time: time,
+            note: note,
+            showCountdown: isCountdown,
+            type: 'schedule',
+            sourceApp: 'timeCalendar'
+          });
+          events = await window.TimeCalendarService.getAllEvents();
+          window.toast && window.toast('✨ 日程「' + title + '」已保存至时光日历！');
+          modal.remove();
+          renderCalendar();
+        }
+      };
+    }
+
+    // 核心规则：区分「删除事件」与「取消倒计时展示」
+    function openEventDetailModal(ev) {
+      var modal = document.createElement('div');
+      modal.className = 'sr-modal-backdrop';
+      var isCountdown = Boolean(ev.showCountdown);
+
+      modal.innerHTML =
+        '<div class="sr-modal-card" style="max-width:340px;">' +
+          '<div class="sr-modal-header">' +
+            '<div class="sr-modal-title"><i class="fa-solid fa-calendar-check"></i> 日程详情与操作</div>' +
+            '<button type="button" class="sr-modal-close" id="dtl-close">&times;</button>' +
+          '</div>' +
+          '<div style="padding:10px;background:var(--c-surface-2);border-radius:var(--r-md);margin-bottom:12px;">' +
+            '<div style="font-size:14px;font-weight:700;color:var(--c-text);">' + escapeHtml(ev.title) + '</div>' +
+            '<div style="font-size:11px;color:var(--c-sub);margin-top:4px;">' +
+              '<span>' + ev.date + ' ' + (ev.time || '') + '</span> · ' +
+              '<span class="cal-event-source-tag">来源: ' + (ev.sourceApp === 'loveDiary' ? '恋爱记' : (ev.sourceApp === 'studyRoom' ? '自习室' : '时光日历')) + '</span>' +
+            '</div>' +
+            (ev.note ? '<div style="font-size:11px;color:var(--c-text);margin-top:6px;">' + escapeHtml(ev.note) + '</div>' : '') +
+          '</div>' +
+          '<div style="display:flex;flex-direction:column;gap:8px;">' +
+            // 按钮1：切换倒计时卡展示
+            '<button type="button" class="pl-btn-secondary" id="btn-toggle-countdown" style="padding:8px 12px;font-size:12px;text-align:left;display:flex;align-items:center;justify-content:space-between;">' +
+              '<span><i class="fa-solid fa-stopwatch-20"></i> ' + (isCountdown ? '取消倒计时展示 (保留日程)' : '设为倒计时卡展示') + '</span>' +
+              '<i class="fa-solid fa-rotate"></i>' +
+            '</button>' +
+            // 按钮2：彻底删除事件
+            '<button type="button" class="pl-btn-secondary" id="btn-delete-event" style="padding:8px 12px;font-size:12px;text-align:left;color:#d9534f;display:flex;align-items:center;justify-content:space-between;">' +
+              '<span><i class="fa-solid fa-trash-can"></i> 完全删除日程事件 (彻底移除)</span>' +
+              '<i class="fa-solid fa-xmark"></i>' +
+            '</button>' +
+          '</div>' +
+          '<div style="display:flex;justify-content:flex-end;margin-top:14px;">' +
+            '<button type="button" class="pl-btn-primary" id="dtl-done" style="padding:4px 16px;">完成</button>' +
+          '</div>' +
+        '</div>';
+
+      document.body.appendChild(modal);
+      modal.querySelector('#dtl-close').onclick = function() { modal.remove(); };
+      modal.querySelector('#dtl-done').onclick = function() { modal.remove(); };
+
+      // 切换倒计时展示
+      modal.querySelector('#btn-toggle-countdown').onclick = async function() {
+        var nextState = !isCountdown;
+        if (window.TimeCalendarService) {
+          await window.TimeCalendarService.toggleCountdownDisplay(ev.id, nextState);
+          events = await window.TimeCalendarService.getAllEvents();
+          window.toast && window.toast(nextState ? '✨ 已设为倒计时卡展示！' : '🌿 已取消倒计时展示，日程依旧保留在日历中。');
+          modal.remove();
+          renderCalendar();
+        }
+      };
+
+      // 彻底删除
+      modal.querySelector('#btn-delete-event').onclick = function() {
+        if (confirm('确认彻底删除日程「' + ev.title + '」？\n（注：若只需从倒数卡片中隐藏，请点击「取消倒计时展示」）')) {
+          if (window.TimeCalendarService) {
+            window.TimeCalendarService.deleteEvent(ev.id).then(async function() {
+              events = await window.TimeCalendarService.getAllEvents();
+              window.toast && window.toast('🗑️ 日程已彻底删除。');
+              modal.remove();
+              renderCalendar();
+            });
+          }
+        }
+      };
+    }
+
+    renderCalendar();
+    mountPage(page);
   }
 
   // ====================================================
-  // 6. 人生游戏
+  // 6. 人生游戏 (联动自习室专注、成就馆与防刷上限)
+  // 唯一来源：LifeGameService；防刷：RewardGuard 统一规则
   // ====================================================
-  function showLifeGamePage() {
+  async function showLifeGamePage() {
     var existing = document.getElementById('life-game-page');
     if (existing) existing.remove();
 
@@ -634,102 +1172,158 @@
     page.id = 'life-game-page';
     page.className = 'full-page';
 
-    page.innerHTML =
-      '<div class="pl-app-container">' +
-        '<div class="pl-app-header">' +
-          '<div class="pl-app-header-left">' +
-            '<button class="pl-app-back-btn">' +
-              '<i class="fa fa-angle-left"></i><span>桌面</span>' +
-            '</button>' +
-            '<div class="pl-app-title-group">' +
-              '<div class="pl-app-icon-mini"><i class="fa-solid fa-gamepad"></i></div>' +
-              '<div class="pl-app-header-title">人生游戏</div>' +
+    var lifeState = window.LifeGameService ? await window.LifeGameService.getState() : { level: 3, exp: 650, stats: {} };
+    var guardCtx = window.WanwanSharedHub && window.WanwanSharedHub.RewardGuard ?
+      await window.WanwanSharedHub.RewardGuard.getTodayRecord() :
+      { record: { expEarned: 0, coinsEarned: 0 } };
+
+    function renderLifeGame() {
+      var reqExp = window.LifeGameService ? window.LifeGameService.getExpToNextLevel(lifeState.level) : 1000;
+      var expPercent = Math.min(100, Math.round((lifeState.exp / reqExp) * 100));
+
+      var html =
+        '<div class="pl-app-container">' +
+          '<div class="pl-app-header">' +
+            '<div class="pl-app-header-left">' +
+              '<button class="pl-app-back-btn">' +
+                '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+              '</button>' +
+              '<div class="pl-app-title-group">' +
+                '<div class="pl-app-icon-mini"><i class="fa-solid fa-gamepad"></i></div>' +
+                '<div class="pl-app-header-title">人生游戏</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="pl-app-header-right">' +
+              '<span class="pl-app-badge-dev">LV.' + lifeState.level + ' ' + escapeHtml(lifeState.title || '见习探索者') + '</span>' +
             '</div>' +
           '</div>' +
-          '<div class="pl-app-header-right">' +
-            '<span class="pl-app-badge-dev">LV.3 探索者</span>' +
-          '</div>' +
-        '</div>' +
 
-        '<div class="pl-app-scroll-content">' +
-          // 角色面板与经验条
-          '<div class="lifegame-profile-card">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<div class="pl-app-scroll-content">' +
+            // 防刷透明指示条
+            '<div class="lifegame-reward-guard-banner">' +
+              '<div><i class="fa-solid fa-shield-halved"></i> 统一奖励与防刷上限：</div>' +
               '<div>' +
-                '<div style="font-size:16px;font-weight:700;color:var(--c-text);">现实状态卡</div>' +
-                '<div style="font-size:11px;color:var(--c-sub);">将生活琐事化作史诗 RPG 升级冒险</div>' +
-              '</div>' +
-              '<div style="font-size:18px;font-weight:800;color:var(--c-text);">LV.3</div>' +
-            '</div>' +
-            '<div>' +
-              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--c-sub);margin-bottom:4px;">' +
-                '<span>升级经验值 (EXP)</span><span>650 / 1000</span>' +
-              '</div>' +
-              '<div class="lifegame-exp-bar">' +
-                '<div class="lifegame-exp-fill"></div>' +
+                '今日经验 <strong>' + guardCtx.record.expEarned + ' / 600</strong> · ' +
+                '金币 <strong>' + guardCtx.record.coinsEarned + ' / 300</strong>' +
               '</div>' +
             '</div>' +
-            // 六维属性网格
-            '<div class="lifegame-stats-row">' +
-              '<div class="lifegame-stat-box"><div class="lifegame-stat-val">74</div><div class="lifegame-stat-lbl">智力 INT</div></div>' +
-              '<div class="lifegame-stat-box"><div class="lifegame-stat-val">82</div><div class="lifegame-stat-lbl">魅力 CHA</div></div>' +
-              '<div class="lifegame-stat-box"><div class="lifegame-stat-val">68</div><div class="lifegame-stat-lbl">意志 WIL</div></div>' +
-              '<div class="lifegame-stat-box"><div class="lifegame-stat-val">62</div><div class="lifegame-stat-lbl">体能 PHY</div></div>' +
-              '<div class="lifegame-stat-box"><div class="lifegame-stat-val">88</div><div class="lifegame-stat-lbl">敏锐 PER</div></div>' +
-              '<div class="lifegame-stat-box"><div class="lifegame-stat-val">91</div><div class="lifegame-stat-lbl">灵感 INS</div></div>' +
-            '</div>' +
-          '</div>' +
 
-          // 悬赏任务榜
-          '<div class="pl-app-section-title"><i class="fa-solid fa-scroll"></i> 今日现实日常委托</div>' +
-          '<div class="pl-app-feature-card" style="gap:10px;">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+            // 角色RPG面板
+            '<div class="lifegame-profile-card">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+                '<div>' +
+                  '<div style="font-size:16px;font-weight:700;color:var(--c-text);">现实状态卡 · ' + escapeHtml(lifeState.title || '见习探索者') + '</div>' +
+                  '<div style="font-size:11px;color:var(--c-sub);">将自习、农场、相伴等琐事化作史诗 RPG 升级冒险</div>' +
+                '</div>' +
+                '<div style="font-size:20px;font-weight:800;color:var(--c-text);">LV.' + lifeState.level + '</div>' +
+              '</div>' +
               '<div>' +
-                '<div style="font-weight:600;font-size:13px;">晨间阅读 30 分钟</div>' +
-                '<div style="font-size:11px;color:var(--c-sub);">奖励：+30 EXP · +1 智力</div>' +
+                '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--c-sub);margin-bottom:4px;">' +
+                  '<span>升级经验值 (EXP)</span><span>' + lifeState.exp + ' / ' + reqExp + '</span>' +
+                '</div>' +
+                '<div class="lifegame-exp-bar">' +
+                  '<div class="lifegame-exp-fill" style="width:' + expPercent + '%;"></div>' +
+                '</div>' +
               '</div>' +
-              '<button type="button" class="pl-btn-primary" id="quest-1-btn">打卡完成</button>' +
+              // 六维属性网格
+              '<div class="lifegame-stats-row">' +
+                '<div class="lifegame-stat-box"><div class="lifegame-stat-val">' + (lifeState.stats.INT || 74) + '</div><div class="lifegame-stat-lbl">智力 INT</div></div>' +
+                '<div class="lifegame-stat-box"><div class="lifegame-stat-val">' + (lifeState.stats.CHA || 82) + '</div><div class="lifegame-stat-lbl">魅力 CHA</div></div>' +
+                '<div class="lifegame-stat-box"><div class="lifegame-stat-val">' + (lifeState.stats.WIL || 68) + '</div><div class="lifegame-stat-lbl">意志 WIL</div></div>' +
+                '<div class="lifegame-stat-box"><div class="lifegame-stat-val">' + (lifeState.stats.PHY || 62) + '</div><div class="lifegame-stat-lbl">体能 PHY</div></div>' +
+                '<div class="lifegame-stat-box"><div class="lifegame-stat-val">' + (lifeState.stats.PER || 88) + '</div><div class="lifegame-stat-lbl">敏锐 PER</div></div>' +
+                '<div class="lifegame-stat-box"><div class="lifegame-stat-val">' + (lifeState.stats.INS || 91) + '</div><div class="lifegame-stat-lbl">灵感 INS</div></div>' +
+              '</div>' +
             '</div>' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--c-border);padding-top:10px;">' +
-              '<div>' +
-                '<div style="font-weight:600;font-size:13px;">户外慢跑或快走 2 公里</div>' +
-                '<div style="font-size:11px;color:var(--c-sub);">奖励：+40 EXP · +2 体能</div>' +
+
+            // 悬赏任务榜
+            '<div class="pl-app-section-title"><i class="fa-solid fa-scroll"></i> 今日现实日常委托 (全域联动)</div>' +
+            '<div style="display:flex;flex-direction:column;gap:8px;">' +
+              (lifeState.quests || []).map(function(q) {
+                var isDone = q.done || (q.current >= q.target);
+                var isClaimed = q.claimed;
+
+                return (
+                  '<div class="cal-event-card">' +
+                    '<div class="cal-event-main">' +
+                      '<div class="cal-event-title">' +
+                        escapeHtml(q.title) +
+                        (isClaimed ? '<span class="cal-event-source-tag" style="color:var(--c-sub);">已领奖</span>' : '') +
+                      '</div>' +
+                      '<div class="cal-event-meta">' +
+                        '<span>' + escapeHtml(q.desc) + '</span>' +
+                        '<span>进度: ' + Math.min(q.target, q.current || 0) + ' / ' + q.target + '</span>' +
+                      '</div>' +
+                      '<div style="font-size:10px;color:var(--c-sub);margin-top:2px;">' +
+                        '奖励：+' + q.rewardExp + ' EXP · +' + q.rewardCoins + ' 金币' +
+                      '</div>' +
+                    '</div>' +
+                    (isClaimed ?
+                      '<button type="button" class="pl-btn-secondary" disabled style="opacity:0.5;font-size:11px;padding:3px 10px;">已达成</button>' :
+                      (isDone ?
+                        '<button type="button" class="pl-btn-primary btn-claim-quest" data-qid="' + q.id + '" style="font-size:11px;padding:3px 10px;">打卡领奖</button>' :
+                        '<button type="button" class="pl-btn-secondary btn-simulate-quest" data-qid="' + q.id + '" style="font-size:11px;padding:3px 8px;">打卡推进</button>'
+                      )
+                    ) +
+                  '</div>'
+                );
+              }).join('') +
+            '</div>' +
+
+            '<div class="pl-app-dev-banner" style="margin-top:14px;">' +
+              '<i class="fa-solid fa-dice-d20"></i>' +
+              '<div class="pl-app-dev-banner-main">' +
+                '<div class="pl-app-dev-banner-title">全域真实联动结算已启用</div>' +
+                '<div>陪伴自习室专注 45 分钟直接推进日常并提升智力；农场收获提升体能并奖励金币！</div>' +
               '</div>' +
-              '<button type="button" class="pl-btn-primary" id="quest-2-btn">打卡完成</button>' +
             '</div>' +
           '</div>' +
+        '</div>';
 
-          '<div class="pl-app-dev-banner">' +
-            '<i class="fa-solid fa-dice-d20"></i>' +
-            '<div class="pl-app-dev-banner-main">' +
-              '<div class="pl-app-dev-banner-title">技能树加点与角色联动结算引擎开发中</div>' +
-              '<div>打卡成果将转化为商城金币与角色专属赞许反应！</div>' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
+      page.innerHTML = html;
+      bindBackBtn(page, 'life-game-page');
 
+      // 领奖
+      page.querySelectorAll('.btn-claim-quest').forEach(function(btn) {
+        btn.onclick = async function() {
+          var qId = btn.getAttribute('data-qid');
+          if (window.LifeGameService) {
+            var res = await window.LifeGameService.claimQuest(qId);
+            if (res.success) {
+              window.toast && window.toast('🎉 委托达成！获得 +' + res.exp + ' EXP 与 +' + res.coins + ' 金币！');
+              lifeState = res.state;
+              guardCtx = await window.WanwanSharedHub.RewardGuard.getTodayRecord();
+              renderLifeGame();
+            } else {
+              window.toast && window.toast(res.msg);
+            }
+          }
+        };
+      });
+
+      // 手动推进测试打卡
+      page.querySelectorAll('.btn-simulate-quest').forEach(function(btn) {
+        btn.onclick = async function() {
+          var qId = btn.getAttribute('data-qid');
+          if (window.LifeGameService) {
+            await window.LifeGameService.updateQuestProgress(qId, 1);
+            lifeState = await window.LifeGameService.getState();
+            window.toast && window.toast('✨ 推进了一次日常委托进度！');
+            renderLifeGame();
+          }
+        };
+      });
+    }
+
+    renderLifeGame();
     mountPage(page);
-    bindBackBtn(page, 'life-game-page');
-
-    page.querySelector('#quest-1-btn').onclick = function() {
-      this.disabled = true;
-      this.textContent = '已领奖';
-      this.style.opacity = '0.6';
-      window.toast && window.toast('晨间阅读完成！获得 +30 EXP 与 +1 智力');
-    };
-    page.querySelector('#quest-2-btn').onclick = function() {
-      this.disabled = true;
-      this.textContent = '已领奖';
-      this.style.opacity = '0.6';
-      window.toast && window.toast('户外运动完成！获得 +40 EXP 与 +2 体能');
-    };
   }
 
   // ====================================================
-  // 7. 心动商城
+  // 7. 心动商城 (联动共享经济账户与背包)
+  // 唯一来源：SharedEconomyService
   // ====================================================
-  function showHeartbeatMallPage() {
+  async function showHeartbeatMallPage() {
     var existing = document.getElementById('heartbeat-mall-page');
     if (existing) existing.remove();
 
@@ -737,110 +1331,135 @@
     page.id = 'heartbeat-mall-page';
     page.className = 'full-page';
 
-    page.innerHTML =
-      '<div class="pl-app-container">' +
-        '<div class="pl-app-header">' +
-          '<div class="pl-app-header-left">' +
-            '<button class="pl-app-back-btn">' +
-              '<i class="fa fa-angle-left"></i><span>桌面</span>' +
-            '</button>' +
-            '<div class="pl-app-title-group">' +
-              '<div class="pl-app-icon-mini"><i class="fa-solid fa-store"></i></div>' +
-              '<div class="pl-app-header-title">心动商城</div>' +
-            '</div>' +
-          '</div>' +
-          '<div class="pl-app-header-right">' +
-            '<span class="pl-app-badge-dev"><i class="fa-solid fa-coins"></i> 2,880</span>' +
-          '</div>' +
-        '</div>' +
+    var ecoState = window.SharedEconomyService ? await window.SharedEconomyService.getState() : { coins: 520, diamonds: 50 };
 
-        '<div class="pl-app-scroll-content">' +
-          // 资产与每日签到
-          '<div class="mall-assets-bar">' +
-            '<div class="mall-asset-item">' +
-              '<i class="fa-solid fa-coins"></i>' +
-              '<span>金币：<strong>2,880</strong></span>' +
-            '</div>' +
-            '<div class="mall-asset-item">' +
-              '<i class="fa-solid fa-gem"></i>' +
-              '<span>星愿石：<strong>168</strong></span>' +
-            '</div>' +
-            '<button type="button" class="pl-btn-primary" id="mall-signin-btn">' +
-              '<i class="fa-solid fa-gift"></i><span>每日签到</span>' +
-            '</button>' +
-          '</div>' +
+    var MALL_GOODS = [
+      { id: 'item_vinyl', name: '复古黑胶唱机', price: 300, icon: 'fa-solid fa-record-vinyl', category: 'furniture', desc: '可布置于我们的家，舒适度+25' },
+      { id: 'crop_strawberry_seed', name: '甜心草莓种子 (4包)', price: 50, icon: 'fa-solid fa-seedling', category: 'seed', desc: '可在弯弯农场后院耕作收获新鲜草莓' },
+      { id: 'item_rug', name: '暖绒云朵毯', price: 200, icon: 'fa-solid fa-rug', category: 'furniture', desc: '可布置于我们的家，舒适度+25' },
+      { id: 'item_sticky_notes', name: '心动便签纸 (5份)', price: 60, icon: 'fa-solid fa-note-sticky', category: 'study_tool', desc: '自习室与伴侣专属灵感便利贴' },
+      { id: 'crop_sunflower_seed', name: '晨光向日葵种子 (2包)', price: 80, icon: 'fa-solid fa-sun', category: 'seed', desc: '农场种植金色花朵，收获丰厚收益' },
+      { id: 'item_frame', name: '拍立得相框', price: 150, icon: 'fa-solid fa-camera-retro', category: 'furniture', desc: '记录旅行与自习名场面' }
+    ];
 
-          // 热门货架
-          '<div class="pl-app-section-title"><i class="fa-solid fa-bag-shopping"></i> 热门心动货架预告</div>' +
-          '<div class="mall-shelf-grid">' +
-            '<div class="mall-good-card" data-good="picnic">' +
-              '<div class="mall-good-visual">🧺</div>' +
-              '<div class="mall-good-title">星空野餐垫</div>' +
-              '<div style="font-size:10px;color:var(--c-sub);">解锁专属草地夜谈约会场景</div>' +
-              '<div class="mall-good-bottom">' +
-                '<span class="mall-price">300 金币</span>' +
-                '<button type="button" class="mall-btn-buy">兑换</button>' +
+    function renderMall() {
+      var html =
+        '<div class="pl-app-container">' +
+          '<div class="pl-app-header">' +
+            '<div class="pl-app-header-left">' +
+              '<button class="pl-app-back-btn">' +
+                '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+              '</button>' +
+              '<div class="pl-app-title-group">' +
+                '<div class="pl-app-icon-mini"><i class="fa-solid fa-store"></i></div>' +
+                '<div class="pl-app-header-title">心动商城</div>' +
               '</div>' +
             '</div>' +
+            '<div class="pl-app-header-right">' +
+              '<span class="pl-app-badge-dev"><i class="fa-solid fa-coins"></i> ' + (ecoState.coins || 0) + '</span>' +
+            '</div>' +
+          '</div>' +
 
-            '<div class="mall-good-card" data-good="hourglass">' +
-              '<div class="mall-good-visual">⏳</div>' +
-              '<div class="mall-good-title">时光回溯沙漏</div>' +
-              '<div style="font-size:10px;color:var(--c-sub);">平行小剧场幕次无损重写券</div>' +
-              '<div class="mall-good-bottom">' +
-                '<span class="mall-price">500 金币</span>' +
-                '<button type="button" class="mall-btn-buy">兑换</button>' +
+          '<div class="pl-app-scroll-content">' +
+            // 资产与每日签到
+            '<div class="mall-assets-bar">' +
+              '<div class="mall-asset-item">' +
+                '<i class="fa-solid fa-coins"></i>' +
+                '<span>金币：<strong>' + (ecoState.coins || 0) + '</strong></span>' +
               '</div>' +
+              '<div class="mall-asset-item">' +
+                '<i class="fa-solid fa-gem"></i>' +
+                '<span>星愿石：<strong>' + (ecoState.diamonds || 0) + '</strong></span>' +
+              '</div>' +
+              '<button type="button" class="pl-btn-primary" id="mall-signin-btn">' +
+                '<i class="fa-solid fa-gift"></i><span>每日迎新签到</span>' +
+              '</button>' +
             '</div>' +
 
-            '<div class="mall-good-card" data-good="sakura">' +
-              '<div class="mall-good-visual">🌸</div>' +
-              '<div class="mall-good-title">春日樱花时装</div>' +
-              '<div style="font-size:10px;color:var(--c-sub);">全员角色可选限定和风立绘</div>' +
-              '<div class="mall-good-bottom">' +
-                '<span class="mall-price">88 星愿石</span>' +
-                '<button type="button" class="mall-btn-buy">兑换</button>' +
-              '</div>' +
+            // 热门货架
+            '<div class="pl-app-section-title"><i class="fa-solid fa-bag-shopping"></i> 共享道具精选货架</div>' +
+            '<div class="mall-shelf-grid">' +
+              MALL_GOODS.map(function(good) {
+                return (
+                  '<div class="mall-good-card" data-gid="' + good.id + '">' +
+                    '<div class="mall-good-visual"><i class="' + good.icon + '"></i></div>' +
+                    '<div class="mall-good-title">' + escapeHtml(good.name) + '</div>' +
+                    '<div style="font-size:10px;color:var(--c-sub);">' + escapeHtml(good.desc) + '</div>' +
+                    '<div class="mall-good-bottom">' +
+                      '<span class="mall-price">' + good.price + ' 金币</span>' +
+                      '<button type="button" class="mall-btn-buy" data-gid="' + good.id + '">兑换入包</button>' +
+                    '</div>' +
+                  '</div>'
+                );
+              }).join('') +
             '</div>' +
 
-            '<div class="mall-good-card" data-good="potion">' +
-              '<div class="mall-good-visual">🧪</div>' +
-              '<div class="mall-good-title">心声显影药水</div>' +
-              '<div style="font-size:10px;color:var(--c-sub);">立即查看一条角色的未发日记</div>' +
-              '<div class="mall-good-bottom">' +
-                '<span class="mall-price">50 星愿石</span>' +
-                '<button type="button" class="mall-btn-buy">兑换</button>' +
+            '<div class="pl-app-dev-banner">' +
+              '<i class="fa-solid fa-cart-shopping"></i>' +
+              '<div class="pl-app-dev-banner-main">' +
+                '<div class="pl-app-dev-banner-title">共享经济中枢统一记账</div>' +
+                '<div>兑换后道具即时存入共享背包，家具可直接在「我们的家」布置，种子可在「弯弯农场」耕种！</div>' +
               '</div>' +
             '</div>' +
           '</div>' +
+        '</div>';
 
-          '<div class="pl-app-dev-banner">' +
-            '<i class="fa-solid fa-cart-shopping"></i>' +
-            '<div class="pl-app-dev-banner-main">' +
-              '<div class="pl-app-dev-banner-title">虚拟经济与背包道具生效中枢打通中</div>' +
-              '<div>道具兑换后将自动注入角色交互背包与衣帽间，体验正在加速构建！</div>' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
+      page.innerHTML = html;
+      bindBackBtn(page, 'heartbeat-mall-page');
 
+      // 每日签到
+      var signBtn = page.querySelector('#mall-signin-btn');
+      if (signBtn) {
+        signBtn.onclick = async function() {
+          if (window.WanwanSharedHub && window.WanwanSharedHub.RewardGuard) {
+            var eventId = 'mall_signin_' + getTodayStr();
+            var guard = await window.WanwanSharedHub.RewardGuard.validateAndGrant(eventId, 0, 50, 0);
+            if (!guard.allowed) {
+              window.toast && window.toast('今日签到奖励已领取过，明日再来吧~');
+              return;
+            }
+            await window.SharedEconomyService.addCoins(guard.coinsGranted, '每日商城签到', 'mall');
+            ecoState = await window.SharedEconomyService.getState();
+            window.toast && window.toast('🎉 签到成功！获得 +' + guard.coinsGranted + ' 金币！');
+            renderMall();
+          }
+        };
+      }
+
+      // 兑换购买商品
+      page.querySelectorAll('.mall-btn-buy').forEach(function(btn) {
+        btn.onclick = async function() {
+          var gId = btn.getAttribute('data-gid');
+          var good = MALL_GOODS.find(function(g) { return g.id === gId; });
+          if (!good) return;
+
+          if (window.SharedEconomyService) {
+            var spendRes = await window.SharedEconomyService.spendCoins(good.price, '兑换商品：' + good.name, 'mall');
+            if (!spendRes.success) {
+              window.toast && window.toast(spendRes.msg);
+              return;
+            }
+
+            // 放入背包
+            await window.SharedEconomyService.addItem({
+              itemId: good.id,
+              name: good.name,
+              icon: good.icon,
+              category: good.category,
+              desc: good.desc,
+              price: good.price
+            }, 1, 'mall');
+
+            ecoState = await window.SharedEconomyService.getState();
+            window.toast && window.toast('🎁 兑换成功！「' + good.name + '」已放入共享背包！');
+            renderMall();
+          }
+        };
+      });
+    }
+
+    renderMall();
     mountPage(page);
-    bindBackBtn(page, 'heartbeat-mall-page');
-
-    page.querySelector('#mall-signin-btn').onclick = function() {
-      this.disabled = true;
-      this.textContent = '已签到';
-      this.style.opacity = '0.6';
-      window.toast && window.toast('签到成功！获得 +100 金币与 +5 星愿石');
-    };
-
-    page.querySelectorAll('.mall-btn-buy').forEach(function(btn) {
-      btn.onclick = function() {
-        var card = btn.closest('.mall-good-card');
-        var name = card.querySelector('.mall-good-title').textContent;
-        window.toast && window.toast('「' + name + '」体验资格已预定，正式上线后直发背包！');
-      };
-    });
   }
 
   // ====================================================
@@ -1075,8 +1694,10 @@
   window.showBrowserPage = showBrowserPage;
   window.showStudyRoomPage = showStudyRoomPage;
   window.showOurHomePage = showOurHomePage;
-  window.showAchievementPage = showAchievementPage;
-  window.showTimeCalendarPage = showTimeCalendarPage;
+  if (!window.TimeCalendarApp) {
+    window.showTimeCalendarPage = showTimeCalendarPage;
+    window.showTimeCalendarApp = showTimeCalendarPage;
+  }
   window.showLifeGamePage = showLifeGamePage;
   window.showHeartbeatMallPage = showHeartbeatMallPage;
   window.showFanCommunityPage = showFanCommunityPage;
@@ -1087,7 +1708,9 @@
   window.showStudyRoomApp = showStudyRoomPage;
   window.showOurHomeApp = showOurHomePage;
   window.showAchievementApp = showAchievementPage;
-  window.showTimeCalendarApp = showTimeCalendarPage;
+  if (!window.TimeCalendarApp) {
+    window.showTimeCalendarApp = showTimeCalendarPage;
+  }
   window.showLifeGameApp = showLifeGamePage;
   window.showHeartbeatMallApp = showHeartbeatMallPage;
   window.showFanCommunityApp = showFanCommunityPage;

@@ -137,8 +137,9 @@ self.addEventListener('notificationclick', function(event) {
   event.notification.close()
 
   var targetUrl = './'
-  if (event.notification.data && event.notification.data.url) {
-    targetUrl = event.notification.data.url
+  var data = event.notification.data || {}
+  if (data.url) {
+    targetUrl = data.url
   }
 
   event.waitUntil(
@@ -146,6 +147,9 @@ self.addEventListener('notificationclick', function(event) {
       .then(function(clientList) {
         for (var i = 0; i < clientList.length; i++) {
           var client = clientList[i]
+          try {
+            client.postMessage({ type: 'wanwan-notification-click', data: data })
+          } catch (_) {}
           if ('focus' in client) return client.focus()
         }
         if (self.clients.openWindow) return self.clients.openWindow(targetUrl)

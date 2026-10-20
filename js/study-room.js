@@ -574,6 +574,19 @@
     });
     saveStorage(STORAGE_KEYS.RECORDS, _state.records);
 
+    // 阶段 6｜全域数据联动：专注完成写入事件总线，人生游戏更新任务/经验，成就馆判断徽章，Char生成符合模式的反馈
+    if (window.WanwanSharedHub) {
+      window.WanwanSharedHub.emit('FOCUS_SESSION_COMPLETED', {
+        eventId: 'focus_' + Date.now() + '_' + durationMinutes,
+        durationMinutes: durationMinutes,
+        taskType: _state.taskType,
+        taskName: _state.taskName,
+        studyMode: _state.studyMode,
+        companionChar: _state.companionChar,
+        timestamp: Date.now()
+      });
+    }
+
     // 自动流转至休息阶段
     _state.timerPhase = 'break';
     _state.targetDurationSec = 5 * 60;
@@ -885,6 +898,41 @@
         '</div>' +
       '</div>' +
 
+      // 阶段 6｜全域数据联动状态卡片
+      '<div style="font-size:13px;font-weight:600;color:var(--c-text);"><i class="fa-solid fa-network-wired"></i> 全域数据与服务联动</div>' +
+      '<div class="pl-app-feature-card" style="gap:10px;padding:12px;background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--r-md);">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--c-border);">' +
+          '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<i class="fa-solid fa-calendar-days" style="color:var(--c-sub);"></i>' +
+            '<div>' +
+              '<div style="font-size:12px;font-weight:600;">时光日历联动</div>' +
+              '<div style="font-size:10px;color:var(--c-sub);" id="sr-hall-calendar-hint">今日日程与纪念日倒数实时同步中…</div>' +
+            '</div>' +
+          '</div>' +
+          '<button type="button" class="pl-btn-secondary" id="sr-hall-open-cal-btn" style="padding:2px 8px;font-size:11px;">查看日历</button>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--c-border);">' +
+          '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<i class="fa-solid fa-gamepad" style="color:var(--c-sub);"></i>' +
+            '<div>' +
+              '<div style="font-size:12px;font-weight:600;">人生游戏日常委托</div>' +
+              '<div style="font-size:10px;color:var(--c-sub);" id="sr-hall-lifegame-hint">专注满 30/45 分钟自动推进委托与 EXP 结算</div>' +
+            '</div>' +
+          '</div>' +
+          '<button type="button" class="pl-btn-secondary" id="sr-hall-open-game-btn" style="padding:2px 8px;font-size:11px;">查看委托</button>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+          '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<i class="fa-solid fa-award" style="color:var(--c-sub);"></i>' +
+            '<div>' +
+              '<div style="font-size:12px;font-weight:600;">成就馆荣誉羁绊</div>' +
+              '<div style="font-size:10px;color:var(--c-sub);">单次 45 分钟专注可解锁「专注大师」等专属勋章</div>' +
+            '</div>' +
+          '</div>' +
+          '<button type="button" class="pl-btn-secondary" id="sr-hall-open-ach-btn" style="padding:2px 8px;font-size:11px;">陈列柜</button>' +
+        '</div>' +
+      '</div>' +
+
       // 今日待办清单
       '<div class="sr-todo-box">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;">' +
@@ -905,6 +953,26 @@
         switchTab(container, card.getAttribute('data-goto'));
       };
     });
+
+    // 绑定全域联动应用跳转
+    var openCalBtn = hallEl.querySelector('#sr-hall-open-cal-btn');
+    if (openCalBtn) {
+      openCalBtn.onclick = function() {
+        if (window.showTimeCalendarPage) window.showTimeCalendarPage();
+      };
+    }
+    var openGameBtn = hallEl.querySelector('#sr-hall-open-game-btn');
+    if (openGameBtn) {
+      openGameBtn.onclick = function() {
+        if (window.showLifeGamePage) window.showLifeGamePage();
+      };
+    }
+    var openAchBtn = hallEl.querySelector('#sr-hall-open-ach-btn');
+    if (openAchBtn) {
+      openAchBtn.onclick = function() {
+        if (window.showAchievementPage) window.showAchievementPage();
+      };
+    }
 
     renderTodoList(hallEl);
     hallEl.querySelector('#sr-add-todo-btn').onclick = function() {
