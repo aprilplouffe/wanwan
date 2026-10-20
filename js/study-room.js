@@ -573,6 +573,14 @@
       mode: _state.studyMode
     });
     saveStorage(STORAGE_KEYS.RECORDS, _state.records);
+    if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
+      window.TimeCalendarIntegrations.emit('record_added', {
+        durationMinutes: durationMinutes,
+        taskType: _state.taskType,
+        taskName: _state.taskName,
+        date: new Date().toISOString().slice(0, 10)
+      });
+    }
 
     // 阶段 6｜全域数据联动：专注完成写入事件总线，人生游戏更新任务/经验，成就馆判断徽章，Char生成符合模式的反馈
     if (window.WanwanSharedHub) {
@@ -671,11 +679,15 @@
   // ====================================================
   // 页面入口与主容器构建
   // ====================================================
-  window.showStudyRoomPage = async function() {
+  window.showStudyRoomPage = async function(options) {
     var existing = document.getElementById('study-room-page');
     if (existing) existing.remove();
 
     await initStudyState();
+
+    if (options && options.tab) {
+      _state.activeTab = options.tab;
+    }
 
     var page = document.createElement('div');
     page.id = 'study-room-page';
@@ -690,6 +702,17 @@
     }
 
     renderActiveTabPage(page);
+
+    if (options && options.targetTodoId) {
+      setTimeout(function() {
+        var el = page.querySelector('.sr-todo-item[data-id="' + options.targetTodoId + '"]');
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.style.outline = '2px solid var(--pl-primary, #6366f1)';
+          setTimeout(function() { el.style.outline = ''; }, 2500);
+        }
+      }, 350);
+    }
   };
 
   window.showStudyRoomApp = window.showStudyRoomPage;
@@ -937,7 +960,10 @@
       '<div class="sr-todo-box">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;">' +
           '<span style="font-size:13px;font-weight:600;color:var(--c-text);"><i class="fa-solid fa-list-check"></i> 今日待办清单</span>' +
-          '<button type="button" class="pl-btn-secondary" id="sr-add-todo-btn" style="padding:2px 8px;font-size:10px;">+ 添加</button>' +
+          '<div style="display:flex;align-items:center;gap:6px;">' +
+            '<button type="button" class="pl-btn-secondary" id="sr-hall-open-cal-todo-btn" style="padding:2px 8px;font-size:10px;" title="在时光日历中统一查看与管理"><i class="fa fa-calendar-days"></i> 日历</button>' +
+            '<button type="button" class="pl-btn-secondary" id="sr-add-todo-btn" style="padding:2px 8px;font-size:10px;">+ 添加</button>' +
+          '</div>' +
         '</div>' +
         '<div id="sr-todo-list-container"></div>' +
       '</div>';
@@ -961,6 +987,14 @@
         if (window.showTimeCalendarPage) window.showTimeCalendarPage();
       };
     }
+    var openCalTodoBtn = hallEl.querySelector('#sr-hall-open-cal-todo-btn');
+    if (openCalTodoBtn) {
+      openCalTodoBtn.onclick = function() {
+        if (window.showTimeCalendarApp) {
+          window.showTimeCalendarApp({ date: new Date().toISOString().slice(0, 10) });
+        }
+      };
+    }
     var openGameBtn = hallEl.querySelector('#sr-hall-open-game-btn');
     if (openGameBtn) {
       openGameBtn.onclick = function() {
@@ -978,9 +1012,19 @@
     hallEl.querySelector('#sr-add-todo-btn').onclick = function() {
       var text = prompt('请输入今日待办事项：');
       if (text && text.trim()) {
-        _state.todos.push({ id: uid(), text: text.trim(), done: false });
+        var newTodo = {
+          id: uid(),
+          text: text.trim(),
+          date: new Date().toISOString().slice(0, 10),
+          done: false,
+          createdAt: Date.now()
+        };
+        _state.todos.push(newTodo);
         saveStorage(STORAGE_KEYS.TODOS, _state.todos);
         renderTodoList(hallEl);
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
+          window.TimeCalendarIntegrations.emit('todo_changed', { todoId: newTodo.id });
+        }
       }
     };
   }
@@ -1006,6 +1050,7 @@
     _state.todos.forEach(function(todo, idx) {
       var row = document.createElement('div');
       row.className = 'sr-todo-item';
+      row.setAttribute('data-id', todo.id || ('sr_todo_' + idx));
       row.innerHTML =
         '<i class="sr-todo-checkbox fa-regular ' + (todo.done ? 'fa-circle-check checked' : 'fa-circle') + '"></i>' +
         '<span class="sr-todo-text ' + (todo.done ? 'done' : '') + '">' + esc(todo.text) + '</span>' +
@@ -1015,13 +1060,19 @@
         todo.done = !todo.done;
         saveStorage(STORAGE_KEYS.TODOS, _state.todos);
         renderTodoList(parentEl);
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
+          window.TimeCalendarIntegrations.emit('todo_toggled', { todoId: todo.id, done: todo.done });
+        }
       };
 
       row.querySelector('.fa-xmark').onclick = function(e) {
         e.stopPropagation();
-        _state.todos.splice(idx, 1);
+        var removed = _state.todos.splice(idx, 1);
         saveStorage(STORAGE_KEYS.TODOS, _state.todos);
         renderTodoList(parentEl);
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
+          window.TimeCalendarIntegrations.emit('todo_changed', { todoId: removed[0] ? removed[0].id : null });
+        }
       };
 
       list.appendChild(row);

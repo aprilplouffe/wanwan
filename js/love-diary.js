@@ -174,11 +174,18 @@
   }
 
   // ===== 页面入口 =====
-  window.showLoveDiaryPage = async function() {
+  window.showLoveDiaryPage = async function(options) {
     var config = await loadAllCoupleSpaces()
     var page = document.createElement('div')
     page.id = 'love-diary-page'
     page.className = 'full-page is-opening'
+
+    if (options && options.charId && config.spaces && config.spaces[options.charId]) {
+      config.activeCharId = options.charId
+    }
+    if (options && options.tab) {
+      _activeTab = options.tab
+    }
 
     if (config.activeCharId && config.spaces && config.spaces[config.activeCharId] && config.spaces[config.activeCharId].status === 'accepted') {
       _currentCoupleData = config.spaces[config.activeCharId]
@@ -460,7 +467,10 @@
           '</div>' +
         '</div>' +
         '<div class="ld-banner-foot">' +
-          '<span id="ld-anniversary-text" style="cursor:pointer;" title="点击修改纪念日"><i class="fa fa-calendar-heart" style="margin-right:4px;"></i>纪念日：' + (_currentCoupleData.anniversaryDate || '今天') + '</span>' +
+          '<div style="display:flex;align-items:center;gap:6px;">' +
+            '<span id="ld-anniversary-text" style="cursor:pointer;" title="点击修改纪念日"><i class="fa fa-calendar-heart" style="margin-right:4px;"></i>纪念日：' + (_currentCoupleData.anniversaryDate || '今天') + '</span>' +
+            '<button type="button" id="ld-btn-view-calendar" style="background:rgba(255,255,255,0.25);border:none;color:#fff;border-radius:10px;padding:2px 8px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:4px;" title="在时光日历中查看与设置提醒"><i class="fa fa-calendar-days"></i> 日历</button>' +
+          '</div>' +
           '<span id="ld-quote-text" style="cursor:pointer;" title="点击修改情侣签名">' + (_currentCoupleData.quote || '愿每一秒心动，都有回音') + '</span>' +
         '</div>' +
       '</div>' +
@@ -483,6 +493,18 @@
     page.querySelector('#ld-switch-partner-btn').addEventListener('click', function() {
       renderPartnerSelect(page, config)
     })
+    var calJumpBtn = page.querySelector('#ld-btn-view-calendar')
+    if (calJumpBtn) {
+      calJumpBtn.addEventListener('click', function(e) {
+        e.stopPropagation()
+        if (window.showTimeCalendarApp) {
+          window.showTimeCalendarApp({
+            date: _currentCoupleData.anniversaryDate,
+            charId: _currentCoupleData.charId
+          })
+        }
+      })
+    }
     page.querySelector('#ld-anniversary-text').addEventListener('click', function() {
       var nextDate = prompt('修改恋爱纪念日（格式：YYYY-MM-DD）：', _currentCoupleData.anniversaryDate || '')
       if (nextDate && /^\d{4}-\d{2}-\d{2}$/.test(nextDate)) {
@@ -490,6 +512,12 @@
         config.spaces[_currentCoupleData.charId] = _currentCoupleData
         saveAllCoupleSpaces(config)
         renderMainLoveDiary(page, config)
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
+          window.TimeCalendarIntegrations.emit('anniversary_changed', {
+            charId: _currentCoupleData.charId,
+            anniversaryDate: nextDate
+          })
+        }
         window.toast && window.toast('纪念日已更新')
       }
     })
@@ -658,10 +686,22 @@
       '<div>'
 
     wishes.forEach(function(wish, index) {
+      var dateBadge = wish.targetDate ?
+        '<span style="font-size:10px;background:#ffeef1;color:#ff477e;padding:1px 6px;border-radius:10px;margin-left:6px;display:inline-flex;align-items:center;gap:3px;"><i class="fa fa-calendar-heart"></i> ' + wish.targetDate + '</span>' : '';
+
       html +=
-        '<div class="ld-wish-item' + (wish.done ? ' done' : '') + '" onclick="window.toggleCoupleWish && window.toggleCoupleWish(' + index + ')">' +
-          '<div class="ld-wish-check"><i class="fa fa-check" style="font-size:11px;"></i></div>' +
-          '<div class="ld-wish-text">' + (index + 1) + '. ' + wish.text + '</div>' +
+        '<div class="ld-wish-item' + (wish.done ? ' done' : '') + '" style="display:flex;align-items:center;justify-content:space-between;">' +
+          '<div style="display:flex;align-items:center;flex:1;min-width:0;cursor:pointer;" onclick="window.toggleCoupleWish && window.toggleCoupleWish(' + index + ')">' +
+            '<div class="ld-wish-check"><i class="fa fa-check" style="font-size:11px;"></i></div>' +
+            '<div class="ld-wish-text">' + (index + 1) + '. ' + wish.text + dateBadge + '</div>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">' +
+            '<button type="button" title="' + (wish.targetDate ? '修改心愿履约日期' : '设定心愿日期并同步时光日历') + '" onclick="window.setCoupleWishDate && window.setCoupleWishDate(' + index + ')" style="border:none;background:none;color:#a08c93;cursor:pointer;padding:4px 6px;font-size:12px;">' +
+              '<i class="fa-regular fa-calendar-plus"></i>' +
+            '</button>' +
+            (wish.targetDate ?
+              '<button type="button" title="在时光日历中定位" onclick="window.showTimeCalendarApp && window.showTimeCalendarApp({ date: \'' + wish.targetDate + '\' })" style="border:none;background:none;color:#ff477e;cursor:pointer;padding:4px 6px;font-size:12px;"><i class="fa fa-arrow-up-right-from-square"></i></button>' : '') +
+          '</div>' +
         '</div>'
     })
     html += '</div>'
@@ -867,7 +907,41 @@
     await saveAllCoupleSpaces(config)
     var page = document.getElementById('love-diary-page')
     if (page) renderWishesTab(page.querySelector('#ld-content-area'), config)
+    if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
+      window.TimeCalendarIntegrations.emit('wish_toggled', {
+        charId: _currentCoupleData.charId,
+        wishId: item.id || String(index),
+        done: item.done
+      })
+    }
     window.toast && window.toast(item.done ? '太棒啦！又共同完成了一件心愿 🎉' : '心愿状态已重置')
+  }
+
+  window.setCoupleWishDate = async function(index) {
+    if (!_currentCoupleData || !_currentCoupleData.wishes[index]) return
+    var item = _currentCoupleData.wishes[index]
+    var cur = item.targetDate || new Date().toISOString().slice(0, 10)
+    var nextDate = prompt('设置心愿预计实现日期（格式：YYYY-MM-DD，留空则取消日历关联）：', cur)
+    if (nextDate === null) return
+    nextDate = nextDate.trim()
+    if (nextDate && !/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) {
+      alert('日期格式不正确，请输入 YYYY-MM-DD 格式')
+      return
+    }
+    item.targetDate = nextDate
+    var config = await loadAllCoupleSpaces()
+    config.spaces[_currentCoupleData.charId] = _currentCoupleData
+    await saveAllCoupleSpaces(config)
+    var page = document.getElementById('love-diary-page')
+    if (page) renderWishesTab(page.querySelector('#ld-content-area'), config)
+    if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
+      window.TimeCalendarIntegrations.emit('wish_changed', {
+        charId: _currentCoupleData.charId,
+        wishId: item.id || String(index),
+        targetDate: nextDate
+      })
+    }
+    window.toast && window.toast(nextDate ? '心愿日期已设定并同步至时光日历' : '已取消心愿日期关联')
   }
 
   window.toggleCoupleSongPlay = function(songId) {

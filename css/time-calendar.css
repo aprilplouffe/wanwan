@@ -1498,4 +1498,164 @@
   background: var(--c-surface-2) !important;
 }
 
+/* ===== 阶段 3：恋爱记＋自习室双向联动与跨应用跳转样式 ===== */
+
+/* 来源应用角标 (可点击跳转) */
+.tc-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+  user-select: none;
+}
+.tc-source-badge:hover {
+  transform: translateY(-1px);
+  filter: brightness(0.95);
+}
+.tc-source-badge i {
+  font-size: 9px;
+}
+
+/* 恋爱记粉色主题标签 */
+.tc-badge-love {
+  background: #ffeef2;
+  color: #e11d48;
+  border: 1px solid #fecdd3;
+}
+.tag-source-love {
+  background: #ffeef2 !important;
+  color: #e11d48 !important;
+  border: 1px solid #fecdd3 !important;
+}
+
+/* 自习室翠绿/青靛主题标签 */
+.tc-badge-study {
+  background: #f0fdfa;
+  color: #0d9488;
+  border: 1px solid #ccfbf1;
+}
+.tag-source-study {
+  background: #f0fdfa !important;
+  color: #0d9488 !important;
+  border: 1px solid #ccfbf1 !important;
+}
+
+/* 弹窗顶部权威源提示横幅 */
+.tc-linked-source-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.tc-linked-source-banner.love-diary {
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  color: #be123c;
+}
+.tc-linked-source-banner.study-room {
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  color: #0f766e;
+}
+.tc-btn-jump {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface);
+  border: 1px solid currentColor;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all var(--dur) var(--ease);
+}
+.tc-btn-jump:hover {
+  background: var(--c-surface-2);
+}
+
+/* 自习室今日专注成就卡片 */
+.tc-study-achievement-card {
+  background: var(--c-surface);
+  border: 1px solid #ccfbf1;
+  border-left: 4px solid #0d9488;
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--dur) var(--ease);
+}
+.tc-study-achievement-card:hover {
+  border-color: #0d9488;
+}
+.tc-study-achievement-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.tc-study-achievement-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f766e;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tc-btn-jump-pill {
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: var(--r-pill);
+  background: #0d9488;
+  color: #ffffff;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all var(--dur) var(--ease);
+}
+.tc-btn-jump-pill:hover {
+  background: #0f766e;
+}
+.tc-study-achievement-body {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.tc-study-stat-item {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.tc-study-stat-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: #0d9488;
+  font-family: var(--font-numeric);
+}
+.tc-study-stat-label {
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+
+/* 月历与周历单元格自习脚印点 */
+.tc-dot-study {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #0d9488;
+  display: inline-block;
+  margin-left: 2px;
+}
+
 
