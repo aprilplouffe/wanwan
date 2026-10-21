@@ -581,6 +581,27 @@
         }
         return;
       }
+
+      // 3. 跳转至人生游戏 (阶段 3 联动)
+      if (source.app === 'life-game') {
+        if (window.LifeGameIntegrations && typeof window.LifeGameIntegrations.navigateToLifeGame === 'function') {
+          await window.LifeGameIntegrations.navigateToLifeGame({
+            tab: source.type === 'goal' ? 'goals' : 'tasks',
+            targetTaskId: source.taskId || null,
+            targetGoalId: source.goalId || null
+          });
+        } else if (window.showLifeGamePage) {
+          await window.showLifeGamePage({
+            tab: source.type === 'goal' ? 'goals' : 'tasks',
+            targetTaskId: source.taskId || null,
+            targetGoalId: source.goalId || null
+          });
+          if (window.toast) window.toast('已跳转至人生游戏');
+        } else {
+          alert('人生游戏模块未就绪');
+        }
+        return;
+      }
     }
   };
 
@@ -597,7 +618,7 @@
 
     // 辅助检查是否为跨应用联动记录
     isLinkedEvent: function(ev) {
-      return !!(ev && ev.source && (ev.source.app === 'love-diary' || ev.source.app === 'study-room'));
+      return !!(ev && ev.source && (ev.source.app === 'love-diary' || ev.source.app === 'study-room' || ev.source.app === 'life-game'));
     },
 
     // 统一保存方法：识别来源权威源并准确回写
@@ -617,6 +638,10 @@
         } else if (src.type === 'exam') {
           return await StudyRoomAdapter.saveExam(item);
         }
+      } else if (src.app === 'life-game') {
+        if (window.LifeGameIntegrations && typeof window.LifeGameIntegrations.saveTaskFromCalendar === 'function') {
+          return await window.LifeGameIntegrations.saveTaskFromCalendar(item);
+        }
       }
       return false;
     },
@@ -631,6 +656,11 @@
       }
       if (src.app === 'study-room' && src.type === 'todo') {
         return await StudyRoomAdapter.toggleTodo(src.todoId);
+      }
+      if (src.app === 'life-game') {
+        if (window.LifeGameIntegrations && typeof window.LifeGameIntegrations.toggleTaskFromCalendar === 'function') {
+          return await window.LifeGameIntegrations.toggleTaskFromCalendar(src.taskId);
+        }
       }
       return false;
     }

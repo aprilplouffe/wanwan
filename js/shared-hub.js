@@ -67,10 +67,15 @@
     MAX_FOCUS_REWARDED_MINS: 240 // 每日最多获得 240 分钟时长的经验金币折算
   };
 
+  var _guardQueue = Promise.resolve();
+
   var RewardGuard = {
     async getTodayRecord() {
       var today = getTodayStr();
       var all = await loadStorage(STORAGE_REWARD_GUARD, {});
+      if (!all._globalEventIds) {
+        all._globalEventIds = [];
+      }
       if (!all[today]) {
         all[today] = {
           date: today,
@@ -84,19 +89,37 @@
       return { all: all, record: all[today] };
     },
 
+    // 串行队列防止高并发重入
     async validateAndGrant(eventId, expRequested, coinsRequested, focusMins) {
+      var self = this;
+      return new Promise(function(resolve, reject) {
+        _guardQueue = _guardQueue.then(async function() {
+          try {
+            var res = await self._doValidateAndGrant(eventId, expRequested, coinsRequested, focusMins);
+            resolve(res);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+    },
+
+    async _doValidateAndGrant(eventId, expRequested, coinsRequested, focusMins) {
       var ctx = await this.getTodayRecord();
       var rec = ctx.record;
+      var all = ctx.all;
 
-      // 1. 重复事件去重
-      if (eventId && rec.processedEventIds.indexOf(eventId) !== -1) {
-        return {
-          allowed: false,
-          reason: 'DUPLICATE_EVENT',
-          expGranted: 0,
-          coinsGranted: 0,
-          msg: '该事件奖励已领取，不可重复入账'
-        };
+      // 1. 重复事件去重 (同时核查今日与全域持久化事件池)
+      if (eventId) {
+        if (rec.processedEventIds.indexOf(eventId) !== -1 || (all._globalEventIds && all._globalEventIds.indexOf(eventId) !== -1)) {
+          return {
+            allowed: false,
+            reason: 'DUPLICATE_EVENT',
+            expGranted: 0,
+            coinsGranted: 0,
+            msg: '该事件奖励已领取，不可重复入账'
+          };
+        }
       }
 
       // 2. 每日上限裁切
@@ -113,6 +136,10 @@
       }
       if (eventId) {
         rec.processedEventIds.push(eventId);
+        if (!all._globalEventIds) all._globalEventIds = [];
+        if (all._globalEventIds.indexOf(eventId) === -1) {
+          all._globalEventIds.push(eventId);
+        }
       }
 
       await saveStorage(STORAGE_REWARD_GUARD, ctx.all);
@@ -525,16 +552,18 @@
       return level * 350;
     },
 
-    async addExpAndStats(exp, statGains, reason, eventId) {
+    async addExpAndStats(exp, statGains, reason, eventId, opts) {
       var state = await this.getState();
 
-      // 防刷验证
-      var guard = await RewardGuard.validateAndGrant(eventId, exp, 0, 0);
-      if (!guard.allowed) {
-        return { granted: false, reason: guard.reason, msg: guard.msg };
+      // 防刷验证 (若上层已校验，则跳过二次扣除每日配额)
+      var actualExp = exp;
+      if (!opts || !opts.alreadyValidated) {
+        var guard = await RewardGuard.validateAndGrant(eventId, exp, 0, 0);
+        if (!guard.allowed) {
+          return { granted: false, reason: guard.reason, msg: guard.msg };
+        }
+        actualExp = guard.expGranted;
       }
-
-      var actualExp = guard.expGranted;
       state.exp += actualExp;
 
       // 属性增益
@@ -1120,7 +1149,15 @@
     var taskName = payload.taskName || '日常专注';
     var studyMode = payload.studyMode || 'gentle';
     var char = payload.companionChar || (await RoleWorldbookService.getActiveCharacter());
-    var eventId = payload.eventId || ('focus_' + Date.now() + '_' + duration);
+    var recId = payload.recordId || ('focus_' + (payload.timestamp || Date.now()) + '_' + duration);
+    var eventId = payload.eventId || ('study_record_' + recId);
+
+    // 关键防重复：即时标记已结算记录，确保人生游戏「一键同步记录」不会重复入账
+    if (window.LifeGameCore && recId) {
+      try {
+        await window.LifeGameCore.addSettledStudyRecordId(recId);
+      } catch (_) {}
+    }
 
     // 1. 人生游戏更新任务与经验 (防刷每日上限)
     var expToGrant = Math.min(60, Math.round(duration * 1.2));

@@ -142,6 +142,7 @@
     loveDiaryWishes: [],
     studyRoomTodos: [],
     studyRoomExams: [],
+    lifeGameTasks: [],
     studyRoomRecordsMap: {}, // 'YYYY-MM-DD' -> { totalMinutes, count, records }
     studyRoomTodosMap: {}, // 'YYYY-MM-DD' -> [ todos ]
     // 倒计时与日程筛选条件
@@ -313,6 +314,17 @@
     }
   }
 
+  async function loadLifeGameLinkage() {
+    _state.lifeGameTasks = [];
+    try {
+      if (window.LifeGameIntegrations && typeof window.LifeGameIntegrations.getTasksAsCalendarEvents === 'function') {
+        _state.lifeGameTasks = await window.LifeGameIntegrations.getTasksAsCalendarEvents(_state.filterCharId, _state.allCharacters);
+      }
+    } catch (e) {
+      console.warn('[TimeCalendar] loadLifeGameLinkage error:', e);
+    }
+  }
+
   async function loadTimeCalendarData() {
     _state.events = await loadConfigKey(STORAGE_KEYS.EVENTS, []);
     _state.anniversaries = await loadConfigKey(STORAGE_KEYS.ANNIVERSARIES, []);
@@ -409,6 +421,10 @@
     // 阶段 3: 混入来自自习室的待办事项
     if (_state.studyRoomTodos && _state.studyRoomTodos.length) {
       list = list.concat(_state.studyRoomTodos);
+    }
+    // 阶段 3: 混入来自人生游戏的现实委托排期
+    if (_state.lifeGameTasks && _state.lifeGameTasks.length) {
+      list = list.concat(_state.lifeGameTasks);
     }
 
     if (dateFilter) {
@@ -1002,6 +1018,17 @@
   }
 
   function bindCalendarViewEvents(container) {
+    // 伴侣卡片点击直达深度陪伴配置
+    var companionCard = container.querySelector('.tc-companion-card');
+    if (companionCard) {
+      companionCard.title = '点击查看与设置 Char 深度陪伴与主动关怀';
+      companionCard.addEventListener('click', function() {
+        if (window.TimeCalendarCompanion) {
+          window.TimeCalendarCompanion.showSettingsModal();
+        }
+      });
+    }
+
     // 日期点击选中
     container.querySelectorAll('.tc-day-cell[data-date], .tc-week-day-box[data-date]').forEach(function(el) {
       el.addEventListener('click', function() {
@@ -1286,6 +1313,11 @@
               '<span>下一个百天（' + ms.nextHundred + '天）：还剩 ' + ms.daysToNextHundred + ' 天</span>' +
             '</div>' +
             (an.notes ? '<div style="font-size: 12px; color: var(--c-text); background: var(--c-surface); padding: 6px 10px; border-radius: 4px;">' + esc(an.notes) + '</div>' : '') +
+            '<div style="display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--c-border);">' +
+              '<button type="button" class="tc-btn-jump" data-action="view-greeting-card" data-id="' + an.id + '" style="font-size: 11px; padding: 2px 8px; border-radius: var(--r-pill); background: var(--c-surface-2); border: 1px solid var(--c-border); color: var(--c-text); cursor: pointer;">' +
+                '<i class="fa-solid fa-cake-candles" style="color: #ff477e; margin-right: 2px;"></i> 专属贺卡' +
+              '</button>' +
+            '</div>' +
           '</div>';
       });
       html += '</div>';
@@ -1302,6 +1334,17 @@
         // 同步顶部小胶囊名称
         updateHeaderCharPill();
         renderAnniversariesTab();
+      });
+    });
+
+    container.querySelectorAll('[data-action="view-greeting-card"]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var id = btn.dataset.id;
+        var an = getEffectiveAnniversaries().find(function(item) { return item.id === id; });
+        if (an && window.TimeCalendarCompanion) {
+          window.TimeCalendarCompanion.showGreetingCard(an);
+        }
       });
     });
 
@@ -1387,8 +1430,11 @@
           '<i class="fa fa-search"></i>' +
           '<input class="tc-search-input" id="tc-schedule-search" placeholder="搜索日程标题或备注..." value="' + esc(_state.scheduleSearchQuery) + '">' +
         '</div>' +
-        '<button class="tc-btn" id="tc-btn-open-reminders" style="padding: 6px 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border-radius: var(--r-pill); background: var(--c-surface); border: 1px solid var(--c-border); color: var(--c-text); cursor: pointer;" title="智能提醒管理与免打扰设置">' +
-          '<i class="fa-solid fa-bell"></i><span>提醒管理</span>' +
+        '<button class="tc-btn" id="tc-btn-open-reminders" style="padding: 6px 10px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border-radius: var(--r-pill); background: var(--c-surface); border: 1px solid var(--c-border); color: var(--c-text); cursor: pointer;" title="智能提醒管理与免打扰设置">' +
+          '<i class="fa-solid fa-bell"></i><span>提醒</span>' +
+        '</button>' +
+        '<button class="tc-btn" id="tc-btn-open-companion" style="padding: 6px 10px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border-radius: var(--r-pill); background: var(--c-surface); border: 1px solid var(--c-border); color: var(--c-text); cursor: pointer;" title="Char 深度陪伴与主动关怀设置">' +
+          '<i class="fa-solid fa-heart" style="color: #f43f5e;"></i><span>陪伴</span>' +
         '</button>' +
       '</div>' +
       '<div class="tc-filter-strip" style="margin-top: 8px;">' +
@@ -1462,6 +1508,15 @@
     if (remindersBtn) {
       remindersBtn.addEventListener('click', function() {
         showReminderCenterModal();
+      });
+    }
+
+    var companionBtn = container.querySelector('#tc-btn-open-companion');
+    if (companionBtn) {
+      companionBtn.addEventListener('click', function() {
+        if (window.TimeCalendarCompanion) {
+          window.TimeCalendarCompanion.showSettingsModal();
+        }
       });
     }
 
@@ -1541,6 +1596,16 @@
       return;
     }
 
+    // 检查是否为人生游戏现实委托
+    var linkedLifeGameTask = _state.lifeGameTasks && _state.lifeGameTasks.find(function(t) { return t.id === id; });
+    if (linkedLifeGameTask && window.TimeCalendarIntegrations) {
+      var nextLgDone = await window.TimeCalendarIntegrations.toggleLinkedItem(linkedLifeGameTask);
+      linkedLifeGameTask.completed = nextLgDone;
+      renderActiveTabContent();
+      if (window.toast) window.toast(nextLgDone ? '已在人生游戏中标记达成（请前往人生游戏领取奖励）' : '现实委托状态已重置');
+      return;
+    }
+
     var ev = _state.events.find(function(e) { return e.id === id; });
     if (!ev) return;
     ev.completed = !ev.completed;
@@ -1574,6 +1639,18 @@
       await loadStudyRoomLinkage();
       renderActiveTabContent();
       if (window.toast) window.toast('自习室待办已删除');
+      return;
+    }
+
+    var linkedLifeGameTask = _state.lifeGameTasks && _state.lifeGameTasks.find(function(t) { return t.id === id; });
+    if (linkedLifeGameTask) {
+      if (!confirm('该事项来自人生游戏现实委托。确定要从日历中移除排期吗？（人生游戏中的任务将保留）')) return;
+      if (window.LifeGameIntegrations) {
+        await window.LifeGameIntegrations.unlinkTaskFromCalendar(linkedLifeGameTask.source.taskId);
+      }
+      await loadLifeGameLinkage();
+      renderActiveTabContent();
+      if (window.toast) window.toast('已解除日历排期');
       return;
     }
 
@@ -1982,6 +2059,23 @@
         return;
       }
 
+      if (ev && ev.source && ev.source.app === 'life-game') {
+        if (window.TimeCalendarIntegrations) {
+          await window.TimeCalendarIntegrations.saveLinkedItem({
+            source: ev.source,
+            title: title,
+            date: date,
+            notes: notes,
+            completed: ev.completed
+          });
+        }
+        await loadLifeGameLinkage();
+        overlay.remove();
+        renderActiveTabContent();
+        if (window.toast) window.toast('现实委托已同步更新至人生游戏');
+        return;
+      }
+
       var now = Date.now();
       if (isNew) {
         var newEvent = {
@@ -2100,11 +2194,14 @@
                 '<span>全天事件默认提醒时间：</span>' +
                 '<input type="time" class="tc-form-input" id="tc-allday-time" style="width: 80px; padding: 2px 6px; font-size: 12px;" value="' + esc(settings.allDayReminderTime || '09:00') + '">' +
               '</div>' +
-              '<div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">' +
-                '<button class="tc-btn" id="tc-btn-test-notif" style="padding: 4px 10px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;">' +
-                  '<i class="fa fa-paper-plane"></i> 测试通知与音效' +
+              '<div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px; gap: 6px;">' +
+                '<button class="tc-btn" id="tc-btn-test-notif" style="padding: 4px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;">' +
+                  '<i class="fa fa-paper-plane"></i> 测试通知' +
                 '</button>' +
-                '<button class="tc-btn tc-btn-primary" id="tc-btn-save-dnd" style="padding: 4px 12px; font-size: 11px;">保存配置</button>' +
+                '<button class="tc-btn" id="tc-btn-open-comp-from-dnd" style="padding: 4px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;">' +
+                  '<i class="fa-solid fa-heart" style="color: #f43f5e;"></i> 伴侣关怀' +
+                '</button>' +
+                '<button class="tc-btn tc-btn-primary" id="tc-btn-save-dnd" style="padding: 4px 10px; font-size: 11px;">保存配置</button>' +
               '</div>' +
             '</div>' +
           '</div>' +
@@ -2276,6 +2373,16 @@
       }
       if (window.toast) window.toast('提醒与免打扰设置已保存');
     });
+
+    // 打开伴侣关怀配置
+    var compDndBtn = overlay.querySelector('#tc-btn-open-comp-from-dnd');
+    if (compDndBtn) {
+      compDndBtn.addEventListener('click', function() {
+        if (window.TimeCalendarCompanion) {
+          window.TimeCalendarCompanion.showSettingsModal();
+        }
+      });
+    }
 
     // 测试提醒通知
     overlay.querySelector('#tc-btn-test-notif').addEventListener('click', async function() {
@@ -2760,6 +2867,7 @@
     await loadTimeCalendarData();
     await loadLoveDiaryLinkage();
     await loadStudyRoomLinkage();
+    await loadLifeGameLinkage();
 
     var targetEventId = options && options.eventId;
     var targetDate = options && options.date;
@@ -2819,12 +2927,16 @@
     close: closeTimeCalendar,
     getState: function() { return _state; },
     reload: openTimeCalendar,
-    openReminderCenter: showReminderCenterModal
+    openReminderCenter: showReminderCenterModal,
+    openCompanionSettings: function() { if (window.TimeCalendarCompanion) window.TimeCalendarCompanion.showSettingsModal(); }
   };
 
   window.showTimeCalendarPage = openTimeCalendar;
   window.showTimeCalendarApp = openTimeCalendar;
   window.showTimeCalendarReminderCenter = showReminderCenterModal;
+  window.showTimeCalendarCompanionSettings = function() {
+    if (window.TimeCalendarCompanion) window.TimeCalendarCompanion.showSettingsModal();
+  };
 
   // ===== 13. 阶段 3: 响应恋爱记与陪伴自习室的实时变更事件 =====
   if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.on === 'function') {
@@ -2864,6 +2976,15 @@
         renderActiveTabContent();
       }
     });
+
+    if (window.WanwanSharedHub && typeof window.WanwanSharedHub.on === 'function') {
+      window.WanwanSharedHub.on('LIFEGAME_TASKS_CHANGED', async function() {
+        await loadLifeGameLinkage();
+        if (document.getElementById('time-calendar-page')) {
+          renderActiveTabContent();
+        }
+      });
+    }
   }
 
 })();

@@ -584,8 +584,10 @@
 
     // 阶段 6｜全域数据联动：专注完成写入事件总线，人生游戏更新任务/经验，成就馆判断徽章，Char生成符合模式的反馈
     if (window.WanwanSharedHub) {
+      var latestRecId = _state.records && _state.records[0] ? _state.records[0].id : ('rec_' + Date.now());
       window.WanwanSharedHub.emit('FOCUS_SESSION_COMPLETED', {
-        eventId: 'focus_' + Date.now() + '_' + durationMinutes,
+        recordId: latestRecId,
+        eventId: 'study_record_' + latestRecId,
         durationMinutes: durationMinutes,
         taskType: _state.taskType,
         taskName: _state.taskName,
@@ -1048,13 +1050,28 @@
     }
 
     _state.todos.forEach(function(todo, idx) {
+      var isLgLinked = !!(todo.source && todo.source.app === 'life-game') || String(todo.id).indexOf('sr_todo_lg_') === 0;
       var row = document.createElement('div');
       row.className = 'sr-todo-item';
       row.setAttribute('data-id', todo.id || ('sr_todo_' + idx));
       row.innerHTML =
         '<i class="sr-todo-checkbox fa-regular ' + (todo.done ? 'fa-circle-check checked' : 'fa-circle') + '"></i>' +
-        '<span class="sr-todo-text ' + (todo.done ? 'done' : '') + '">' + esc(todo.text) + '</span>' +
+        '<div style="flex:1;display:flex;align-items:center;overflow:hidden;gap:4px;">' +
+          (isLgLinked ? '<span class="sr-lg-tag" style="background:var(--c-surface-2);color:var(--c-sub);font-size:10px;padding:1px 6px;border-radius:4px;cursor:pointer;flex-shrink:0;border:1px solid var(--c-border);" title="点击跳转至人生游戏现实委托"><i class="fa-solid fa-gamepad" style="margin-right:2px;"></i>委托</span>' : '') +
+          '<span class="sr-todo-text ' + (todo.done ? 'done' : '') + '" style="flex:1;">' + esc(todo.text) + '</span>' +
+        '</div>' +
         '<i class="fa-solid fa-xmark" style="color:var(--c-hint);cursor:pointer;padding:4px;" title="删除"></i>';
+
+      var lgTag = row.querySelector('.sr-lg-tag');
+      if (lgTag) {
+        lgTag.onclick = function(e) {
+          e.stopPropagation();
+          var taskId = (todo.source && todo.source.taskId) || String(todo.id).replace(/^sr_todo_lg_/, '');
+          if (window.LifeGameIntegrations) {
+            window.LifeGameIntegrations.navigateToLifeGame({ tab: 'tasks', targetTaskId: taskId });
+          }
+        };
+      }
 
       row.querySelector('.sr-todo-checkbox').onclick = function() {
         todo.done = !todo.done;

@@ -1658,4 +1658,21 @@
   margin-left: 2px;
 }
 
+/* ===== 阶段 4：多 Char 深度陪伴与纪念日贺卡样式 ===== */
+.tc-companion-card {
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+}
+.tc-companion-card:hover {
+  border-color: var(--c-text);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.tc-greeting-card-modal {
+  max-width: 380px;
+  width: 90%;
+  margin: 0 auto;
+}
+
 

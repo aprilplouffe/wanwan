@@ -1,0 +1,1609 @@
+/* ====================================================
+   css/life-game.css — 弯弯小手机｜人生游戏 (Life Game)
+   与「陪伴自习室」100% 视觉对齐 · 黑白灰极简设计语言 · 全自适应深浅主题
+   ==================================================== */
+
+#life-game-page {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--c-bg);
+  color: var(--c-text);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 1000;
+  font-family: var(--font, -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Text", sans-serif);
+}
+
+/* ====================================================
+   1. 顶部标题栏 (与自习室 .sr-header 严格一致)
+   ==================================================== */
+.lg-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 18px;
+  min-height: 56px;
+  background: var(--c-bg);
+  border-bottom: 1px solid var(--c-border);
+  z-index: 30;
+  padding-top: max(13px, env(safe-area-inset-top, 13px));
+  user-select: none;
+}
+
+.lg-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lg-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 6px 10px;
+  margin-left: -6px;
+  border-radius: var(--r-sm);
+  transition: background var(--dur);
+}
+
+.lg-back-btn:hover {
+  background: var(--c-surface-2);
+}
+
+.lg-back-btn:active {
+  opacity: 0.5;
+}
+
+.lg-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lg-icon-mini {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--c-text);
+}
+
+.lg-header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--c-text);
+  letter-spacing: 0.2px;
+}
+
+.lg-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lg-coin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+}
+
+.lg-coin-badge i {
+  color: var(--c-sub);
+  font-size: 11px;
+}
+
+.lg-level-badge {
+  background: var(--c-text);
+  color: var(--c-bg);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+}
+
+/* ====================================================
+   2. 横向胶囊导航条 (与自习室 .sr-nav-tabs 严格一致)
+   ==================================================== */
+.lg-nav-tabs {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  min-height: 44px;
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.lg-nav-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.lg-tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  font-size: 12px;
+  color: var(--c-sub);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all var(--dur) var(--ease);
+}
+
+.lg-tab-item:hover {
+  color: var(--c-text);
+}
+
+.lg-tab-item.active {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border-color: var(--c-text);
+  font-weight: 500;
+}
+
+/* 防刷安全提示细条 */
+.lg-guard-banner {
+  flex-shrink: 0;
+  background: var(--c-surface-2);
+  padding: 7px 16px;
+  font-size: 11px;
+  color: var(--c-sub);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.lg-guard-banner strong {
+  color: var(--c-text);
+  font-weight: 600;
+}
+
+/* ====================================================
+   3. 核心滚动视口 (与自习室 .sr-content-viewport 严格一致)
+   ==================================================== */
+.lg-content {
+  flex: 1;
+  position: relative;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px;
+  padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overscroll-behavior-y: contain;
+}
+
+/* ====================================================
+   4. 角色英雄面板 (RPG Hero Card)
+   ==================================================== */
+.lg-profile-hero {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lg-profile-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.lg-profile-char {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lg-avatar-box {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--c-border-m);
+  padding: 2px;
+  background: var(--c-surface-2);
+  flex-shrink: 0;
+}
+
+.lg-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.lg-profile-names {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lg-user-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.lg-user-title {
+  font-size: 11px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-sub);
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  align-self: flex-start;
+  font-weight: 500;
+}
+
+.lg-level-large {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--c-text);
+  line-height: 1;
+  text-align: right;
+  letter-spacing: -0.02em;
+}
+
+.lg-level-sub {
+  font-size: 9px;
+  color: var(--c-sub);
+  text-transform: uppercase;
+  margin-top: 3px;
+  text-align: right;
+}
+
+/* 经验条 (深灰填充、浅灰轨道) */
+.lg-exp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lg-exp-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--c-sub);
+}
+
+.lg-exp-track {
+  height: 6px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  position: relative;
+}
+
+.lg-exp-fill {
+  height: 100%;
+  background: var(--c-text);
+  border-radius: var(--r-pill);
+  transition: width 0.3s var(--ease);
+}
+
+/* 六维属性网格 (灰度进度与卡片，与自习室 .sr-hall-stats-row 严格一致) */
+.lg-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.lg-stat-card {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 8px 6px;
+  text-align: center;
+}
+
+.lg-stat-val {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--c-text);
+  letter-spacing: -0.01em;
+}
+
+.lg-stat-label {
+  font-size: 10px;
+  color: var(--c-sub);
+  margin-top: 2px;
+}
+
+.lg-stat-bar-track {
+  height: 3px;
+  background: var(--c-border);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  margin-top: 5px;
+}
+
+.lg-stat-bar-fill {
+  height: 100%;
+  background: var(--c-text);
+  border-radius: var(--r-pill);
+}
+
+/* 伴侣信件卡片 (与自习室 .sr-examiner-stage 严格一致) */
+.lg-companion-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-companion-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid var(--c-border);
+}
+
+.lg-companion-body {
+  flex: 1;
+}
+
+.lg-companion-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-companion-title i {
+  color: var(--c-sub);
+}
+
+.lg-companion-quote {
+  font-size: 11px;
+  color: var(--c-sub);
+  line-height: 1.45;
+}
+
+/* 自习室同步快捷卡片 */
+.lg-study-sync-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-study-sync-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lg-study-sync-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.lg-study-sync-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.lg-study-sync-desc {
+  font-size: 10px;
+  color: var(--c-sub);
+  margin-top: 1px;
+}
+
+.lg-btn-study-sync {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  border-radius: var(--r-pill);
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity var(--dur);
+}
+
+.lg-btn-study-sync:active {
+  opacity: 0.6;
+}
+
+/* ====================================================
+   5. 通用区块标题与操作
+   ==================================================== */
+.lg-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.lg-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-section-title i {
+  color: var(--c-sub);
+}
+
+.lg-btn-add {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: opacity var(--dur);
+}
+
+.lg-btn-add:active {
+  opacity: 0.7;
+}
+
+/* ====================================================
+   6. 现实委托列表与任务卡片
+   ==================================================== */
+.lg-tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lg-filter-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.lg-chip {
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  font-size: 11px;
+  color: var(--c-sub);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--dur);
+}
+
+.lg-chip.active {
+  background: var(--c-text);
+  border-color: var(--c-text);
+  color: var(--c-bg);
+  font-weight: 500;
+}
+
+.lg-task-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--dur);
+}
+
+.lg-task-card.completed {
+  opacity: 0.6;
+}
+
+.lg-task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.lg-task-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.lg-task-checkbox {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1.5px solid var(--c-border-m);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-bg);
+  transition: all var(--dur);
+  flex-shrink: 0;
+  background: transparent;
+}
+
+.lg-task-checkbox.checked {
+  background: var(--c-text);
+  border-color: var(--c-text);
+}
+
+.lg-task-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.lg-task-card.completed .lg-task-title {
+  text-decoration: line-through;
+  color: var(--c-sub);
+}
+
+.lg-task-tag {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  font-weight: 500;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-sub);
+}
+
+.lg-task-desc {
+  font-size: 11px;
+  color: var(--c-sub);
+  line-height: 1.45;
+  margin-left: 26px;
+  word-break: break-word;
+}
+
+.lg-task-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-left: 26px;
+  font-size: 11px;
+  color: var(--c-sub);
+}
+
+.lg-task-rewards {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lg-reward-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--c-text);
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.lg-reward-item i {
+  color: var(--c-sub);
+  font-size: 10px;
+}
+
+.lg-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-btn-action-text {
+  background: none;
+  border: none;
+  color: var(--c-sub);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 5px;
+  border-radius: var(--r-sm);
+  transition: color var(--dur);
+}
+
+.lg-btn-action-text:hover {
+  color: var(--c-text);
+}
+
+.lg-btn-claim {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity var(--dur);
+}
+
+.lg-btn-claim:active {
+  opacity: 0.7;
+}
+
+/* ====================================================
+   7. 每日习惯卡片与打卡
+   ==================================================== */
+.lg-habits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lg-habit-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-habit-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.lg-habit-icon-box {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.lg-habit-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lg-habit-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.lg-habit-streak {
+  font-size: 11px;
+  color: var(--c-sub);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lg-habit-streak i {
+  color: var(--c-sub);
+}
+
+.lg-btn-checkin {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--dur);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lg-btn-checkin.checked {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-sub);
+  font-weight: 500;
+}
+
+.lg-btn-checkin:disabled {
+  cursor: default;
+}
+
+/* ====================================================
+   8. 长期主线目标卡片
+   ==================================================== */
+.lg-goals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lg-goal-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-goal-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.lg-goal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.lg-goal-due {
+  font-size: 10px;
+  color: var(--c-sub);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lg-milestones {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 2px;
+  margin-top: 4px;
+}
+
+.lg-milestone-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--c-text);
+}
+
+.lg-milestone-item.done {
+  text-decoration: line-through;
+  color: var(--c-sub);
+}
+
+/* ====================================================
+   9. 成就馆网格 (与自习室徽章保持一致灰度)
+   ==================================================== */
+.lg-achievements-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.lg-badge-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  text-align: center;
+  position: relative;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-badge-card.locked {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+
+.lg-badge-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.lg-badge-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.lg-badge-desc {
+  font-size: 10px;
+  color: var(--c-sub);
+  line-height: 1.4;
+}
+
+.lg-badge-points {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--c-sub);
+}
+
+/* ====================================================
+   10. 成长记录页面 (与自习室报告一致规整网格)
+   ==================================================== */
+.lg-history-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.lg-history-stat-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px 10px;
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-history-stat-val {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--c-text);
+  letter-spacing: -0.02em;
+}
+
+.lg-history-stat-lbl {
+  font-size: 10px;
+  color: var(--c-sub);
+  margin-top: 2px;
+}
+
+.lg-history-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lg-history-item {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.lg-history-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lg-history-item-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--c-text);
+}
+
+.lg-history-item-title {
+  font-weight: 500;
+  color: var(--c-text);
+}
+
+.lg-history-item-time {
+  font-size: 10px;
+  color: var(--c-sub);
+}
+
+.lg-history-item-exp {
+  font-weight: 600;
+  color: var(--c-text);
+  font-size: 11px;
+}
+
+/* ====================================================
+   11. 通用弹窗与表单 (与自习室居中模态弹窗一致)
+   ==================================================== */
+.lg-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 16px;
+  backdrop-filter: blur(2px);
+}
+
+.lg-modal-card {
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-m);
+  border-radius: var(--r-md);
+  width: 100%;
+  max-width: 360px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: var(--shadow-lg);
+  animation: lgModalPop 0.16s var(--ease);
+}
+
+@keyframes lgModalPop {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.lg-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-modal-title i {
+  color: var(--c-sub);
+}
+
+.lg-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lg-form-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--c-sub);
+}
+
+.lg-input,
+.lg-select,
+.lg-textarea {
+  width: 100%;
+  border: 1px solid var(--c-border-m);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--c-text);
+  background: var(--c-surface-2);
+  outline: none;
+  box-sizing: border-box;
+  font-family: inherit;
+  transition: border-color var(--dur);
+}
+
+.lg-input:focus,
+.lg-select:focus,
+.lg-textarea:focus {
+  border-color: var(--c-text);
+  background: var(--c-bg);
+}
+
+.lg-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.lg-btn-secondary {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  border-radius: var(--r-pill);
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--dur);
+}
+
+.lg-btn-secondary:active {
+  opacity: 0.6;
+}
+
+.lg-btn-primary {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity var(--dur);
+}
+
+.lg-btn-primary:active {
+  opacity: 0.8;
+}
+
+/* 升级贺卡 (黑白灰仪式感，无刺眼高饱和色彩) */
+.lg-levelup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2100;
+  padding: 20px;
+  backdrop-filter: blur(3px);
+}
+
+.lg-levelup-card {
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-m);
+  border-radius: var(--r-md);
+  width: 100%;
+  max-width: 320px;
+  padding: 24px 20px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  box-shadow: var(--shadow-lg);
+  animation: lgModalPop 0.2s var(--ease);
+}
+
+.lg-levelup-icon {
+  font-size: 36px;
+  color: var(--c-text);
+}
+
+.lg-levelup-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--c-text);
+  letter-spacing: -0.01em;
+}
+
+.lg-levelup-sub {
+  font-size: 12px;
+  color: var(--c-sub);
+  margin-top: -6px;
+}
+
+.lg-levelup-stats {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  color: var(--c-text);
+  line-height: 1.6;
+}
+
+.lg-levelup-btn {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 8px 24px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: opacity var(--dur);
+}
+
+.lg-levelup-btn:active {
+  opacity: 0.8;
+}
+
+/* ====================================================
+   10. 阶段 2：AI 智能规划、今日推荐与成长复盘样式
+   黑白灰极简美学 · 深度融入自习室规范 · 移动端优先适配
+   ==================================================== */
+
+/* AI 功能专属按钮 (极简黑白灰胶囊) */
+.lg-btn-ai {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: opacity var(--dur);
+  white-space: nowrap;
+}
+
+.lg-btn-ai:hover {
+  opacity: 0.9;
+}
+
+.lg-btn-ai:active {
+  opacity: 0.7;
+}
+
+.lg-btn-ai-outline {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  border-radius: var(--r-pill);
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all var(--dur);
+  white-space: nowrap;
+}
+
+.lg-btn-ai-outline:hover {
+  background: var(--c-border);
+}
+
+.lg-btn-ai-outline:active {
+  opacity: 0.6;
+}
+
+/* AI 快捷操作卡片 */
+.lg-ai-feature-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: background var(--dur);
+}
+
+.lg-ai-feature-card:active {
+  background: var(--c-surface-2);
+}
+
+.lg-ai-feature-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lg-ai-feature-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: var(--c-text);
+  flex-shrink: 0;
+}
+
+.lg-ai-feature-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.lg-ai-feature-sub {
+  font-size: 11px;
+  color: var(--c-sub);
+  margin-top: 1px;
+}
+
+/* 规划强度与选项胶囊组 */
+.lg-pill-group {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lg-choice-pill {
+  border: 1px solid var(--c-border);
+  background: var(--c-surface-2);
+  color: var(--c-sub);
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--dur);
+}
+
+.lg-choice-pill.selected {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border-color: var(--c-text);
+  font-weight: 600;
+}
+
+/* 可行性评估与超载提示 */
+.lg-feasibility-box {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: 11px;
+  color: var(--c-text);
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lg-feasibility-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--c-text);
+}
+
+.lg-feasibility-warning {
+  border-left: 3px solid var(--c-text);
+  background: var(--c-surface);
+  padding: 8px 10px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--c-sub);
+}
+
+/* AI 计划草案分段展示卡片 */
+.lg-draft-stage-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-draft-stage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--c-border);
+  padding-bottom: 8px;
+}
+
+.lg-draft-stage-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-draft-task-item {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lg-draft-task-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lg-draft-task-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+  flex: 1;
+}
+
+.lg-draft-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lg-draft-task-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--c-sub);
+}
+
+/* 变更差异对比卡片 (Diff Card) */
+.lg-diff-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lg-diff-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  font-size: 11px;
+}
+
+.lg-diff-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  font-weight: 600;
+  border: 1px solid var(--c-border);
+}
+
+.lg-diff-tag.adjust {
+  background: var(--c-text);
+  color: var(--c-bg);
+}
+
+.lg-diff-tag.keep {
+  background: var(--c-surface);
+  color: var(--c-sub);
+}
+
+/* 今日冒险推荐卡片 */
+.lg-recommendation-hero {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-recommend-core {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border-m);
+  border-radius: var(--r-sm);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lg-recommend-core-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-recommend-core-desc {
+  font-size: 11px;
+  color: var(--c-sub);
+  line-height: 1.45;
+}
+
+.lg-recommend-quote {
+  font-size: 11px;
+  color: var(--c-sub);
+  border-left: 2px solid var(--c-text);
+  padding-left: 8px;
+  font-style: italic;
+  margin-top: 4px;
+}
+
+/* 每周成长复盘专属布局 */
+.lg-review-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--c-border);
+  padding-bottom: 10px;
+}
+
+.lg-review-badge {
+  font-size: 11px;
+  color: var(--c-sub);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.lg-review-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lg-review-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-review-content-box {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--c-text);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* 全屏加载与进度遮罩 */
+.lg-loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 30px 20px;
+  gap: 10px;
+  text-align: center;
+}
+
+.lg-loading-spinner {
+  font-size: 24px;
+  color: var(--c-text);
+  animation: lgSpin 1s linear infinite;
+}
+
+@keyframes lgSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* 阶段 3: 跨软件联动胶囊徽章与高亮 */
+.lg-link-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--c-sub);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-full);
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  text-decoration: none;
+}
+
+.lg-link-badge:hover {
+  background: var(--c-border);
+  color: var(--c-text);
+}
+
+.lg-task-link-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
