@@ -1540,6 +1540,9 @@ async function deleteCharacterEverywhere(charId) {
   await cleanupLorebookBindings(charId)
   cleanupLocalStorageForCharacter(charId)
   await cleanupSocialConfigForCharacter(charId)
+  if (window.AchievementHall && typeof window.AchievementHall.onCharacterDeleted === 'function') {
+    try { await window.AchievementHall.onCharacterDeleted(charId) } catch (_) {}
+  }
   await db.characters.delete(charId)
   if (wasWechatSession && window.clearWechatSession) window.clearWechatSession()
 }

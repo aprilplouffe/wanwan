@@ -696,15 +696,22 @@
 
       // 5. 跨软件联动同步 (自习室待办与日历日程)
       if (window.LifeGameIntegrations) {
+        var tasksNeedSave = false;
         if (!options || options.syncStudyTodos !== false) {
           for (var si = 0; si < newTasks.length; si++) {
             var nTask = newTasks[si];
             if (nTask.category === 'study' || nTask.linkedSource === 'studyRoom') {
               try {
-                await window.LifeGameIntegrations.linkTaskToStudyTodo(nTask);
+                var linkedRes = await window.LifeGameIntegrations.linkTaskToStudyTodo(nTask);
+                if (linkedRes && (linkedRes.id || linkedRes.todo)) {
+                  tasksNeedSave = true;
+                }
               } catch (_) {}
             }
           }
+        }
+        if (tasksNeedSave) {
+          await window.LifeGameCore.saveTasks(existingTasks);
         }
       }
 

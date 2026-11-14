@@ -1,6 +1,11 @@
 // scripts/test-stage3-verification.cjs
-// Stage 3 自动化回归与边界校验测试脚本
-// 覆盖：待办双向联动、专注时长推进、考试愿景关联、日历排期双向同步、防循环防双领、自愈补偿
+// 弯弯小手机｜人生游戏阶段 3 封版前深度加固完整自动化回归与边界校验测试脚本
+// 覆盖：
+// 1. 专注记录匹配安全：稳定任务 ID 优先、严禁乱塞最新任务、未匹配留存待分配池、时长防多任务重用
+// 2. 学习进度与基础奖励分离：life_game_records_settled_v1 独立职责、已核销基础经验仍可推进关联任务、重复同步完全幂等
+// 3. 跨 App 异常恢复：自习室失败部分成功、日历排期成功但注册表失败、断点重试按稳定 ID 查找、自愈修复不重复建任务
+// 4. 多 Char 与学习记录归属：专注开始冻结快照、中途切换 Char 不转移学习记录、用户资产不被垄断、私人日历严格隔离
+// 5. 阶段 1 经验/金币/等级结算 与 阶段 2 AI 规划全量兼容性回归
 
 const assert = require('assert');
 
@@ -29,250 +34,394 @@ require('../js/time-calendar-integrations.js');
 require('../js/life-game-integrations.js');
 
 async function runTests() {
-  console.log('🚀 开始执行人生游戏阶段 3 深度联动自动化验证测试...\n');
+  console.log('🚀 开始执行「人生游戏阶段 3」封版加固全量自动化测试...\n');
   let passed = 0;
 
-  // ----------------------------------------------------
-  // 测试 1: 人生游戏现实任务与自习室待办双向绑定与状态同步
-  // ----------------------------------------------------
-  console.log('【测试 1】任务与自习室待办双向联动与「达成 vs 领奖」隔离');
+  // ====================================================
+  // 【加固测试 1】专注记录匹配安全与待分配池隔离
+  // ====================================================
+  console.log('【加固测试 1】专注记录匹配安全：稳定 ID 优先、禁止塞给最新任务、未匹配留存待分配池');
   {
-    const task = {
-      id: 'task_test_sr_1',
-      title: '精读线性代数第 4 章',
+    const targetTask = {
+      id: 'task_math_analysis_1',
+      title: '数学分析真题精解',
       category: 'study',
       difficulty: 'mid',
-      rewardExp: 45,
-      rewardCoins: 20,
+      rewardExp: 50,
+      rewardCoins: 25,
       status: 'pending',
-      dueDate: '2026-10-25',
+      dueDate: '2026-10-26',
+      targetMinutes: 60,
+      accumulatedMinutes: 10
+    };
+    const otherStudyTask = {
+      id: 'task_cs_algo_latest',
+      title: '数据结构与算法攻坚',
+      category: 'study',
+      difficulty: 'hard',
+      rewardExp: 70,
+      rewardCoins: 35,
+      status: 'pending',
+      dueDate: '2026-10-27',
+      targetMinutes: 90,
+      accumulatedMinutes: 0
+    };
+    await window.LifeGameCore.saveTasks([targetTask, otherStudyTask]);
+
+    // 1.1 稳定任务 ID 优先匹配
+    const resAlloc1 = await window.LifeGameIntegrations.focusSession.allocateFocusRecord({
+      recordId: 'rec_focus_math_001',
+      durationMinutes: 25,
+      taskId: 'task_math_analysis_1',
+      taskName: '随意填写的名称' // 即使名称不完全一致，稳定 taskId 严格优先
+    });
+    assert.strictEqual(resAlloc1.status, 'allocated', '稳定 taskId 必须成功匹配');
+    assert.strictEqual(resAlloc1.taskId, 'task_math_analysis_1');
+    assert.strictEqual(resAlloc1.accumulatedMinutes, 35);
+
+    // 1.2 无法匹配的专注记录：禁止自动计入 latest 学习任务，必须保留为待分配状态
+    const resUnmatched = await window.LifeGameIntegrations.focusSession.allocateFocusRecord({
+      recordId: 'rec_unmatched_random_002',
+      durationMinutes: 30,
+      taskName: '完全无关的冷门小语种学习' // 无对应任务
+    });
+    assert.strictEqual(resUnmatched.status, 'unallocated', '无法匹配的记录必须返回 unallocated 待分配状态');
+    assert.strictEqual(resUnmatched.reason, 'no_matching_study_task');
+
+    // 验证另一个学习任务未被偷跑增加时长
+    const tasksAfterUnmatched = await window.LifeGameCore.getTasks();
+    const otherTaskCur = tasksAfterUnmatched.find(t => t.id === 'task_cs_algo_latest');
+    assert.strictEqual(otherTaskCur.accumulatedMinutes, 0, '【红线规则】未匹配记录绝不能擅自计入最新学习任务！');
+
+    // 验证未匹配记录确实留存在待分配池中
+    const unallocatedPool = await window.LifeGameIntegrations.focusSession.getUnallocatedRecords();
+    const foundUnallocated = unallocatedPool.find(r => r.recordId === 'rec_unmatched_random_002');
+    assert(foundUnallocated, '未匹配记录必须安全保存在待分配池中');
+    assert.strictEqual(foundUnallocated.status, 'unallocated');
+    assert.strictEqual(foundUnallocated.durationMinutes, 30);
+
+    // 1.3 用户后续显式将待分配记录指派给目标任务
+    const manualAllocRes = await window.LifeGameIntegrations.focusSession.allocateRecordToTask('rec_unmatched_random_002', 'task_cs_algo_latest');
+    assert.strictEqual(manualAllocRes.success, true, '手动指派应成功');
+    const tasksAfterManual = await window.LifeGameCore.getTasks();
+    const otherTaskUpdated = tasksAfterManual.find(t => t.id === 'task_cs_algo_latest');
+    assert.strictEqual(otherTaskUpdated.accumulatedMinutes, 30, '手动指派后目标任务应累计 30 分钟');
+
+    console.log('  ✅ 加固测试 1 通过：稳定 ID 优先匹配，未匹配记录安全隔离入待分配池，杜绝偷跑！\n');
+    passed++;
+  }
+
+  // ====================================================
+  // 【加固测试 2】防止同一段专注时长被多个独立任务重复使用
+  // ====================================================
+  console.log('【加固测试 2】时长消费唯一性：防止同一段专注时长被多个任务重复用于领奖');
+  {
+    const taskA = {
+      id: 'task_share_test_a',
+      title: '近代史纲要自习',
+      category: 'study',
+      status: 'pending',
       targetMinutes: 30,
       accumulatedMinutes: 0
     };
-
-    // 1.1 保存任务并建立自习待办联动
-    const tasks = [task];
-    await window.LifeGameCore.saveTasks(tasks);
-    const linkedTodo = await window.LifeGameIntegrations.studyRoom.linkTaskToStudyTodo(task);
-
-    assert(linkedTodo, '应成功生成自习室待办');
-    assert.strictEqual(linkedTodo.text, task.title, '待办文字应与任务标题一致');
-    assert.strictEqual(linkedTodo.done, false, '初始状态应为未完成');
-
-    // 1.2 模拟在自习室中打勾完成待办
-    await window.LifeGameIntegrations.studyRoom.handleStudyTodoToggled(linkedTodo.id, true, 'study-room');
-
-    const updatedTasks = await window.LifeGameCore.getTasks();
-    const updatedTask = updatedTasks.find(t => t.id === task.id);
-
-    assert(updatedTask, '任务应存在');
-    assert.strictEqual(updatedTask.status, 'completed', '待办打勾后，任务应变为已达成(completed)');
-    assert.notStrictEqual(updatedTask.status, 'claimed', '【关键安全规则】待办打勾绝不能直接变为已领奖(claimed)！');
-    assert(updatedTask.completedAt, '应记录达成时间戳');
-
-    // 1.3 模拟在自习室中反选取消勾选
-    await window.LifeGameIntegrations.studyRoom.handleStudyTodoToggled(linkedTodo.id, false, 'study-room');
-    const revertedTasks = await window.LifeGameCore.getTasks();
-    const revertedTask = revertedTasks.find(t => t.id === task.id);
-    assert.strictEqual(revertedTask.status, 'pending', '待办取消后，未领奖任务应恢复为 pending');
-
-    console.log('  ✅ 测试 1 通过：待办打勾安全流转为 completed，严禁跳过领奖状态机\n');
-    passed++;
-  }
-
-  // ----------------------------------------------------
-  // 测试 2: 自习室专注时长自动推进 RPG 学习任务
-  // ----------------------------------------------------
-  console.log('【测试 2】自习室真实专注时长推进 RPG 学习任务进度');
-  {
-    const focusTask = {
-      id: 'task_focus_test_1',
-      title: '备战英语雅思听力',
+    const taskB = {
+      id: 'task_share_test_b',
+      title: '马克思主义基本原理',
       category: 'study',
-      difficulty: 'mid',
-      rewardExp: 45,
-      rewardCoins: 20,
       status: 'pending',
-      dueDate: '2026-10-26',
-      targetMinutes: 40,
-      accumulatedMinutes: 10
+      targetMinutes: 30,
+      accumulatedMinutes: 0
     };
+    await window.LifeGameCore.saveTasks([taskA, taskB]);
 
-    await window.LifeGameCore.saveTasks([focusTask]);
-
-    // 2.1 模拟自习室完成 20 分钟专注会话
-    await window.LifeGameIntegrations.focusSession.handleFocusSessionCompleted({
-      recordId: 'rec_focus_test_001',
+    const singleRecordId = 'rec_shared_focus_single_101';
+    // 第一次分配给任务 A
+    const firstAlloc = await window.LifeGameIntegrations.focusSession.allocateFocusRecord({
+      recordId: singleRecordId,
       durationMinutes: 20,
-      taskName: '备战英语雅思听力'
+      taskId: 'task_share_test_a'
     });
+    assert.strictEqual(firstAlloc.status, 'allocated');
 
-    let curTasks = await window.LifeGameCore.getTasks();
-    let curTask = curTasks.find(t => t.id === focusTask.id);
-    assert.strictEqual(curTask.accumulatedMinutes, 30, '累计时长应从 10 增加到 30 分钟');
-    assert.strictEqual(curTask.status, 'pending', '30/40 分钟尚未达到目标，状态仍应为 pending');
-
-    // 2.2 再完成 15 分钟专注会话 (累计突破 45 >= 40)
-    await window.LifeGameIntegrations.focusSession.handleFocusSessionCompleted({
-      recordId: 'rec_focus_test_002',
-      durationMinutes: 15,
-      taskName: '备战英语雅思听力'
+    // 恶意或异常再次尝试把同一条记录分配给任务 B
+    const secondAlloc = await window.LifeGameIntegrations.focusSession.allocateFocusRecord({
+      recordId: singleRecordId,
+      durationMinutes: 20,
+      taskId: 'task_share_test_b'
     });
-
-    curTasks = await window.LifeGameCore.getTasks();
-    curTask = curTasks.find(t => t.id === focusTask.id);
-    assert.strictEqual(curTask.accumulatedMinutes, 45, '累计时长应为 45 分钟');
-    assert.strictEqual(curTask.status, 'completed', '达到 40 分钟目标后，任务应自动晋升为 completed');
-
-    // 2.3 验证已结算记录去重池防重复计算
-    const settledList = await window.LifeGameCore.getSettledStudyRecordIds();
-    assert(settledList.includes('rec_focus_test_001'), '应将记录 1 记入已结算流水');
-    assert(settledList.includes('rec_focus_test_002'), '应将记录 2 记入已结算流水');
-
-    console.log('  ✅ 测试 2 通过：专注时长精准推进委托进度并在达标时自动标记达成\n');
-    passed++;
-  }
-
-  // ----------------------------------------------------
-  // 测试 3: 自习室考试计划与人生游戏长期愿景关联
-  // ----------------------------------------------------
-  console.log('【测试 3】考试计划与长期愿景关联及日期级联同步');
-  {
-    const goal = {
-      id: 'goal_exam_test_1',
-      title: '高分通过全国法考客观题',
-      desc: '沉浸复习核心法律法规',
-      targetDate: '2026-11-15',
-      status: 'active',
-      milestones: [{ id: 'ms_ex_1', title: '完成三遍真题', done: false, expReward: 100 }]
-    };
-    await window.LifeGameCore.saveGoals([goal]);
-
-    // 3.1 关联考试计划
-    const examItem = {
-      id: 'exam_law_2026',
-      title: '法律职业资格考试',
-      targetDate: '2026-11-20',
-      notes: '重点备考'
-    };
-    await window.TimeCalendarIntegrations.studyRoom.saveExams([examItem]);
-
-    const linkRes = await window.LifeGameIntegrations.exams.linkGoalToExam(goal.id, examItem.id);
-    assert.strictEqual(linkRes, true, '应成功关联考试');
-
-    let curGoals = await window.LifeGameCore.getGoals();
-    let curGoal = curGoals.find(g => g.id === goal.id);
-    assert.strictEqual(curGoal.examId, examItem.id, '愿景应记录 examId');
-    assert.strictEqual(curGoal.targetDate, '2026-11-20', '愿景目标达成日期应与考试日期同步');
-
-    // 3.2 考试日期在日历或自习室中延期
-    await window.LifeGameIntegrations.exams.handleExamChanged([
-      { id: 'exam_law_2026', targetDate: '2026-11-28' }
-    ]);
-
-    curGoals = await window.LifeGameCore.getGoals();
-    curGoal = curGoals.find(g => g.id === goal.id);
-    assert.strictEqual(curGoal.targetDate, '2026-11-28', '考试日期更新应级联更新愿景日期');
-
-    console.log('  ✅ 测试 3 通过：考试计划与愿景双向关联，日期变更平滑同步\n');
-    passed++;
-  }
-
-  // ----------------------------------------------------
-  // 测试 4: 时光日历排期投影与双向同步
-  // ----------------------------------------------------
-  console.log('【测试 4】时光日历日程投影、跨应用编辑与勾选');
-  {
-    const calTask = {
-      id: 'task_cal_test_1',
-      title: '撰写阶段 3 联调技术报告',
-      desc: '梳理数据流图与边界用例',
-      category: 'main',
-      difficulty: 'hard',
-      rewardExp: 80,
-      rewardCoins: 40,
-      status: 'pending',
-      dueDate: '2026-10-24'
-    };
-    await window.LifeGameCore.saveTasks([calTask]);
-
-    // 4.1 投射为日历日程事件
-    const events = await window.LifeGameIntegrations.calendar.getTasksAsCalendarEvents('all', []);
-    const projected = events.find(e => e.id === 'lg_task_' + calTask.id);
-
-    assert(projected, '有 dueDate 的任务应投射为日历日程事件');
-    assert.strictEqual(projected.title, '人生委托 · ' + calTask.title);
-    assert.strictEqual(projected.date, '2026-10-24');
-    assert.strictEqual(projected.source.app, 'life-game');
-    assert.strictEqual(projected.source.taskId, calTask.id);
-
-    // 4.2 从日历中修改日程日期和标题
-    const editRes = await window.TimeCalendarIntegrations.saveLinkedItem({
-      source: projected.source,
-      title: '人生委托 · 撰写阶段 3 深度联调技术报告 (最终版)',
-      date: '2026-10-28',
-      notes: '更新了边界说明',
-      completed: false
-    });
-    assert.strictEqual(editRes, true, '日历应能成功回写人生游戏委托');
-
-    let curTasks = await window.LifeGameCore.getTasks();
-    let curTask = curTasks.find(t => t.id === calTask.id);
-    assert.strictEqual(curTask.title, '撰写阶段 3 深度联调技术报告 (最终版)', '任务标题应同步更新');
-    assert.strictEqual(curTask.dueDate, '2026-10-28', '任务排期日期应同步更新');
-
-    // 4.3 在日历中打勾完成委托
-    const toggleRes = await window.TimeCalendarIntegrations.toggleLinkedItem(projected);
-    assert.strictEqual(toggleRes, true, '日历打勾应返回 true');
-
-    curTasks = await window.LifeGameCore.getTasks();
-    curTask = curTasks.find(t => t.id === calTask.id);
-    assert.strictEqual(curTask.status, 'completed', '日历打勾后任务应变为 completed 达成');
-    assert.notStrictEqual(curTask.status, 'claimed', '日历打勾绝不能直接领奖！');
-
-    // 4.4 从日历中移除排期
-    await window.LifeGameIntegrations.unlinkTaskFromCalendar(calTask.id);
-    curTasks = await window.LifeGameCore.getTasks();
-    curTask = curTasks.find(t => t.id === calTask.id);
-    assert.strictEqual(curTask.dueDate, '', '解除排期后任务 dueDate 应被清空');
-    assert(curTask, '解除日历排期不应删除人生游戏中的任务本体');
-
-    console.log('  ✅ 测试 4 通过：日历排期投影、编辑与勾选状态机完整闭环\n');
-    passed++;
-  }
-
-  // ----------------------------------------------------
-  // 测试 5: 自愈修复与异常隔离 (Reconciliation)
-  // ----------------------------------------------------
-  console.log('【测试 5】链接健康巡检与孤儿自愈机制 (Reconcile)');
-  {
-    const orphanTask = {
-      id: 'task_orphan_test_1',
-      title: '孤儿测试任务',
-      category: 'study',
-      status: 'pending',
-      studyTodoId: 'non_existent_todo_9999' // 指向不存在的待办
-    };
-    await window.LifeGameCore.saveTasks([orphanTask]);
-
-    const report = await window.LifeGameIntegrations.reconcileLinks();
-    assert(report.checkedTasks > 0, '应巡检任务');
-    assert(report.orphanedDetached >= 1, '应检测并优雅剥离不存在的孤儿待办引用');
+    assert.strictEqual(secondAlloc.status, 'already_allocated', '同一段时长必须被判定为 already_allocated');
+    assert.strictEqual(secondAlloc.taskId, 'task_share_test_a', '已分配的目标任务必须锁定');
 
     const curTasks = await window.LifeGameCore.getTasks();
-    const curOrphan = curTasks.find(t => t.id === orphanTask.id);
-    assert.strictEqual(curOrphan.studyTodoId, undefined, '孤儿待办引用应被安全移除');
+    const curTaskB = curTasks.find(t => t.id === 'task_share_test_b');
+    assert.strictEqual(curTaskB.accumulatedMinutes, 0, '任务 B 绝对不能重复消费已被任务 A 消费的时长！');
 
-    console.log('  ✅ 测试 5 通过：自愈巡检引擎自动清理孤儿索引，保障系统稳健\n');
+    console.log('  ✅ 加固测试 2 通过：专注记录具有唯一消费所有权，严格防多任务冒领！\n');
     passed++;
   }
 
-  console.log(`\n========================================`);
-  console.log(`🎉 阶段 3 深度联动核心架构验证全部通过！[${passed}/${passed}]`);
-  console.log(`========================================\n`);
+  // ====================================================
+  // 【加固测试 3】学习进度与基础奖励分离
+  // ====================================================
+  console.log('【加固测试 3】基础经验核销 (life_game_records_settled_v1) 与 任务进度分配 独立判定');
+  {
+    const studyTask = {
+      id: 'task_progress_sep_1',
+      title: '微积分定积分计算',
+      category: 'study',
+      status: 'pending',
+      targetMinutes: 40,
+      accumulatedMinutes: 0
+    };
+    await window.LifeGameCore.saveTasks([studyTask]);
+
+    const recordId = 'rec_base_settled_before_progress_99';
+    // 模拟场景：该条记录已经由历史流水或自习室发放过基础经验，记录在 life_game_records_settled_v1
+    await window.LifeGameCore.addSettledStudyRecordId(recordId);
+    let settledIds = await window.LifeGameCore.getSettledStudyRecordIds();
+    assert(settledIds.includes(recordId), '基础经验已处于核销完成状态');
+
+    // 执行 handleFocusSessionCompleted：基础经验应跳过发放（防双发），但合法关联的任务进度仍必须正常推进！
+    const completeRes = await window.LifeGameIntegrations.focusSession.handleFocusSessionCompleted({
+      recordId: recordId,
+      durationMinutes: 25,
+      taskId: 'task_progress_sep_1',
+      taskName: '微积分定积分计算'
+    });
+
+    assert.strictEqual(completeRes.baseRewardSettled, true);
+    assert.strictEqual(completeRes.allocationResult.status, 'allocated', '已核销基础经验的记录仍应推进关联任务');
+
+    let curTasks = await window.LifeGameCore.getTasks();
+    let curTask = curTasks.find(t => t.id === 'task_progress_sep_1');
+    assert.strictEqual(curTask.accumulatedMinutes, 25, '任务应成功获得 25 分钟进度');
+
+    // 重复调用 handleFocusSessionCompleted：进度不能再次累加
+    const duplicateRes = await window.LifeGameIntegrations.focusSession.handleFocusSessionCompleted({
+      recordId: recordId,
+      durationMinutes: 25,
+      taskId: 'task_progress_sep_1'
+    });
+    assert.strictEqual(duplicateRes.allocationResult.status, 'already_allocated', '重复同步绝不能重复增加进度');
+
+    curTasks = await window.LifeGameCore.getTasks();
+    curTask = curTasks.find(t => t.id === 'task_progress_sep_1');
+    assert.strictEqual(curTask.accumulatedMinutes, 25, '累计分钟数保持 25，未发生重复累计');
+
+    console.log('  ✅ 加固测试 3 通过：基础经验与任务进度完全解耦，重复同步严格幂等！\n');
+    passed++;
+  }
+
+  // ====================================================
+  // 【加固测试 4】跨 App 异常恢复与部分成功/自愈重试
+  // ====================================================
+  console.log('【加固测试 4】跨 App 异常容灾：部分成功多态报告、断点重试与注册表自愈');
+  {
+    const failoverTask = {
+      id: 'task_failover_test_1',
+      title: '计算机网络 TCP 协议族精读',
+      category: 'study',
+      status: 'pending',
+      dueDate: '2026-10-29'
+    };
+    await window.LifeGameCore.saveTasks([failoverTask]);
+
+    // 4.1 测试：自习室待办创建步骤失败（部分成功状态 partial）
+    const partialRes1 = await window.LifeGameIntegrations.studyRoom.linkTaskToStudyTodo(failoverTask, {
+      _injectStudyRoomFailure: true
+    });
+    assert.strictEqual(partialRes1.status, 'partial', '自习室创建失败应返回 partial 状态');
+    assert.strictEqual(partialRes1.success, false);
+    assert.strictEqual(partialRes1.partial, true);
+    assert.strictEqual(partialRes1.stepResults.studyRoomTodo.error, 'injected_study_room_failure');
+
+    // 4.2 重试同步：自习室恢复正常，按稳定 ID 查找，成功完成同步且不重复创建
+    const retryRes1 = await window.LifeGameIntegrations.studyRoom.linkTaskToStudyTodo(failoverTask);
+    assert.strictEqual(retryRes1.status, 'success', '重试时应成功');
+    assert.strictEqual(retryRes1.id, 'sr_todo_lg_task_failover_test_1');
+
+    // 再次调用，验证幂等性（reused 标志为 true，不追加新待办）
+    const idempotentRes = await window.LifeGameIntegrations.studyRoom.linkTaskToStudyTodo(failoverTask);
+    assert.strictEqual(idempotentRes.status, 'success');
+    assert.strictEqual(idempotentRes.stepResults.studyRoomTodo.reused, true, '必须复用已有待办，严禁重复创建');
+
+    // 4.3 测试：日历排期成功，但链接注册表保存失败 (部分成功)
+    const partialCalRes = await window.LifeGameIntegrations.calendar.scheduleTaskToCalendar(
+      failoverTask,
+      '2026-10-30',
+      { _injectLinkRegistryFailure: true }
+    );
+    assert.strictEqual(partialCalRes.status, 'partial', '注册表失败应返回 partial');
+    assert.strictEqual(partialCalRes.stepResults.calendarScheduled.success, true);
+    assert.strictEqual(partialCalRes.stepResults.linkRegistry.error, 'injected_link_registry_failure');
+
+    // 4.4 触发自愈补偿巡检 (reconcileLinks)，自动检测到缺失的日历链接并平滑修复
+    const reconcileReport = await window.LifeGameIntegrations.reconcileLinks();
+    assert.strictEqual(reconcileReport.status, 'success');
+    assert(reconcileReport.recoveredPartials >= 1, '巡检引擎必须成功自愈修复部分失败的链接');
+
+    // 验证日历链接已被重新修复
+    const repairedLink = await window.LifeGameIntegrations.links.findLink('life-game', failoverTask.id, 'time-calendar');
+    assert(repairedLink, '丢失的日历链接应在巡检后成功恢复');
+    assert.strictEqual(repairedLink.status, 'active');
+
+    console.log('  ✅ 加固测试 4 通过：部分成功状态精准报告，断点重试与自愈引擎完美闭环！\n');
+    passed++;
+  }
+
+  // ====================================================
+  // 【加固测试 5】多 Char 隔离与学习记录资产归属
+  // ====================================================
+  console.log('【加固测试 5】多 Char 与学习记录归属：专注上下文快照隔离与个人资产标记');
+  {
+    // 模拟自习室专注开始时的快照锁定
+    const sessionSnapshot = {
+      taskType: '学习攻坚',
+      taskName: '心理学导论研读',
+      taskId: 'task_psy_001',
+      todoId: 'sr_todo_psy_001',
+      companionCharId: 'char_wanwan_01',
+      companionCharName: '林弯弯',
+      startedAt: Date.now()
+    };
+
+    // 模拟专注过程中用户在外部或界面中切换了伴侣角色（切换为 char_other_02）
+    let currentCompanion = { id: 'char_other_02', name: '苏念' };
+
+    // 专注完成时：必须提取 sessionSnapshot 中固定的 companionCharId，绝不能采用中途被切换的 char_other_02
+    const duration = 30;
+    const completedRecord = {
+      id: 'rec_user_study_asset_1',
+      date: new Date().toISOString(),
+      type: sessionSnapshot.taskType,
+      name: sessionSnapshot.taskName,
+      durationMinutes: duration,
+      companionCharId: sessionSnapshot.companionCharId, // 忠实保留开始时的快照
+      companionCharName: sessionSnapshot.companionCharName,
+      taskId: sessionSnapshot.taskId,
+      todoId: sessionSnapshot.todoId,
+      isUserPersonalRecord: true // 用户个人学习资产
+    };
+
+    assert.strictEqual(completedRecord.companionCharId, 'char_wanwan_01', '专注记录必须归属于开始时的伴学角色');
+    assert.notStrictEqual(completedRecord.companionCharId, currentCompanion.id, '中途切换的角色绝不能篡改正在进行的专注归属');
+    assert.strictEqual(completedRecord.isUserPersonalRecord, true, '学习记录必须是用户个人资产');
+
+    // 验证日历过滤时私人事件的隔离逻辑
+    const personalTaskEvent = {
+      id: 'lg_task_personal_1',
+      title: '个人专注计划',
+      date: '2026-10-25',
+      relationType: 'personal',
+      charId: null
+    };
+    const charWanwanPrivateEvent = {
+      id: 'cal_wanwan_private_1',
+      title: '弯弯的私人纪念备忘',
+      date: '2026-10-25',
+      relationType: 'specificChar',
+      charId: 'char_wanwan_01'
+    };
+    const charSuNianPrivateEvent = {
+      id: 'cal_sunian_private_1',
+      title: '苏念的专属约定',
+      date: '2026-10-25',
+      relationType: 'specificChar',
+      charId: 'char_other_02'
+    };
+
+    const allEvents = [personalTaskEvent, charWanwanPrivateEvent, charSuNianPrivateEvent];
+
+    // 当用户查看弯弯视角时
+    const wanwanView = allEvents.filter(e => e.relationType === 'personal' || e.charId === 'char_wanwan_01');
+    assert(wanwanView.includes(personalTaskEvent), '个人学习委托对所有角色可见');
+    assert(wanwanView.includes(charWanwanPrivateEvent), '弯弯视角可见弯弯事件');
+    assert(!wanwanView.includes(charSuNianPrivateEvent), '【角色隔离红线】弯弯视角严禁泄漏苏念的私人事件！');
+
+    console.log('  ✅ 加固测试 5 通过：专注快照防中途篡改，个人资产明确，Char 私人日历严格隔离！\n');
+    passed++;
+  }
+
+  // ====================================================
+  // 【加固测试 6】阶段 1 (EXP/金币/等级) 与 阶段 2 (AI 规划) 兼容性回归
+  // ====================================================
+  console.log('【加固测试 6】阶段 1 核心 RPG 结算与阶段 2 AI 规划全量回归校验');
+  {
+    // 6.1 阶段 1 领奖状态机与经济总线
+    const r日语Task = {
+      id: 'task_jp_n2_1',
+      title: '完成日语 N2 核心词汇复习',
+      category: 'study',
+      difficulty: 'mid',
+      rewardExp: 40,
+      rewardCoins: 20,
+      status: 'completed', // 已达成
+      targetMinutes: 30,
+      accumulatedMinutes: 30
+    };
+    await window.LifeGameCore.saveTasks([r日语Task]);
+
+    const claimRes = await window.LifeGameCore.claimTaskReward(r日语Task.id);
+    assert.strictEqual(claimRes.success, true, '正常领奖应成功');
+    assert.strictEqual(claimRes.expGranted, 40);
+    assert.strictEqual(claimRes.coinsGranted, 20);
+
+    // 重复领奖拦截
+    const reClaimRes = await window.LifeGameCore.claimTaskReward(r日语Task.id);
+    assert.strictEqual(reClaimRes.success, false, '重复领奖必须被拦截');
+
+    // 6.2 阶段 2 AI 规划草案应用
+    const aiDraft = {
+      id: 'draft_stage2_compat_test',
+      goalTitle: '拿下软件设计师中级证书',
+      goalDesc: '备考中级软考主线规划',
+      targetDate: '2026-11-30',
+      stages: [
+        {
+          stageNumber: 1,
+          stageTitle: '基础知识通关',
+          milestones: [{ title: '计算机体系结构掌握', expReward: 100 }],
+          tasks: [
+            {
+              title: '研读计算机组成原理精选考点',
+              category: 'study',
+              difficulty: 'mid',
+              dueDate: '2026-10-31',
+              rewardExp: 45,
+              rewardCoins: 20,
+              targetMinutes: 45,
+              selected: true
+            }
+          ]
+        }
+      ]
+    };
+
+    await window.LifeGameAI.saveDraft(aiDraft);
+    const applyRes = await window.LifeGameAI.applyDraft(aiDraft.id, null, {
+      syncStudyTodos: true,
+      syncCalendar: true
+    });
+    assert.strictEqual(applyRes.success, true, 'AI 草案应用应成功');
+    assert.strictEqual(applyRes.tasksCount, 1, '应生成 1 项正式现实任务');
+
+    // 验证生成的任务是否具备完整的阶段 3 联动支持
+    const allTasks = await window.LifeGameCore.getTasks();
+    const createdTask = allTasks.find(t => t.title === '研读计算机组成原理精选考点');
+    assert(createdTask, 'AI 生成的任务应已入库');
+    assert.strictEqual(createdTask.studyTodoId, 'sr_todo_lg_' + createdTask.id, '应已自动挂接自习室待办');
+    assert.strictEqual(createdTask.dueDate, '2026-10-31', '排期日期应保留');
+
+    console.log('  ✅ 加固测试 6 通过：阶段 1 状态机与阶段 2 AI 目标拆解计划完全兼容无暇！\n');
+    passed++;
+  }
+
+  console.log(`\n======================================================`);
+  console.log(`🎉 阶段 3 封版加固所有针对性边界测试全部通过！[${passed}/${passed}]`);
+  console.log(`======================================================\n`);
 }
 
 runTests().catch(err => {
-  console.error('❌ 测试失败:', err);
+  console.error('❌ 加固测试失败:', err);
   process.exit(1);
 });

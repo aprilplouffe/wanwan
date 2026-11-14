@@ -1607,3 +1607,572 @@
   margin-top: 6px;
 }
 
+/* ====================================================
+   阶段 4: 深度 RPG 养成 ＋ 成就收藏 ＋ 冒险手账 ＋ 多 Char 陪伴样式
+   ==================================================== */
+
+.lg-btn-icon-subtle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lg-btn-icon-subtle:hover {
+  background: var(--c-border);
+}
+
+/* 角色头像与编辑悬浮标 */
+.lg-avatar-clickable {
+  cursor: pointer;
+  position: relative;
+}
+
+.lg-avatar-edit-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--c-text);
+  color: var(--c-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  border: 1.5px solid var(--c-surface);
+}
+
+.lg-user-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* 历练统计四列栏 */
+.lg-profile-stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 6px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  text-align: center;
+}
+
+.lg-pstat-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.lg-pstat-num {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--c-text);
+}
+
+.lg-pstat-lbl {
+  font-size: 10px;
+  color: var(--c-sub);
+  margin-top: 1px;
+}
+
+/* Canvas 雷达图容器 */
+.lg-radar-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 8px 0;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 6px;
+}
+
+.lg-radar-canvas {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* 伴侣授权胶囊标 */
+.lg-companion-auth-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface-2);
+  color: var(--c-sub);
+  font-weight: 500;
+}
+
+.lg-companion-auth-tag.active {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border-color: var(--c-text);
+}
+
+/* 当前佩戴称号横幅 */
+.lg-title-banner {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: var(--shadow-sm);
+}
+
+/* 6 大分类胶囊过滤栏 */
+.lg-category-pills {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 6px 0;
+  margin-top: 6px;
+  user-select: none;
+  scrollbar-width: none;
+}
+
+.lg-category-pills::-webkit-scrollbar {
+  display: none;
+}
+
+.lg-cat-pill {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  color: var(--c-sub);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lg-cat-pill.active {
+  background: var(--c-text);
+  color: var(--c-bg);
+  border-color: var(--c-text);
+  font-weight: 600;
+}
+
+/* 勋章卡片增强 */
+.lg-badge-card {
+  position: relative;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+}
+
+.lg-badge-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.lg-badge-card.locked {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+
+.lg-badge-card.favorite {
+  border-color: var(--c-text);
+}
+
+.lg-badge-pin-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 11px;
+  color: var(--c-text);
+}
+
+.lg-badge-status-unlocked {
+  font-size: 10px;
+  color: var(--c-text);
+  font-weight: 600;
+}
+
+.lg-badge-status-locked {
+  font-size: 10px;
+  color: var(--c-hint);
+}
+
+.lg-badge-icon-lg {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: var(--c-surface-2);
+  border: 1.5px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  color: var(--c-text);
+}
+
+.lg-badge-icon-lg.locked {
+  opacity: 0.5;
+  filter: grayscale(1);
+}
+
+/* 冒险手账专架与滚动条 */
+.lg-cards-scroll-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 0 8px 0;
+  scrollbar-width: none;
+}
+
+.lg-cards-scroll-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.lg-mini-card {
+  flex-shrink: 0;
+  width: 130px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 10px 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-mini-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--c-text);
+}
+
+.lg-mini-card.fav {
+  border-left: 3px solid var(--c-text);
+}
+
+.lg-mini-card-tag {
+  font-size: 9px;
+  color: var(--c-sub);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.lg-mini-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--c-text);
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lg-mini-card-date {
+  font-size: 10px;
+  color: var(--c-hint);
+  margin-top: 4px;
+}
+
+/* 手账时间轴 */
+.lg-journal-filter-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  margin-bottom: 6px;
+}
+
+.lg-journal-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lg-journal-item {
+  display: flex;
+  gap: 10px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.lg-journal-item-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-text);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.lg-journal-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.lg-journal-item-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--c-text);
+}
+
+.lg-journal-item-time {
+  font-size: 10px;
+  color: var(--c-hint);
+}
+
+.lg-journal-item-desc {
+  font-size: 11px;
+  color: var(--c-sub);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.lg-journal-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.lg-jtag {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  color: var(--c-sub);
+}
+
+/* 六维属性分析网格 */
+.lg-stat-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.lg-stat-analysis-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+
+/* 成长纪念卡全屏弹窗 */
+.lg-memento-card-modal {
+  background: var(--c-surface);
+  border: 1.5px solid var(--c-text);
+  border-radius: var(--r-lg);
+  padding: 24px 20px;
+  max-width: 340px;
+  width: 90%;
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+
+.lg-memento-card-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.lg-memento-card-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--c-sub);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.lg-memento-card-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--c-text);
+}
+
+.lg-memento-card-sub {
+  font-size: 11px;
+  color: var(--c-sub);
+  margin-top: 2px;
+}
+
+.lg-memento-card-date {
+  font-size: 10px;
+  color: var(--c-hint);
+  margin-top: 6px;
+}
+
+.lg-memento-card-level {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--c-text);
+  margin-top: 10px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-full);
+  padding: 2px 12px;
+}
+
+.lg-memento-card-quote {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--c-text);
+  line-height: 1.6;
+  margin: 16px 0 10px 0;
+  padding: 0 10px;
+}
+
+.lg-memento-card-wish {
+  font-size: 11px;
+  color: var(--c-sub);
+  background: var(--c-surface-2);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+  margin-bottom: 16px;
+  width: 100%;
+  border-left: 3px solid var(--c-text);
+  text-align: left;
+}
+
+.lg-memento-card-footer {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+/* 伴侣设置卡片与列表 */
+.lg-modal-card-lg {
+  max-width: 440px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.lg-notice-box {
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--c-sub);
+  display: flex;
+  gap: 8px;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+.lg-form-group-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+}
+
+.lg-companion-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.lg-char-setting-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+}
+
+.lg-char-setting-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lg-char-setting-body {
+  transition: opacity 0.2s ease;
+}
+
+.lg-char-setting-body.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* 极简 iOS 风格开关 */
+.lg-toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 38px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.lg-toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.lg-toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--c-border);
+  transition: 0.2s;
+  border-radius: 22px;
+}
+
+.lg-toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--c-surface);
+  transition: 0.2s;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+
+.lg-toggle-switch input:checked + .lg-toggle-slider {
+  background-color: var(--c-text);
+}
+
+.lg-toggle-switch input:checked + .lg-toggle-slider:before {
+  transform: translateX(16px);
+  background-color: var(--c-bg);
+}
+
+.lg-input-sm, .lg-select-sm {
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--c-text);
+  outline: none;
+}
+
+

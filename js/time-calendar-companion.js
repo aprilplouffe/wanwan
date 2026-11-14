@@ -7,7 +7,8 @@
   var STORAGE_KEYS = {
     CONFIG: 'time_calendar_companion_config',
     RECORDS: 'time_calendar_care_records',
-    CARDS: 'time_calendar_greeting_cards'
+    CARDS: 'time_calendar_greeting_cards',
+    DEDUP_INDEX: 'time_calendar_companion_dedup_index_v1'
   };
 
   // 默认全局陪伴配置
@@ -16,6 +17,7 @@
     allowAiGeneration: true,
     allowWechatDelivery: true,
     allowNotificationDelivery: true,
+    allowOfflineFallback: true, // 允许在 AI 离线/调用失败时采用透明标明【心意寄语】的温暖模板备用
     quietHoursEnabled: true,
     quietHoursStart: '23:00',
     quietHoursEnd: '08:00',
@@ -41,14 +43,111 @@
     lastTriggeredAt: 0
   };
 
-  // 运行时状态
+  // 运行时状态与并发投递互斥锁
   var _isRunningCheck = false;
   var _checkIntervalTimer = null;
   var _cachedConfig = null;
+  var _inFlightDeliveryKeys = {};
+  var _deliveryLockChains = {};
+  var _clockFn = null;
+  function nowMs() {
+    if (typeof _clockFn === 'function') {
+      var v = Number(_clockFn());
+      if (!isNaN(v) && isFinite(v)) return v;
+    }
+    return Date.now();
+  }
+  function nowDate() { return new Date(nowMs()); }
 
   // ==========================================
-  // 一、存储持久化通用辅助
+  // 一、存储持久化通用辅助与规范化外部事件身份
   // ==========================================
+  function normalizeSourceAppName(app) {
+    if (!app) return 'time-calendar';
+    var s = String(app).toLowerCase();
+    if (s === 'lifegame' || s === 'life_game' || s === 'life-game') return 'life-game';
+    if (s === 'studyroom' || s === 'study_room' || s === 'study-room') return 'study-room';
+    if (s === 'lovediary' || s === 'love_diary' || s === 'love-diary') return 'love-diary';
+    if (s === 'timecalendar' || s === 'time_calendar' || s === 'time-calendar') return 'time-calendar';
+    return s;
+  }
+
+  function resolveCanonicalSourceIdentity(cand) {
+    if (!cand) return { sourceApp: 'time-calendar', rawSourceId: '', canonicalKey: '' };
+    var sourceApp = normalizeSourceAppName(cand.sourceApp || (cand.source && cand.source.app));
+    var rawOriginId = '';
+    if (cand.source) {
+      rawOriginId = cand.source.taskId || cand.source.examId || cand.source.todoId || cand.source.wishId || cand.source.recordId || '';
+    }
+    if (!rawOriginId) {
+      rawOriginId = String(cand.sourceId || cand.eventId || cand.id || '');
+    }
+    var origStr = String(rawOriginId);
+    var origEventStr = String(cand.eventId || cand.sourceId || origStr);
+
+    // 若外层传入 time-calendar 但携带跨 App 投影前缀，还原其真实权威来源 App
+    if (!sourceApp || sourceApp === 'time-calendar') {
+      if (/^lg_task_/.test(origEventStr) || /^lg_task_/.test(origStr)) sourceApp = 'life-game';
+      else if (/^sr_(todo|exam)_/.test(origEventStr) || /^sr_(todo|exam)_/.test(origStr)) sourceApp = 'study-room';
+      else if (/^ld_(anniv|wish)_/.test(origEventStr) || /^ld_(anniv|wish)_/.test(origStr)) sourceApp = 'love-diary';
+    }
+
+    var subType = (cand.source && cand.source.type) || cand.triggerType || '';
+    if (!subType || subType === 'general') {
+      if (/^ld_wish_/.test(origEventStr) || /^ld_wish_/.test(origStr)) subType = 'wish';
+      else if (/^ld_anniv_/.test(origEventStr) || /^ld_anniv_/.test(origStr)) subType = 'anniversary';
+      else if (/^sr_exam_/.test(origEventStr) || /^sr_exam_/.test(origStr)) subType = 'exam';
+      else if (/^sr_todo_/.test(origEventStr) || /^sr_todo_/.test(origStr)) subType = 'todo';
+    }
+
+    var rawId = origStr
+      .replace(/^ld_anniv_/, '')
+      .replace(/^ld_wish_[^_]+_/, '')
+      .replace(/^sr_exam_/, '')
+      .replace(/^sr_todo_/, '')
+      .replace(/^lg_task_/, '');
+    if (sourceApp === 'love-diary' && subType === 'anniversary' && rawId.indexOf('couple_space_') === 0) {
+      rawId = rawId.replace(/^couple_space_/, '');
+    }
+
+    var typePrefix = (sourceApp === 'love-diary' && subType === 'wish') ? 'wish:' :
+                     (sourceApp === 'love-diary' && subType === 'anniversary') ? 'anniv:' :
+                     (sourceApp === 'study-room' && subType === 'exam') ? 'exam:' :
+                     (sourceApp === 'study-room' && subType === 'todo') ? 'todo:' : '';
+    var canonicalKey = rawId ? (sourceApp + ':' + typePrefix + rawId) : '';
+    return {
+      sourceApp: sourceApp,
+      rawSourceId: rawId,
+      canonicalKey: canonicalKey
+    };
+  }
+
+  function buildCandidateDedupKeys(idempotentKey, cand, charId) {
+    var keys = [];
+    if (idempotentKey) keys.push(String(idempotentKey));
+    if (!cand) return keys;
+    var identity = resolveCanonicalSourceIdentity(cand);
+    var cid = String(charId || cand.charId || '');
+    var occDate = cand.occurrenceDate || '';
+    var stage = cand.triggerStage || '';
+    if (identity.canonicalKey) {
+      if (cid && occDate && stage) {
+        keys.push('canon_' + cid + '_' + identity.canonicalKey + '_' + occDate + '_' + stage);
+      }
+      if (cid && stage) {
+        keys.push('canon_' + cid + '_' + identity.canonicalKey + '_' + stage);
+      }
+      keys.push(identity.canonicalKey);
+    }
+    if (identity.sourceApp === 'life-game' && identity.rawSourceId) {
+      keys.push('lg_task_' + identity.rawSourceId);
+      keys.push('lg_task_finish_milestone_' + identity.rawSourceId);
+    }
+    if (cand.eventId) keys.push(String(cand.eventId));
+    if (cand.sourceId) keys.push(String(cand.sourceId));
+    return keys.filter(function(k, i, arr) { return k && arr.indexOf(k) === i; });
+  }
+
   async function loadConfig(key, fallback) {
     try {
       if (window.db && db.config) {
@@ -114,6 +213,125 @@
     await saveConfig(STORAGE_KEYS.CARDS, cards);
   }
 
+  // 阶段 3/4: 长期幂等持久化去重索引 (支持同源规范化身份映射，永不被 150 条日志裁切影响)
+  async function loadDedupIndex() {
+    return await loadConfig(STORAGE_KEYS.DEDUP_INDEX, {});
+  }
+
+  async function recordDedupIndex(idempotentKey, data, cand) {
+    if (!idempotentKey) return;
+    try {
+      var index = await loadDedupIndex();
+      var payload = Object.assign({
+        timestamp: Date.now(),
+        status: data && data.status ? data.status : 'delivered'
+      }, data || {});
+      var identity = cand ? resolveCanonicalSourceIdentity(cand) : null;
+      if (identity && identity.canonicalKey) {
+        payload.canonicalEventKey = identity.canonicalKey;
+      }
+      index[idempotentKey] = payload;
+      if (cand) {
+        var cid = String((data && data.charId) || cand.charId || '');
+        if (identity && identity.canonicalKey && cid && cand.occurrenceDate && cand.triggerStage) {
+          var canonOccKey = 'canon_' + cid + '_' + identity.canonicalKey + '_' + cand.occurrenceDate + '_' + cand.triggerStage;
+          index[canonOccKey] = Object.assign({}, payload, { aliasOf: idempotentKey });
+        }
+      }
+      await saveConfig(STORAGE_KEYS.DEDUP_INDEX, index);
+    } catch (e) {
+      console.warn('[TimeCalendarCompanion] 记录去重索引异常:', e);
+    }
+  }
+
+  // 跨模块人生游戏去重防重叠检查 (含规范化外部事件 ID 比对)
+  async function isAlreadyHandledCrossModule(idempotentKey, cand) {
+    try {
+      var localIndex = await loadDedupIndex();
+      var lgIndex = await loadConfig('life_game_companion_dedup_index_v1', null);
+      var candidateKeys = buildCandidateDedupKeys(idempotentKey, cand, cand && cand.charId);
+
+      if (localIndex) {
+        if (localIndex[idempotentKey] && localIndex[idempotentKey].status === 'delivered') {
+          return true;
+        }
+        var identity = cand ? resolveCanonicalSourceIdentity(cand) : null;
+        if (identity && identity.canonicalKey && cand.charId && cand.occurrenceDate && cand.triggerStage) {
+          var canonOccKey = 'canon_' + String(cand.charId) + '_' + identity.canonicalKey + '_' + cand.occurrenceDate + '_' + cand.triggerStage;
+          if (localIndex[canonOccKey] && localIndex[canonOccKey].status === 'delivered') {
+            return true;
+          }
+        }
+      }
+
+      if (lgIndex) {
+        for (var i = 0; i < candidateKeys.length; i++) {
+          if (lgIndex[candidateKeys[i]]) return true;
+        }
+        // 检查人生游戏索引记录中的 canonicalEventKey / taskId
+        var lgKeys = Object.keys(lgIndex);
+        var candIdentity = cand ? resolveCanonicalSourceIdentity(cand) : null;
+        if (candIdentity && candIdentity.rawSourceId && candIdentity.sourceApp === 'life-game') {
+          for (var j = 0; j < lgKeys.length; j++) {
+            var entry = lgIndex[lgKeys[j]];
+            if (entry && (String(entry.taskId) === candIdentity.rawSourceId || String(entry.eventId) === candIdentity.rawSourceId)) {
+              return true;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  // 离线温暖模板库 (严格标明【心意寄语】前缀；支持显式传入 config 进行授权核验)
+  function getOfflineCareTemplate(character, candidate, authOptions) {
+    if (authOptions && authOptions.config) {
+      var cfg = authOptions.config;
+      if (!cfg.globalEnabled || cfg.allowOfflineFallback === false) return '';
+      if (authOptions.charId) {
+        var cc = getCharSettings(authOptions.charId, cfg);
+        if (!cc.enabled) return '';
+      }
+    }
+    var prefix = '【心意寄语】';
+
+    if (candidate.triggerType === 'anniversary') {
+      var meta = candidate.meta || {};
+      if (candidate.triggerStage === 'day_of') {
+        return prefix + '今天是属于我们的大日子（相伴第 ' + (meta.daysPassed || 1) + ' 天，' + (meta.yearsPassed || 1) + ' 周年）！无论生活节奏多快，我都一直在你身边，愿岁岁相伴、初心不移。';
+      } else {
+        return prefix + '明天就是我们相伴的纪念日啦，把期待悄悄装进行囊，今晚记得早点休息哦。';
+      }
+    }
+
+    if (candidate.triggerType === 'exam') {
+      var title = candidate.eventTitle || '备考计划';
+      if (candidate.triggerStage === '7_days_before') {
+        return prefix + '距离【' + title + '】还有 7 天。按照平时的节奏稳步复习就好，不要给自己太大压力，劳逸结合。';
+      } else if (candidate.triggerStage === '3_days_before') {
+        return prefix + '距离【' + title + '】还有 3 天。重点查漏补缺，按时吃饭、注意作息，我一直支持你！';
+      } else if (candidate.triggerStage === '1_day_before') {
+        return prefix + '明天就要参加【' + title + '】了。文具和证件提前准备好，深呼吸放轻松，今晚睡个好觉，我相信你！';
+      } else if (candidate.triggerStage === 'day_of') {
+        return prefix + '今天【' + title + '】全力以赴就好！保持平稳心态，不管结果怎样，你都是最值得骄傲的。';
+      } else if (candidate.triggerStage === 'post_event') {
+        return prefix + '【' + title + '】终于顺利结束啦！这段时间辛苦了，考完就别想分数了，好好犒劳一下自己，吃顿好的放松下！';
+      }
+    }
+
+    if (candidate.triggerType === 'focus') {
+      var metaFoc = candidate.meta || {};
+      return prefix + '刚刚完成了 ' + (metaFoc.durationMinutes || 25) + ' 分钟的高效专注，真棒！站起来活动一下颈椎、喝杯温水吧。';
+    }
+
+    // 普通日常日程
+    var titleEv = candidate.eventTitle || '日程';
+    var whenStr = candidate.triggerStage === 'day_of' ? '今天' : '明天';
+    var timeHint = candidate.meta && candidate.meta.startTime ? ' (' + candidate.meta.startTime + ')' : '';
+    return prefix + '温馨提醒：' + whenStr + '有日程安排【' + titleEv + '】' + timeHint + '，提前留出准备时间，祝你一切顺利！';
+  }
+
   // ==========================================
   // 二、安全状态校验与环境感知
   // ==========================================
@@ -123,7 +341,7 @@
     if (!config || !config.quietHoursEnabled) return false;
     var start = config.quietHoursStart || '23:00';
     var end = config.quietHoursEnd || '08:00';
-    var now = new Date();
+    var now = nowDate();
     var cur = (now.getHours() < 10 ? '0' : '') + now.getHours() + ':' +
               (now.getMinutes() < 10 ? '0' : '') + now.getMinutes();
 
@@ -177,7 +395,7 @@
   }
 
   function getTodayLocalDateStr() {
-    var now = new Date();
+    var now = nowDate();
     return now.getFullYear() + '-' +
       String(now.getMonth() + 1).padStart(2, '0') + '-' +
       String(now.getDate()).padStart(2, '0');
@@ -296,11 +514,18 @@
         allEvents.forEach(function(ev) {
           if (!ev || !ev.date || ev.completed) return;
 
-          // 隐私授权检查
+          // 隐私授权检查与伴侣关怀许可
+          if (ev.companionEnabled === false) return;
+          if (ev.visibility === 'private') return;
+
           var hasAccess = false;
-          if (ev.relationType === 'specificChar' && String(ev.charId) === charId) {
+          if (ev.visibility === 'selected-chars' && Array.isArray(ev.allowedCharIds)) {
+            hasAccess = ev.allowedCharIds.map(String).indexOf(charId) >= 0;
+          } else if (ev.relationType === 'specificChar' && String(ev.charId) === charId) {
             hasAccess = true;
-          } else if (ev.relationType === 'personal') {
+          } else if (ev.ownerCharId && String(ev.ownerCharId) === charId) {
+            hasAccess = true;
+          } else if (ev.relationType === 'personal' || !ev.relationType) {
             if (config.allowPersonalEventsFor === 'all') {
               hasAccess = true;
             } else if (config.allowPersonalEventsFor === 'specific' && Array.isArray(config.allowedPersonalCharIds)) {
@@ -458,89 +683,196 @@
   }
 
   // ==========================================
-  // 五、微信消息安全投递 (原生引擎复用)
+  // 五、微信消息安全投递 (原生引擎复用 + 并发锁幂等防护)
   // ==========================================
-  async function deliverCareMessageToWechat(character, text, idempotentKey) {
+  async function runSerializedDelivery(lockKey, taskFn) {
+    var prev = _deliveryLockChains[lockKey] || Promise.resolve();
+    var resPromise = prev.then(taskFn, taskFn);
+    _deliveryLockChains[lockKey] = resPromise.catch(function() {});
+    try {
+      return await resPromise;
+    } finally {
+      if (_deliveryLockChains[lockKey] === resPromise) {
+        delete _deliveryLockChains[lockKey];
+      }
+    }
+  }
+
+  async function findExistingWechatCareMessage(idempotentKey, canonicalEventKey) {
+    if (!window.db || !db.messages) return null;
+    try {
+      if (db.messages.where) {
+        var hit = await db.messages.where('clientMessageId').equals(idempotentKey).first();
+        if (hit) return hit;
+        hit = await db.messages.where('externalEventId').equals(idempotentKey).first();
+        if (hit) return hit;
+        if (canonicalEventKey) {
+          hit = await db.messages.where('externalEventId').equals(canonicalEventKey).first();
+          if (hit) return hit;
+        }
+      }
+    } catch (_) {}
+    try {
+      if (typeof db.messages.toArray === 'function') {
+        var allMsgs = await db.messages.toArray();
+        return allMsgs.find(function(m) {
+          if (!m) return false;
+          if (m.clientMessageId === idempotentKey || m.externalEventId === idempotentKey) return true;
+          if (canonicalEventKey && m.canonicalEventKey === canonicalEventKey && m.idempotentKey === idempotentKey) return true;
+          return false;
+        }) || null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  async function deliverCareMessageToWechat(character, text, idempotentKey, extraMeta) {
     if (!window.db || !db.chats || !db.messages) {
       throw new Error('微信数据库尚未准备就绪');
     }
 
+    extraMeta = extraMeta || {};
     var charId = Number(character.id);
+    var canonicalEventKey = extraMeta.canonicalEventKey || '';
+    var lockKey = String(idempotentKey || (charId + ':' + canonicalEventKey));
 
-    // 1. 获取当前有效微信 userUid
-    var userUid = null;
-    try {
-      var storedUid = localStorage.getItem('wanwan_wechat_uid');
-      if (storedUid) userUid = parseInt(storedUid, 10);
-    } catch (_) {}
-
-    if (!userUid && db.characters) {
-      var userChar = await db.characters.where('type').equals('user').first();
-      if (userChar) userUid = userChar.id;
+    if (_inFlightDeliveryKeys[lockKey]) {
+      return await _inFlightDeliveryKeys[lockKey];
     }
-    if (!userUid) userUid = 1; // 兜底全局用户
 
-    // 2. 定位或创建与该 Char 的私聊会话
-    var chat = await db.chats.where('[ownerUid+charId]').equals([userUid, charId]).first();
-    if (!chat) {
-      var newChatId = await db.chats.add({
+    var deliveryPromise = runSerializedDelivery(lockKey, async function() {
+      // 1. 获取当前有效微信 userUid
+      var userUid = null;
+      try {
+        var storedUid = localStorage.getItem('wanwan_wechat_uid');
+        if (storedUid) userUid = parseInt(storedUid, 10);
+      } catch (_) {}
+
+      if (!userUid && db.characters) {
+        var userChar = await db.characters.where('type').equals('user').first();
+        if (userChar) userUid = userChar.id;
+      }
+      if (!userUid) userUid = 1; // 兜底全局用户
+
+      // 2. 幂等插入前查重 (同时兼容 clientMessageId / externalEventId / canonicalEventKey)
+      var existingMsg = await findExistingWechatCareMessage(idempotentKey, extraMeta.canonicalOccKey || '');
+      var nowTime = Date.now();
+      if (existingMsg) {
+        return {
+          messageId: existingMsg.id,
+          chatId: existingMsg.chatId,
+          deliveredAt: existingMsg.createdAt || nowTime,
+          alreadyExisted: true
+        };
+      }
+
+      // 3. 定位或创建与该 Char 的私聊会话
+      var chat = await db.chats.where('[ownerUid+charId]').equals([userUid, charId]).first();
+      if (!chat) {
+        var newChatId = await db.chats.add({
+          charId: charId,
+          ownerUid: userUid,
+          createdAt: Date.now(),
+          unread: 0
+        });
+        chat = await db.chats.get(newChatId);
+      }
+
+      var msgId = await db.messages.add({
+        chatId: chat.id,
         charId: charId,
-        ownerUid: userUid,
-        createdAt: Date.now(),
-        unread: 0
+        role: 'assistant',
+        content: text,
+        clientMessageId: idempotentKey,
+        externalEventId: extraMeta.externalEventId || idempotentKey,
+        canonicalEventKey: canonicalEventKey,
+        sourceApp: extraMeta.sourceApp || 'time-calendar',
+        createdAt: nowTime
       });
-      chat = await db.chats.get(newChatId);
-    }
 
-    // 3. 幂等插入消息
-    var nowTime = Date.now();
-    var msgId = await db.messages.add({
-      chatId: chat.id,
-      charId: charId,
-      role: 'assistant',
-      content: text,
-      clientMessageId: idempotentKey,
-      createdAt: nowTime
+      // 4. 更新未读计数与会话状态
+      var isCurrentChat = isChatWindowOpenWithChar(charId);
+      await db.chats.update(chat.id, {
+        unread: isCurrentChat ? 0 : ((chat.unread || 0) + 1),
+        lastMessageTime: nowTime
+      });
+
+      // 5. 刷新前台界面与推送通知
+      if (isCurrentChat) {
+        var cw = document.getElementById('chat-window');
+        if (cw && window.refreshChat) {
+          try { await window.refreshChat(cw, { scrollToBottom: true }); } catch (_) {}
+        }
+      } else {
+        if (window.refreshVisibleWechatChatList) {
+          try { await window.refreshVisibleWechatChatList({ showLoading: false }); } catch (_) {}
+        }
+        // 在应用处于后台或不同窗口时，触发系统级 Web 通知
+        if (window.sendWanWanNotification) {
+          try {
+            var charName = character.nick || character.name || '伴侣';
+            window.sendWanWanNotification(text, {
+              title: charName,
+              tag: 'tc-care-' + idempotentKey,
+              data: {
+                charId: charId,
+                chatId: chat.id
+              }
+            });
+          } catch (_) {}
+        }
+      }
+
+      return {
+        messageId: msgId,
+        chatId: chat.id,
+        deliveredAt: nowTime
+      };
     });
 
-    // 4. 更新未读计数与会话状态
-    var isCurrentChat = isChatWindowOpenWithChar(charId);
-    await db.chats.update(chat.id, {
-      unread: isCurrentChat ? 0 : ((chat.unread || 0) + 1),
-      lastMessageTime: nowTime
-    });
+    _inFlightDeliveryKeys[lockKey] = deliveryPromise;
+    try {
+      return await deliveryPromise;
+    } finally {
+      delete _inFlightDeliveryKeys[lockKey];
+    }
+  }
 
-    // 5. 刷新前台界面与推送通知
-    if (isCurrentChat) {
-      var cw = document.getElementById('chat-window');
-      if (cw && window.refreshChat) {
-        try { await window.refreshChat(cw, { scrollToBottom: true }); } catch (_) {}
+  // 实时复核事件有效性、隐私设置及角色授权 (AI 请求前 & 微信投递前均执行)
+  async function verifyCandidateAuthorization(cand, cid, config, liveChar) {
+    if (!config || !config.globalEnabled) return { ok: false, reason: 'global_disabled' };
+    var charConf = getCharSettings(cid, config);
+    if (!charConf.enabled) return { ok: false, reason: 'char_disabled' };
+    if (!liveChar) return { ok: false, reason: 'char_deleted' };
+
+    if (cand.triggerType === 'anniversary' && !charConf.anniversaryCareEnabled) return { ok: false, reason: 'anniversary_disabled' };
+    if (cand.triggerType === 'exam' && !charConf.examCareEnabled) return { ok: false, reason: 'exam_disabled' };
+    if (cand.triggerType === 'focus' && !charConf.focusCareEnabled) return { ok: false, reason: 'focus_disabled' };
+    if (cand.triggerType === 'general' && !charConf.generalScheduleCareEnabled) return { ok: false, reason: 'general_disabled' };
+
+    // 实时校验底层权威源是否仍然有效且允许被该 Char 感知
+    var identity = resolveCanonicalSourceIdentity(cand);
+    if (identity.sourceApp === 'time-calendar') {
+      var allEvents = await loadConfig('time_calendar_events', []);
+      var liveEv = allEvents.find(function(e) { return e && String(e.id) === String(cand.sourceId || cand.eventId); });
+      if (!liveEv || liveEv.completed || liveEv.status === 'cancelled') return { ok: false, reason: 'event_inactive' };
+      if (liveEv.visibility === 'private' || liveEv.companionEnabled === false) return { ok: false, reason: 'event_private' };
+    } else if (identity.sourceApp === 'love-diary' && cand.triggerType === 'anniversary') {
+      if (window.TimeCalendarIntegrations && window.TimeCalendarIntegrations.loveDiary) {
+        var anList = await window.TimeCalendarIntegrations.loveDiary.getAnniversaries(cid, [liveChar]);
+        if (!anList.some(function(a) { return String(a.charId) === String(cid) && a.startDate; })) {
+          return { ok: false, reason: 'anniversary_removed' };
+        }
       }
-    } else {
-      if (window.refreshVisibleWechatChatList) {
-        try { await window.refreshVisibleWechatChatList({ showLoading: false }); } catch (_) {}
-      }
-      // 在应用处于后台或不同窗口时，触发系统级 Web 通知
-      if (window.sendWanWanNotification) {
-        try {
-          var charName = character.nick || character.name || '伴侣';
-          window.sendWanWanNotification(text, {
-            title: charName,
-            tag: 'tc-care-' + idempotentKey,
-            data: {
-              charId: charId,
-              chatId: chat.id
-            }
-          });
-        } catch (_) {}
+    } else if (identity.sourceApp === 'study-room' && cand.triggerType === 'exam') {
+      if (window.TimeCalendarIntegrations && window.TimeCalendarIntegrations.studyRoom) {
+        var exams = await window.TimeCalendarIntegrations.studyRoom.getExams();
+        var liveEx = exams.find(function(e) { return e && String(e.id) === String(identity.rawSourceId); });
+        if (!liveEx || liveEx.completed || liveEx.status === 'cancelled') return { ok: false, reason: 'exam_inactive' };
+        if (liveEx.charId && String(liveEx.charId) !== String(cid)) return { ok: false, reason: 'exam_char_mismatch' };
       }
     }
-
-    return {
-      messageId: msgId,
-      chatId: chat.id,
-      deliveredAt: nowTime
-    };
+    return { ok: true };
   }
 
   // ==========================================
@@ -596,9 +928,19 @@
 
         for (var j = 0; j < candidates.length; j++) {
           var cand = candidates[j];
+          var identity = resolveCanonicalSourceIdentity(cand);
           var idempotentKey = cid + '_' + (cand.eventId || cand.sourceId) + '_' + cand.occurrenceDate + '_' + cand.triggerStage;
 
-          // 1. 检查幂等去重
+          // 0. 过期旧日程跳过 (如 Android 前台恢复时避免对已过期的历史日程补发突兀提醒)
+          if (cand.occurrenceDate && cand.occurrenceDate < todayStr) {
+            continue;
+          }
+
+          // 1. 检查长期幂等去重索引与跨模块人生游戏协同索引
+          var isDup = await isAlreadyHandledCrossModule(idempotentKey, cand);
+          if (isDup) {
+            continue;
+          }
           var existingRecord = allRecords.find(function(r) { return r.idempotentKey === idempotentKey; });
           if (existingRecord && existingRecord.status === 'delivered') {
             continue; // 已发送，绝不重复
@@ -655,47 +997,105 @@
             continue;
           }
 
-          // 4. 调用 AI 生成关怀文案
-          var careText = '';
-          try {
-            careText = await generateCareMessage(charObj, cand);
-          } catch (aiErr) {
-            console.warn('[TimeCalendarCompanion] AI 关怀生成失败 (不影响核心业务):', aiErr);
-            allRecords.unshift({
-              careId: uid('care'),
-              idempotentKey: idempotentKey,
-              charId: cid,
-              charName: charObj.name,
-              sourceApp: cand.sourceApp,
-              sourceId: cand.sourceId,
-              eventId: cand.eventId,
-              eventTitle: cand.eventTitle,
-              occurrenceDate: cand.occurrenceDate,
-              triggerType: cand.triggerType,
-              triggerStage: cand.triggerStage,
-              status: 'failed',
-              error: aiErr.message || 'AI 生成异常',
-              createdAt: Date.now()
-            });
-            await saveCareRecords(allRecords);
+          // 4. 前置授权与事件有效性检查 (AI 请求发起前)
+          var liveCharPre = await db.characters.get(Number(cid));
+          var preAuth = await verifyCandidateAuthorization(cand, cid, config, liveCharPre);
+          if (!preAuth.ok) {
             continue;
+          }
+
+          // 5. 生成关怀文案 (AI 优先，失败时根据用户设置回退至标明【心意寄语】的离线模板)
+          var careText = '';
+          var isOfflineFallback = false;
+          if (config.allowAiGeneration) {
+            try {
+              careText = await generateCareMessage(charObj, cand);
+            } catch (aiErr) {
+              console.warn('[TimeCalendarCompanion] AI 关怀生成失败 (尝试离线模板兜底):', aiErr);
+            }
+          }
+
+          // 仅在主动陪伴总授权 + 离线模板设置均允许时，才允许使用离线模板
+          if (!careText) {
+            var latestConfForTpl = await getCompanionSettings();
+            if (latestConfForTpl.globalEnabled && getCharSettings(cid, latestConfForTpl).enabled && latestConfForTpl.allowOfflineFallback !== false) {
+              careText = getOfflineCareTemplate(charObj, cand, { config: latestConfForTpl, charId: cid });
+              isOfflineFallback = !!careText;
+            }
+            if (!careText) {
+              allRecords.unshift({
+                careId: uid('care'),
+                idempotentKey: idempotentKey,
+                charId: cid,
+                charName: charObj.name,
+                sourceApp: cand.sourceApp,
+                sourceId: cand.sourceId,
+                eventId: cand.eventId,
+                eventTitle: cand.eventTitle,
+                occurrenceDate: cand.occurrenceDate,
+                triggerType: cand.triggerType,
+                triggerStage: cand.triggerStage,
+                status: 'failed',
+                error: 'AI 生成未成功且用户未开启离线模板或授权已关闭',
+                createdAt: Date.now()
+              });
+              await saveCareRecords(allRecords);
+              continue;
+            }
           }
 
           if (!careText) continue;
 
-          // 5. 投递至微信
+          // 6. 二次完整授权与环境安全校验 (AI 返回后、微信消息落库前)
+          var freshConfig = await getCompanionSettings();
+          if (!freshConfig.globalEnabled || !freshConfig.allowWechatDelivery) {
+            console.log('[TimeCalendarCompanion] 投递前校验：总开关或微信投递授权已关闭，中止微信投递');
+            continue;
+          }
+          if (isNowInQuietHours(freshConfig) || isUserFocusingInStudyRoom()) {
+            console.log('[TimeCalendarCompanion] 投递前校验：已进入免打扰时段或用户开始自习专注，中止微信投递');
+            continue;
+          }
+          var liveCharPost = await db.characters.get(Number(cid));
+          var postAuth = await verifyCandidateAuthorization(cand, cid, freshConfig, liveCharPost);
+          if (!postAuth.ok) {
+            console.log('[TimeCalendarCompanion] 投递前校验未通过(' + postAuth.reason + ')，中止微信投递');
+            continue;
+          }
+
+          // 7. 投递至微信并记录到长期幂等持久化索引
           try {
-            var delRes = await deliverCareMessageToWechat(charObj, careText, idempotentKey);
-            charConf.lastTriggeredAt = Date.now();
-            config.chars[cid] = charConf;
-            await saveCompanionSettings(config);
+            var canonOccKey = identity.canonicalKey ? ('canon_' + cid + '_' + identity.canonicalKey + '_' + cand.occurrenceDate + '_' + cand.triggerStage) : '';
+            var delRes = await deliverCareMessageToWechat(charObj, careText, idempotentKey, {
+              sourceApp: identity.sourceApp,
+              externalEventId: identity.canonicalKey || idempotentKey,
+              canonicalEventKey: identity.canonicalKey,
+              canonicalOccKey: canonOccKey
+            });
+            var freshCharConf = getCharSettings(cid, freshConfig);
+            freshCharConf.lastTriggeredAt = Date.now();
+            freshConfig.chars[cid] = freshCharConf;
+            await saveCompanionSettings(freshConfig);
 
             charDeliveredToday++;
             charDeliveredWeek++;
 
+            // 写入长期持久化去重索引 (永不被 150 条日志清理影响)
+            await recordDedupIndex(idempotentKey, {
+              charId: cid,
+              charName: charObj.name,
+              eventId: cand.eventId,
+              eventTitle: cand.eventTitle,
+              canonicalEventKey: identity.canonicalKey,
+              deliveredAt: delRes.deliveredAt,
+              isOfflineFallback: isOfflineFallback,
+              status: 'delivered'
+            }, cand);
+
             allRecords.unshift({
               careId: uid('care'),
               idempotentKey: idempotentKey,
+              canonicalEventKey: identity.canonicalKey,
               charId: cid,
               charName: charObj.name,
               sourceApp: cand.sourceApp,
@@ -706,6 +1106,7 @@
               triggerType: cand.triggerType,
               triggerStage: cand.triggerStage,
               status: 'delivered',
+              isOfflineFallback: isOfflineFallback,
               generatedText: careText,
               deliveredMessageId: delRes.messageId,
               deliveredAt: delRes.deliveredAt,
@@ -990,12 +1391,15 @@
               '<span class="tc-slider"></span>' +
             '</label>' +
           '</div>' +
-          '<div style="display: flex; gap: 12px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--c-border); font-size: 11px;">' +
+          '<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--c-border); font-size: 11px;">' +
             '<label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">' +
               '<input type="checkbox" id="tc-comp-wechat-toggle" ' + (config.allowWechatDelivery ? 'checked' : '') + '> 投递微信消息' +
             '</label>' +
             '<label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">' +
               '<input type="checkbox" id="tc-comp-ai-toggle" ' + (config.allowAiGeneration ? 'checked' : '') + '> 启用 AI 拟真生成' +
+            '</label>' +
+            '<label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">' +
+              '<input type="checkbox" id="tc-comp-offline-toggle" ' + (config.allowOfflineFallback !== false ? 'checked' : '') + '> 允许离线【心意寄语】模板备用' +
             '</label>' +
           '</div>' +
         '</div>' +
@@ -1124,6 +1528,8 @@
         config.globalEnabled = overlay.querySelector('#tc-comp-global-toggle').checked;
         config.allowWechatDelivery = overlay.querySelector('#tc-comp-wechat-toggle').checked;
         config.allowAiGeneration = overlay.querySelector('#tc-comp-ai-toggle').checked;
+        var offToggle = overlay.querySelector('#tc-comp-offline-toggle');
+        if (offToggle) config.allowOfflineFallback = offToggle.checked;
         config.quietHoursStart = overlay.querySelector('#tc-comp-quiet-start').value;
         config.quietHoursEnd = overlay.querySelector('#tc-comp-quiet-end').value;
         config.allowPersonalEventsFor = overlay.querySelector('#tc-comp-personal-policy').value;
@@ -1206,7 +1612,14 @@
     showSettingsModal: showCompanionSettingsModal,
     showGreetingCard: showGreetingCardModal,
     generateGreetingCard: getOrGenerateAnniversaryGreetingCard,
-    getRecords: loadCareRecords
+    getRecords: loadCareRecords,
+    getDedupIndex: loadDedupIndex,
+    recordDedupIndex: recordDedupIndex,
+    isAlreadyHandledCrossModule: isAlreadyHandledCrossModule,
+    resolveCanonicalSourceIdentity: resolveCanonicalSourceIdentity,
+    deliverCareMessageToWechat: deliverCareMessageToWechat,
+    verifyCandidateAuthorization: verifyCandidateAuthorization,
+    getOfflineCareTemplate: getOfflineCareTemplate
   };
 
   // 自动启动

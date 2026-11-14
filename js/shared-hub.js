@@ -45,6 +45,20 @@
     } catch (_) {}
   }
 
+  async function runConfigTransaction(fn) {
+    if (window.db && db.config && typeof db.transaction === 'function') {
+      try {
+        return await db.transaction('rw', db.config, function() {
+          return fn();
+        });
+      } catch (e) {
+        // Fallback when mock db or unsupported transaction environment
+        if (e && e.message && e.message.indexOf('transaction') === -1) throw e;
+      }
+    }
+    return await fn();
+  }
+
   function uid(prefix) {
     return (prefix || 'hub') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
   }
@@ -89,13 +103,15 @@
       return { all: all, record: all[today] };
     },
 
-    // 串行队列防止高并发重入
+    // 串行队列 + 跨标签事务 CAS 防护并发重入
     async validateAndGrant(eventId, expRequested, coinsRequested, focusMins) {
       var self = this;
       return new Promise(function(resolve, reject) {
         _guardQueue = _guardQueue.then(async function() {
           try {
-            var res = await self._doValidateAndGrant(eventId, expRequested, coinsRequested, focusMins);
+            var res = await runConfigTransaction(function() {
+              return self._doValidateAndGrant(eventId, expRequested, coinsRequested, focusMins);
+            });
             resolve(res);
           } catch (e) {
             reject(e);
@@ -108,6 +124,7 @@
       var ctx = await this.getTodayRecord();
       var rec = ctx.record;
       var all = ctx.all;
+      var baseRev = Number(all._rev) || 0;
 
       // 1. 重复事件去重 (同时核查今日与全域持久化事件池)
       if (eventId) {
@@ -129,6 +146,27 @@
       var actualExp = Math.min(expRequested || 0, expAvailable);
       var actualCoins = Math.min(coinsRequested || 0, coinsAvailable);
 
+      // 3. 写入前乐观版本核查（防止跨 Tab/WebView 并发修改冲突）
+      var latestAll = await loadStorage(STORAGE_REWARD_GUARD, null);
+      if (latestAll && (Number(latestAll._rev) || 0) !== baseRev) {
+        var today = getTodayStr();
+        var latestRec = latestAll[today] || { date: today, expEarned: 0, coinsEarned: 0, focusMinutesRewarded: 0, processedEventIds: [] };
+        if (eventId && (latestRec.processedEventIds.indexOf(eventId) !== -1 || (latestAll._globalEventIds && latestAll._globalEventIds.indexOf(eventId) !== -1))) {
+          return {
+            allowed: false,
+            reason: 'DUPLICATE_EVENT',
+            expGranted: 0,
+            coinsGranted: 0,
+            msg: '该事件奖励已领取，不可重复入账'
+          };
+        }
+        all = latestAll;
+        rec = latestRec;
+        all[today] = rec;
+        actualExp = Math.min(expRequested || 0, Math.max(0, DAILY_LIMITS.MAX_EXP_PER_DAY - rec.expEarned));
+        actualCoins = Math.min(coinsRequested || 0, Math.max(0, DAILY_LIMITS.MAX_COINS_PER_DAY - rec.coinsEarned));
+      }
+
       rec.expEarned += actualExp;
       rec.coinsEarned += actualCoins;
       if (focusMins) {
@@ -141,8 +179,9 @@
           all._globalEventIds.push(eventId);
         }
       }
+      all._rev = (Number(all._rev) || 0) + 1;
 
-      await saveStorage(STORAGE_REWARD_GUARD, ctx.all);
+      await saveStorage(STORAGE_REWARD_GUARD, all);
 
       return {
         allowed: true,
@@ -164,13 +203,23 @@
     RewardGuard: RewardGuard,
 
     on: function(event, callback) {
+      if (typeof callback !== 'function') return;
       if (!_eventListeners[event]) _eventListeners[event] = [];
-      _eventListeners[event].push(callback);
+      if (_eventListeners[event].indexOf(callback) === -1) {
+        _eventListeners[event].push(callback);
+      }
     },
 
     off: function(event, callback) {
       if (!_eventListeners[event]) return;
       _eventListeners[event] = _eventListeners[event].filter(function(cb) { return cb !== callback; });
+    },
+
+    listenerCount: function(event) {
+      if (event) return (_eventListeners[event] || []).length;
+      return Object.keys(_eventListeners).reduce(function(sum, k) {
+        return sum + (_eventListeners[k] ? _eventListeners[k].length : 0);
+      }, 0);
     },
 
     emit: async function(event, data) {
@@ -835,8 +884,8 @@
       category: 'bond',
       desc: '第一次与角色发送消息，开启彼此羁绊',
       points: 100,
-      unlocked: true,
-      unlockedAt: Date.now() - 86400000 * 2
+      unlocked: false,
+      unlockedAt: null
     },
     {
       id: 'badge_focus_novice',
@@ -845,8 +894,8 @@
       category: 'study',
       desc: '在陪伴自习室完成任意一次有效专注',
       points: 150,
-      unlocked: true,
-      unlockedAt: Date.now() - 86400000
+      unlocked: false,
+      unlockedAt: null
     },
     {
       id: 'badge_focus_master_45',
@@ -892,7 +941,7 @@
       id: 'badge_calendar_chronos',
       name: '光阴旅者',
       icon: 'fa-solid fa-calendar-check',
-      category: 'life',
+      category: 'time',
       desc: '在时光日历规划并完成 3 个心动日程',
       points: 200,
       unlocked: false,
@@ -902,7 +951,7 @@
       id: 'badge_farm_greenthumb',
       name: '田园牧歌',
       icon: 'fa-solid fa-wheat-awn',
-      category: 'farm',
+      category: 'special',
       desc: '在弯弯农场收获第一批丰硕的作物',
       points: 200,
       unlocked: false,
@@ -912,11 +961,11 @@
       id: 'badge_parallel_architect',
       name: '平行宇宙操盘手',
       icon: 'fa-solid fa-earth-americas',
-      category: 'parallel',
+      category: 'special',
       desc: '在平行来信开启第一个独立 IF 宇宙剧场',
       points: 250,
-      unlocked: true,
-      unlockedAt: Date.now() - 3600000
+      unlocked: false,
+      unlockedAt: null
     },
     {
       id: 'badge_love_devotion',
@@ -932,60 +981,105 @@
       id: 'badge_browser_co_reader',
       name: '同游书海',
       icon: 'fa-solid fa-compass',
-      category: 'browser',
+      category: 'special',
       desc: '与伴侣在弯弯浏览器共同研读超过 3 篇网页',
       points: 180,
       unlocked: false,
       unlockedAt: null
-    },
-    {
-      id: 'badge_deep_night_whisper',
-      name: '心弦共振',
-      icon: 'fa-solid fa-moon',
-      category: 'bond',
-      desc: '在夜深 2 点依然与 Ta 促膝长谈',
-      points: 200,
-      unlocked: false,
-      unlockedAt: null
     }
   ];
+
+  var _achSvcQueue = Promise.resolve();
 
   var AchievementService = {
     async getState() {
       var state = await loadStorage(STORAGE_ACHIEVEMENT_STATE, null);
       if (!state) {
         state = {
+          schemaVersion: 2,
+          ruleVersion: 2,
           equippedTitle: '初涉尘寰的旅人',
-          badges: DEFAULT_BADGES,
+          badges: DEFAULT_BADGES.map(function(b) { return Object.assign({}, b); }),
           fragments: [
-            { id: 'frag_1', title: '午后自习阳光', pieceCurrent: 3, pieceTotal: 4, unlocked: false, desc: '在图书馆窗前并肩做笔记的静谧剪影' },
-            { id: 'frag_2', title: '夏夜星空烟火', pieceCurrent: 4, pieceTotal: 4, unlocked: true, desc: '那一年海边绽放的灿烂天际线' },
-            { id: 'frag_3', title: '平行世界的回响', pieceCurrent: 2, pieceTotal: 4, unlocked: false, desc: '跨越千万光年的执念信笺' }
+            { id: 'frag_1', title: '午后自习阳光', pieceCurrent: 0, pieceTotal: 4, unlocked: false, desc: '在图书馆窗前并肩做笔记的静谧剪影' },
+            { id: 'frag_2', title: '夏夜星空烟火', pieceCurrent: 0, pieceTotal: 4, unlocked: false, desc: '那一年海边绽放的灿烂天际线' },
+            { id: 'frag_3', title: '平行世界的回响', pieceCurrent: 0, pieceTotal: 4, unlocked: false, desc: '跨越千万光年的执念信笺' }
           ],
-          totalScore: 700
+          unlockRecords: {},
+          charScopedUnlocks: {},
+          processedEvents: {},
+          totalScore: 0
         };
         await saveStorage(STORAGE_ACHIEVEMENT_STATE, state);
       }
+      if (!Array.isArray(state.badges)) state.badges = [];
+      if (!state.unlockRecords || typeof state.unlockRecords !== 'object') state.unlockRecords = {};
+      if (!state.charScopedUnlocks || typeof state.charScopedUnlocks !== 'object') state.charScopedUnlocks = {};
+      if (!state.processedEvents || typeof state.processedEvents !== 'object') state.processedEvents = {};
       return state;
     },
 
-    async checkAndUnlockBadge(badgeId) {
-      var state = await this.getState();
-      var b = state.badges.find(function(item) { return item.id === badgeId; });
-      if (!b || b.unlocked) return false;
+    async checkAndUnlockBadge(badgeId, options) {
+      if (!badgeId || badgeId === 'badge_deep_night_whisper' || badgeId === 'badge_dawn_challenge') return false;
+      options = options || {};
 
-      b.unlocked = true;
-      b.unlockedAt = Date.now();
-      state.totalScore += (b.points || 100);
-      await saveStorage(STORAGE_ACHIEVEMENT_STATE, state);
+      // 若成就馆 Phase 2 引擎已加载，统一走串行队列与幂等记录写入，确保单一写入入口
+      if (global.AchievementHall && typeof global.AchievementHall.unlockAchievement === 'function') {
+        var hallRes = await global.AchievementHall.unlockAchievement(badgeId, options);
+        if (hallRes && hallRes.ok) {
+          var defMeta = global.AchievementHall.getDefinition ? global.AchievementHall.getDefinition(badgeId) : null;
+          if (!options.silent && defMeta) {
+            this._showUnlockToast({ name: defMeta.name, points: defMeta.points || 100 });
+          }
+          return true;
+        }
+        return false;
+      }
 
-      // 解锁广播与提示
-      WanwanSharedHub.emit('ACHIEVEMENT_UNLOCKED', { badge: b, totalScore: state.totalScore });
-      this._showUnlockToast(b);
-      return true;
+      var self = this;
+      return new Promise(function(resolve) {
+        _achSvcQueue = _achSvcQueue.then(async function() {
+          try {
+            var state = await self.getState();
+            var b = state.badges.find(function(item) { return item.id === badgeId; });
+            if (!b) return resolve(false);
+            if (b.unlocked || (state.unlockRecords[badgeId] && state.unlockRecords[badgeId].unlocked)) {
+              return resolve(false);
+            }
+
+            var now = Date.now();
+            b.unlocked = true;
+            b.unlockedAt = now;
+            state.unlockRecords[badgeId] = {
+              achievementId: badgeId,
+              unlocked: true,
+              unlockedAt: now,
+              occurredAt: options.occurredAt || now,
+              unlockCount: 1,
+              ruleVersionAtUnlock: 1,
+              favorite: Boolean(state.unlockRecords[badgeId] && state.unlockRecords[badgeId].favorite),
+              sourceApp: options.sourceApp || (b.category || ''),
+              charId: options.charId ? String(options.charId) : null,
+              backfilled: Boolean(options.backfilled)
+            };
+            state.totalScore = (Number(state.totalScore) || 0) + (b.points || 100);
+            await saveStorage(STORAGE_ACHIEVEMENT_STATE, state);
+
+            WanwanSharedHub.emit('ACHIEVEMENT_UNLOCKED', { badge: b, totalScore: state.totalScore });
+            if (!options.silent) self._showUnlockToast(b);
+            resolve(true);
+          } catch (e) {
+            console.warn('[AchievementService] unlock error:', e);
+            resolve(false);
+          }
+        });
+      });
     },
 
     async equipTitle(title) {
+      if (global.AchievementHall && typeof global.AchievementHall.equipTitle === 'function') {
+        return await global.AchievementHall.equipTitle(title);
+      }
       var state = await this.getState();
       state.equippedTitle = title;
       await saveStorage(STORAGE_ACHIEVEMENT_STATE, state);
@@ -994,7 +1088,7 @@
     },
 
     _showUnlockToast(badge) {
-      if (window.toast) {
+      if (window.toast && badge) {
         window.toast('🏆 解锁成就勋章：【' + badge.name + '】！获得 +' + badge.points + ' 点荣誉点');
       }
     }
@@ -1144,8 +1238,14 @@
   // → 成就馆判断徽章 → Char 生成符合模式的反馈。各 App 不重复计时、记账或发奖。
   // ====================================================
   WanwanSharedHub.on('FOCUS_SESSION_COMPLETED', async function(payload) {
+    if (!payload || payload.cancelled || payload.aborted || payload.status === 'cancelled' || payload.status === 'paused') {
+      return;
+    }
+    var duration = Number(payload.durationMinutes) || 0;
+    if (duration <= 0) {
+      return;
+    }
     console.log('[SharedHub Linkage] Handling FOCUS_SESSION_COMPLETED:', payload);
-    var duration = payload.durationMinutes || 0;
     var taskName = payload.taskName || '日常专注';
     var studyMode = payload.studyMode || 'gentle';
     var char = payload.companionChar || (await RoleWorldbookService.getActiveCharacter());
@@ -1161,7 +1261,7 @@
 
     // 1. 人生游戏更新任务与经验 (防刷每日上限)
     var expToGrant = Math.min(60, Math.round(duration * 1.2));
-    var lifeResult = await LifeGameService.addExpAndStats(
+    await LifeGameService.addExpAndStats(
       expToGrant,
       { INT: 2, WIL: 1 },
       '陪伴自习室专注 ' + duration + ' 分钟',
@@ -1173,20 +1273,24 @@
       await LifeGameService.updateQuestProgress('quest_study_focus_30', duration);
     }
 
-    // 2. 成就馆判断徽章
-    if (duration >= 45) {
-      await AchievementService.checkAndUnlockBadge('badge_focus_master_45');
-    }
-    await AchievementService.checkAndUnlockBadge('badge_focus_novice');
-
-    // 检查累计时长是否突破 100 分钟
-    try {
-      var srRecords = await loadStorage('wanwan_study_records', []);
-      var totalMinutes = srRecords.reduce(function(sum, r) { return sum + (r.durationMinutes || 0); }, 0);
-      if (totalMinutes >= 100) {
-        await AchievementService.checkAndUnlockBadge('badge_focus_century');
+    // 2. 成就馆判断徽章（若 AchievementHall 已加载，由其统一事件引擎在同一个事件订阅周期中权威判定，避免双重检查）
+    if (!global.AchievementHall || typeof global.AchievementHall.ingestEvent !== 'function') {
+      if (duration >= 45) {
+        await AchievementService.checkAndUnlockBadge('badge_focus_master_45');
       }
-    } catch (_) {}
+      await AchievementService.checkAndUnlockBadge('badge_focus_novice');
+
+      try {
+        var srRecords = await loadStorage('wanwan_study_records', []);
+        var totalMinutes = srRecords.reduce(function(sum, r) {
+          if (!r || r.cancelled || r.aborted || r.status === 'cancelled' || r.status === 'paused') return sum;
+          return sum + Math.max(0, Number(r.durationMinutes) || 0);
+        }, 0);
+        if (totalMinutes >= 100) {
+          await AchievementService.checkAndUnlockBadge('badge_focus_century');
+        }
+      } catch (_) {}
+    }
 
     // 3. 生成符合当前角色人设与模式的专属反馈
     var feedback = RoleWorldbookService.generateFocusFeedback(char, studyMode, duration, taskName);

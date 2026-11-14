@@ -159,7 +159,7 @@
         targetDate: (function() {
           var d = new Date();
           d.setDate(d.getDate() + 30);
-          return d.toISOString().slice(0, 10);
+          return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
         })(),
         status: 'active',
         milestones: [
@@ -176,7 +176,7 @@
         targetDate: (function() {
           var d = new Date();
           d.setDate(d.getDate() + 60);
-          return d.toISOString().slice(0, 10);
+          return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
         })(),
         status: 'active',
         milestones: [
@@ -406,6 +406,30 @@
         // 4. 留存历史审计记录
         await this.recordTaskHistory(task);
 
+        // 5. 阶段 4 深度联动：属性轨迹、冒险手账、纪念卡与伴侣祝贺
+        if (window.LifeGameCompanion) {
+          try {
+            await window.LifeGameCompanion.onTaskClaimed(task, expResult);
+          } catch (compErr) {
+            console.warn('[LifeGame] LifeGameCompanion.onTaskClaimed error:', compErr);
+          }
+        }
+
+        // 6. 成就馆 1.0 Phase 2：标准来源事件联动
+        if (window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+          try {
+            await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+              eventId: 'lg_task_claim_' + task.id,
+              eventType: 'task_claimed',
+              sourceApp: 'life-game',
+              sourceRecordId: task.id,
+              occurrenceKey: task.id,
+              occurredAt: task.claimedAt || Date.now(),
+              payload: { category: task.category || 'daily' }
+            });
+          } catch (_) {}
+        }
+
         return {
           success: true,
           expGranted: guard.expGranted,
@@ -494,6 +518,49 @@
           );
         }
 
+        // 阶段 4 深度联动：属性轨迹与冒险手账记账
+        if (window.LifeGameCompanion) {
+          try {
+            if (habit.statBonus) {
+              await window.LifeGameCompanion.PlayerProfile.recordStatGain(
+                habit.statBonus,
+                '习惯打卡：' + habit.name,
+                'habit',
+                'habit_stat_' + eventId
+              );
+            }
+            await window.LifeGameCompanion.Journal.recordEvent({
+              type: 'habit',
+              category: 'habit',
+              eventId: 'jnl_' + eventId,
+              title: '习惯打卡：' + habit.name,
+              desc: '坚持连续打卡 ' + habit.streak + ' 天',
+              meta: { streak: habit.streak, exp: guard.expGranted },
+              tags: ['日常习惯', habit.streak >= 7 ? '连胜突破' : '每日打卡']
+            });
+            if (expResult && expResult.leveledUp) {
+              await window.LifeGameCompanion.onLevelUp(expResult.newLevel);
+            }
+            await window.LifeGameCompanion.Achievements.checkAutoUnlocks({ type: 'habit_checkin', habit: habit });
+          } catch (compErr) {
+            console.warn('[LifeGame] LifeGameCompanion habit hook error:', compErr);
+          }
+        }
+
+        if (window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+          try {
+            await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+              eventId: 'lg_habit_' + habit.id + '_' + today,
+              eventType: 'habit_checkin',
+              sourceApp: 'life-game',
+              sourceRecordId: habit.id,
+              occurrenceKey: habit.id + '#' + today,
+              occurredAt: Date.now(),
+              payload: { streak: habit.streak }
+            });
+          } catch (_) {}
+        }
+
         return {
           success: true,
           streak: habit.streak,
@@ -530,67 +597,71 @@
         var newlySettledCount = 0;
         var totalExpGranted = 0;
         var totalCoinsGranted = 0;
+        var allocatedTasksCount = 0;
 
         for (var i = 0; i < srRecords.length; i++) {
           var rec = srRecords[i];
           var recId = rec.id || ('sr_rec_' + (rec.timestamp || rec.date || i));
+          var duration = Number(rec.durationMinutes) || 0;
+          if (duration <= 0) continue;
+
+          // ----------------------------------------------------
+          // 步骤 1: 独立判定基础经验核销 (life_game_records_settled_v1)
+          // ----------------------------------------------------
           if (settledList.indexOf(recId) === -1) {
-            var duration = Number(rec.durationMinutes) || 0;
-            if (duration > 0) {
-              var eventId = 'study_record_' + recId;
-              var expReq = Math.round(duration * 1.2);
-              var coinsReq = Math.round(duration * 0.5);
+            var eventId = 'study_record_' + recId;
+            var expReq = Math.round(duration * 1.2);
+            var coinsReq = Math.round(duration * 0.5);
 
-              var guard = window.WanwanSharedHub && window.WanwanSharedHub.RewardGuard ?
-                await window.WanwanSharedHub.RewardGuard.validateAndGrant(eventId, expReq, coinsReq, duration) :
-                { allowed: true, expGranted: expReq, coinsGranted: coinsReq };
+            var guard = window.WanwanSharedHub && window.WanwanSharedHub.RewardGuard ?
+              await window.WanwanSharedHub.RewardGuard.validateAndGrant(eventId, expReq, coinsReq, duration) :
+              { allowed: true, expGranted: expReq, coinsGranted: coinsReq };
 
-              if (guard.allowed) {
-                totalExpGranted += guard.expGranted;
-                totalCoinsGranted += guard.coinsGranted;
-                newlySettledMinutes += duration;
-                newlySettledCount++;
+            if (guard.allowed) {
+              totalExpGranted += guard.expGranted;
+              totalCoinsGranted += guard.coinsGranted;
+              newlySettledMinutes += duration;
+              newlySettledCount++;
 
-                if (window.LifeGameService && guard.expGranted > 0) {
-                  await window.LifeGameService.addExpAndStats(
-                    guard.expGranted,
-                    { INT: Math.max(1, Math.round(duration / 25)), WIL: Math.max(1, Math.round(duration / 35)) },
-                    '自习室专注 ' + duration + ' 分钟',
-                    eventId,
-                    { alreadyValidated: true }
-                  );
-                }
-
-                if (window.SharedEconomyService && guard.coinsGranted > 0) {
-                  await window.SharedEconomyService.addCoins(guard.coinsGranted, '自习室专注结算收益', 'studyRoom');
-                }
+              if (window.LifeGameService && guard.expGranted > 0) {
+                await window.LifeGameService.addExpAndStats(
+                  guard.expGranted,
+                  { INT: Math.max(1, Math.round(duration / 25)), WIL: Math.max(1, Math.round(duration / 35)) },
+                  '自习室专注 ' + duration + ' 分钟',
+                  eventId,
+                  { alreadyValidated: true }
+                );
               }
 
-              await this.addSettledStudyRecordId(recId);
-              settledList.push(recId);
+              if (window.SharedEconomyService && guard.coinsGranted > 0) {
+                await window.SharedEconomyService.addCoins(guard.coinsGranted, '自习室专注结算收益', 'studyRoom');
+              }
+            }
+
+            await this.addSettledStudyRecordId(recId);
+            settledList.push(recId);
+          }
+
+          // ----------------------------------------------------
+          // 步骤 2: 独立判定学习任务进度分配 (安全分配引擎，严禁乱塞给最新任务)
+          // ----------------------------------------------------
+          if (window.LifeGameIntegrations && window.LifeGameIntegrations.focusSession) {
+            var allocRes = await window.LifeGameIntegrations.focusSession.allocateFocusRecord({
+              recordId: recId,
+              durationMinutes: duration,
+              taskName: rec.name || rec.taskName || '',
+              todoId: rec.todoId || null,
+              taskId: rec.taskId || null,
+              charId: rec.companionCharId || rec.charId || null
+            });
+            if (allocRes && allocRes.status === 'allocated') {
+              allocatedTasksCount++;
             }
           }
         }
 
-        if (newlySettledMinutes === 0) {
-          return { syncedCount: 0, totalMinutes: 0, expGranted: 0, msg: '所有专注记录已完成结算，无需重复入账' };
-        }
-
-        // 推进自习相关委托任务
-        var tasks = await this.getTasks();
-        var taskChanged = false;
-        var pendingStudyTask = tasks.find(function(t) { return t.category === 'study' && t.status === 'pending'; });
-        if (pendingStudyTask) {
-          var targetMins = pendingStudyTask.targetMinutes || 30;
-          pendingStudyTask.accumulatedMinutes = (pendingStudyTask.accumulatedMinutes || 0) + newlySettledMinutes;
-          if (pendingStudyTask.accumulatedMinutes >= targetMins) {
-            pendingStudyTask.status = 'completed';
-            pendingStudyTask.completedAt = Date.now();
-          }
-          taskChanged = true;
-        }
-        if (taskChanged) {
-          await this.saveTasks(tasks);
+        if (newlySettledCount === 0 && allocatedTasksCount === 0) {
+          return { syncedCount: 0, totalMinutes: 0, expGranted: 0, msg: '所有专注记录已完成核销与分配，无需重复处理' };
         }
 
         return {
@@ -598,7 +669,10 @@
           totalMinutes: newlySettledMinutes,
           expGranted: totalExpGranted,
           coinsGranted: totalCoinsGranted,
-          msg: '成功同步 ' + newlySettledCount + ' 条记录（共 ' + newlySettledMinutes + ' 分钟），入账 +' + totalExpGranted + ' EXP！'
+          allocatedTasksCount: allocatedTasksCount,
+          msg: newlySettledCount > 0 ?
+            ('成功结算 ' + newlySettledCount + ' 条专注流水（+' + totalExpGranted + ' EXP），推进了 ' + allocatedTasksCount + ' 项关联委托！') :
+            ('已将专注进度对齐至 ' + allocatedTasksCount + ' 项关联委托！')
         };
       } finally {
         delete _inFlightClaimLocks[lockKey];
@@ -609,6 +683,8 @@
   // ===== 5. UI 渲染与交互架构 (LifeGameApp) =====
   var _activeTab = 'profile'; // profile | tasks | habits | goals | achievements | history
   var _taskFilter = 'all';    // all | pending | completed | study
+  var _achFilter = 'all';     // all | origin | study | habit | main | growth | special
+  var _journalFilter = 'all'; // all | quest | level_up | milestone | habit | note | memento_card
 
   var LifeGameApp = {
     async open(options) {
@@ -644,7 +720,17 @@
       }
     },
 
+    getViewState() {
+      return {
+        activeTab: _activeTab,
+        taskFilter: _taskFilter
+      };
+    },
+
     close() {
+      if (global.closePage) {
+        try { global.closePage('life-game-page'); } catch (_) {}
+      }
       var el = document.getElementById('life-game-page');
       if (el) el.remove();
     },
@@ -663,12 +749,23 @@
       var reqExp = window.LifeGameService ? window.LifeGameService.getExpToNextLevel(lifeState.level) : 1000;
       var expPercent = Math.min(100, Math.round((lifeState.exp / reqExp) * 100));
 
+      var retCtx = (global.TimeCalendarIntegrations && typeof global.TimeCalendarIntegrations.peekReturnContext === 'function')
+        ? global.TimeCalendarIntegrations.peekReturnContext()
+        : null;
+      var backLabel = '桌面';
+      if (retCtx && retCtx.fromApp && retCtx.fromApp !== 'life-game') {
+        if (retCtx.fromApp === 'time-calendar') backLabel = '返回日历';
+        else if (retCtx.fromApp === 'study-room') backLabel = '返回自习室';
+        else if (retCtx.fromApp === 'love-diary') backLabel = '返回恋爱记';
+        else backLabel = '返回原应用';
+      }
+
       var html =
         // 1. 顶部 Header (与自习室 .sr-header 一致)
         '<header class="lg-header">' +
           '<div class="lg-header-left">' +
             '<button type="button" class="lg-back-btn" id="lg-btn-back">' +
-              '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+              '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
             '</button>' +
             '<div class="lg-title-group">' +
               '<div class="lg-icon-mini"><i class="fa-solid fa-gamepad"></i></div>' +
@@ -676,6 +773,7 @@
             '</div>' +
           '</div>' +
           '<div class="lg-header-right">' +
+            '<button type="button" class="lg-btn-icon-subtle" id="lg-btn-companion-settings" title="多 Char 深度陪伴与主动祝贺设置"><i class="fa-solid fa-user-shield"></i></button>' +
             '<div class="lg-coin-badge" title="全域心动金币余额">' +
               '<i class="fa-solid fa-coins"></i><span>' + (economyState.coins || 0) + '</span>' +
             '</div>' +
@@ -695,8 +793,8 @@
           '<div class="lg-tab-item ' + (_activeTab === 'tasks' ? 'active' : '') + '" data-tab="tasks"><i class="fa-solid fa-scroll"></i> 现实委托</div>' +
           '<div class="lg-tab-item ' + (_activeTab === 'habits' ? 'active' : '') + '" data-tab="habits"><i class="fa-solid fa-fire"></i> 每日习惯</div>' +
           '<div class="lg-tab-item ' + (_activeTab === 'goals' ? 'active' : '') + '" data-tab="goals"><i class="fa-solid fa-bullseye"></i> 长期愿景</div>' +
-          '<div class="lg-tab-item ' + (_activeTab === 'achievements' ? 'active' : '') + '" data-tab="achievements"><i class="fa-solid fa-trophy"></i> 成就馆</div>' +
-          '<div class="lg-tab-item ' + (_activeTab === 'history' ? 'active' : '') + '" data-tab="history"><i class="fa-solid fa-clock-rotate-left"></i> 成长记录</div>' +
+          '<div class="lg-tab-item ' + (_activeTab === 'achievements' ? 'active' : '') + '" data-tab="achievements"><i class="fa-solid fa-trophy"></i> 荣誉勋章</div>' +
+          '<div class="lg-tab-item ' + (_activeTab === 'history' ? 'active' : '') + '" data-tab="history"><i class="fa-solid fa-book-bookmark"></i> 冒险手账</div>' +
         '</nav>' +
 
         // 4. 内容主体滚动区域
@@ -706,11 +804,26 @@
 
       page.innerHTML = html;
 
-      // 绑定返回桌面
+      // 绑定返回桌面或来源应用
       var backBtn = page.querySelector('#lg-btn-back');
       if (backBtn) {
-        backBtn.onclick = function() {
+        backBtn.onclick = async function() {
+          if (global.TimeCalendarIntegrations && typeof global.TimeCalendarIntegrations.peekReturnContext === 'function') {
+            var curRet = global.TimeCalendarIntegrations.peekReturnContext();
+            if (curRet && curRet.fromApp && curRet.fromApp !== 'life-game') {
+              var handled = await global.TimeCalendarIntegrations.returnToCaller('life-game');
+              if (handled) return;
+            }
+          }
           LifeGameApp.close();
+        };
+      }
+
+      // 绑定陪伴授权设置入口
+      var compBtn = page.querySelector('#lg-btn-companion-settings');
+      if (compBtn) {
+        compBtn.onclick = function() {
+          LifeGameApp.showCompanionSettingsModal();
         };
       }
 
@@ -741,28 +854,64 @@
       }
     },
 
-    // ===== Tab 1: 角色档案与六维属性 =====
+    // ===== Tab 1: 角色档案与六维属性 (深度 RPG 养成) =====
     async renderProfileTab(container, lifeState, reqExp, expPercent, char) {
       var stats = lifeState.stats || { INT: 74, CHA: 82, WIL: 68, PHY: 62, PER: 88, INS: 91 };
+      var profile = window.LifeGameCompanion ?
+        await window.LifeGameCompanion.PlayerProfile.getProfile() :
+        { adventurerName: '初心探索者', avatar: 'img/char-default.jpg', bio: '在现实日常点滴中锤炼六维意志' };
+      var achState = window.AchievementService ?
+        await window.AchievementService.getState() :
+        { equippedTitle: lifeState.title || '见习探索者' };
+      var currentTitle = achState.equippedTitle || lifeState.title || '见习探索者';
+
+      // 统计历经天数、完成主线、长期愿景达成、纪念卡收藏
+      var history = await LifeGameCore.getTasksHistory();
+      var goals = await LifeGameCore.getGoals();
+      var cards = window.LifeGameCompanion ? await window.LifeGameCompanion.MementoCards.getAllCards() : [];
+      var mainCount = history.filter(function(h) { return h.category === 'main'; }).length;
+      var goalsDone = goals.filter(function(g) {
+        return (g.milestones || []).length > 0 && (g.milestones || []).every(function(m) { return m.done; });
+      }).length;
+      var daysActive = Math.max(1, Math.ceil((Date.now() - (profile.startedAt || (Date.now() - 86400000 * 7))) / (1000 * 60 * 60 * 24)));
+
+      // 陪伴授权状态
+      var compSettings = window.LifeGameCompanion ? await window.LifeGameCompanion.Companion.getSettings() : { globalEnabled: false };
       var companionQuote = (char.name || 'Ta') + ' 正在身边注视着你的现实点滴。每一个细微自律的脚印，都会汇聚成闪闪发光的超维力量。';
 
       var html =
-        // 角色英雄卡
+        // 1. 玩家现实成长档案卡片 (用户自定义名称/头像/称号/简介)
         '<section class="lg-profile-hero">' +
           '<div class="lg-profile-top">' +
             '<div class="lg-profile-char">' +
-              '<div class="lg-avatar-box">' +
-                '<img class="lg-avatar-img" src="' + (char.avatar || 'img/char-default.jpg') + '" alt="Avatar" onerror="this.src=\'img/char-default.jpg\'">' +
+              '<div class="lg-avatar-box lg-avatar-clickable" id="lg-btn-profile-avatar" title="点击编辑冒险者形象">' +
+                '<img class="lg-avatar-img" src="' + (profile.avatar || 'img/char-default.jpg') + '" alt="Avatar" onerror="this.src=\'img/char-default.jpg\'">' +
+                '<div class="lg-avatar-edit-badge"><i class="fa-solid fa-pen"></i></div>' +
               '</div>' +
               '<div class="lg-profile-names">' +
-                '<div class="lg-user-name">玩家现实成长档案</div>' +
-                '<div class="lg-user-title">称号 · ' + escapeHtml(lifeState.title || '见习探索者') + '</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;">' +
+                  '<div class="lg-user-name">' + escapeHtml(profile.adventurerName || '初心探索者') + '</div>' +
+                  '<button type="button" class="lg-btn-action-text" id="lg-btn-edit-profile" title="编辑玩家档案"><i class="fa-solid fa-user-pen"></i></button>' +
+                '</div>' +
+                '<div class="lg-user-title-wrap">' +
+                  '<span class="lg-user-title">称号 · 【' + escapeHtml(currentTitle) + '】</span>' +
+                  '<button type="button" class="lg-btn-action-text" id="lg-btn-change-title-quick" title="切换佩戴称号"><i class="fa-solid fa-crown"></i> 更换</button>' +
+                '</div>' +
+                '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">' + escapeHtml(profile.bio || '在现实日常点滴中锤炼六维意志') + '</div>' +
               '</div>' +
             '</div>' +
-            '<div>' +
+            '<div style="text-align:right;">' +
               '<div class="lg-level-large">LV.' + lifeState.level + '</div>' +
-              '<div class="lg-level-sub">Level Status</div>' +
+              '<div class="lg-level-sub">现实阶位</div>' +
             '</div>' +
+          '</div>' +
+
+          // 核心历程摘要
+          '<div class="lg-profile-stats-row">' +
+            '<div class="lg-pstat-item"><span class="lg-pstat-num">' + daysActive + '</span><span class="lg-pstat-lbl">历练天数</span></div>' +
+            '<div class="lg-pstat-item"><span class="lg-pstat-num">' + mainCount + '</span><span class="lg-pstat-lbl">攻克主线</span></div>' +
+            '<div class="lg-pstat-item"><span class="lg-pstat-num">' + goalsDone + '</span><span class="lg-pstat-lbl">愿景圆满</span></div>' +
+            '<div class="lg-pstat-item"><span class="lg-pstat-num">' + cards.length + '</span><span class="lg-pstat-lbl">纪念卡册</span></div>' +
           '</div>' +
 
           // 经验条
@@ -776,8 +925,16 @@
             '</div>' +
           '</div>' +
 
-          // 六维成长属性网格 (带灰度进度条，黑白灰规范)
-          '<div class="lg-section-title" style="margin-top:6px;"><i class="fa-solid fa-chart-pie"></i> 六维成长属性 (Hex-Stats)</div>' +
+          // 六维成长属性雷达图与六边形网格 (黑白灰规范)
+          '<div class="lg-section-header" style="margin-top:10px;margin-bottom:6px;">' +
+            '<div class="lg-section-title"><i class="fa-solid fa-chart-pie"></i> 六维成长潜能 (Hex-Stats)</div>' +
+            '<button type="button" class="lg-btn-action-text" id="lg-btn-stat-history" title="查看属性成长轨迹与分析"><i class="fa-solid fa-timeline"></i> 详细轨迹</button>' +
+          '</div>' +
+
+          '<div class="lg-radar-container">' +
+            '<canvas id="lg-profile-radar-canvas" width="280" height="210" class="lg-radar-canvas"></canvas>' +
+          '</div>' +
+
           '<div class="lg-stats-grid">' +
             '<div class="lg-stat-card"><div class="lg-stat-val">' + (stats.INT || 70) + '</div><div class="lg-stat-label">智力 INT</div><div class="lg-stat-bar-track"><div class="lg-stat-bar-fill" style="width:' + Math.min(100, (stats.INT || 70)) + '%;"></div></div></div>' +
             '<div class="lg-stat-card"><div class="lg-stat-val">' + (stats.CHA || 80) + '</div><div class="lg-stat-label">魅力 CHA</div><div class="lg-stat-bar-track"><div class="lg-stat-bar-fill" style="width:' + Math.min(100, (stats.CHA || 80)) + '%;"></div></div></div>' +
@@ -800,11 +957,16 @@
           '<button type="button" class="lg-btn-ai"><i class="fa-solid fa-wand-magic-sparkles"></i> 今日推荐</button>' +
         '</section>' +
 
-        // 伴侣同行卡片
-        '<section class="lg-companion-card">' +
+        // 伴侣同行与智能陪伴授权入口卡片
+        '<section class="lg-companion-card" id="lg-btn-goto-companion" title="点击管理多 Char 陪伴与授权">' +
           '<img class="lg-companion-avatar" src="' + (char.avatar || 'img/char-default.jpg') + '" onerror="this.src=\'img/char-default.jpg\'">' +
           '<div class="lg-companion-body">' +
-            '<div class="lg-companion-title"><i class="fa-regular fa-heart"></i> 伴侣同行 · ' + escapeHtml(char.name || 'Ta') + '</div>' +
+            '<div class="lg-companion-title">' +
+              '<span><i class="fa-regular fa-heart"></i> 伴侣同行 · ' + escapeHtml(char.name || 'Ta') + '</span>' +
+              '<span class="lg-companion-auth-tag ' + (compSettings.globalEnabled ? 'active' : '') + '">' +
+                (compSettings.globalEnabled ? '主动祝贺开启中' : '主动陪伴已免打扰') +
+              '</span>' +
+            '</div>' +
             '<div class="lg-companion-quote">「' + escapeHtml(companionQuote) + '」</div>' +
           '</div>' +
         '</section>' +
@@ -823,6 +985,59 @@
 
       container.innerHTML = html;
 
+      // 绘制 Canvas 雷达图
+      var canvas = container.querySelector('#lg-profile-radar-canvas');
+      if (canvas && window.LifeGameCompanion) {
+        window.LifeGameCompanion.PlayerProfile.renderRadarChart(canvas, stats);
+      }
+
+      // 绑定编辑档案
+      var editProfileBtn = container.querySelector('#lg-btn-edit-profile');
+      var avatarBtn = container.querySelector('#lg-btn-profile-avatar');
+      var triggerEdit = function() { LifeGameApp.showEditProfileModal(profile); };
+      if (editProfileBtn) editProfileBtn.onclick = triggerEdit;
+      if (avatarBtn) avatarBtn.onclick = triggerEdit;
+
+      // 更换佩戴头衔
+      var changeTitleBtn = container.querySelector('#lg-btn-change-title-quick');
+      if (changeTitleBtn) {
+        changeTitleBtn.onclick = async function() {
+          var badges = window.LifeGameCompanion ? await window.LifeGameCompanion.Achievements.getAllBadges() : [];
+          var unlockedTitles = badges.filter(function(b) { return b.unlocked && b.titleReward; }).map(function(b) { return b.titleReward; });
+          var baseTitles = ['初涉尘寰的旅人', '自律进阶学者', '敏锐深空探秘家', '博识大贤者', '超维传奇缔造者'];
+          var allAvailable = Array.from(new Set(baseTitles.concat(unlockedTitles)));
+
+          var promptText = '请选择想要佩戴的称号序号：\n' + allAvailable.map(function(t, idx) { return (idx + 1) + '. ' + t; }).join('\n');
+          var selected = prompt(promptText);
+          var idx = parseInt(selected, 10) - 1;
+          if (idx >= 0 && idx < allAvailable.length) {
+            var newT = allAvailable[idx];
+            if (window.AchievementService) {
+              await window.AchievementService.equipTitle(newT);
+            }
+            window.toast && window.toast('👑 已成功佩戴头衔：【' + newT + '】');
+            LifeGameApp.render();
+          }
+        };
+      }
+
+      // 六维成长轨迹弹窗
+      var statHistoryBtn = container.querySelector('#lg-btn-stat-history');
+      if (statHistoryBtn) {
+        statHistoryBtn.onclick = function() {
+          LifeGameApp.showStatHistoryModal(stats);
+        };
+      }
+
+      // 伴侣卡片点击 -> 伴侣陪伴设置
+      var compCard = container.querySelector('#lg-btn-goto-companion');
+      if (compCard) {
+        compCard.onclick = function() {
+          LifeGameApp.showCompanionSettingsModal();
+        };
+      }
+
+      // 今日推荐
       var todayAiBtn = container.querySelector('#lg-btn-today-ai');
       if (todayAiBtn) {
         todayAiBtn.onclick = function() {
@@ -832,6 +1047,7 @@
         };
       }
 
+      // 同步记录
       var syncBtn = container.querySelector('#lg-btn-sync-study');
       if (syncBtn) {
         syncBtn.onclick = async function() {
@@ -996,12 +1212,12 @@
             }
           } else if (action === 'nav-sr') {
             if (window.LifeGameIntegrations) {
-              window.LifeGameIntegrations.navigateToStudyRoom({ tab: 'duo', targetTodoId: t.studyTodoId });
+              window.LifeGameIntegrations.navigateToStudyRoom({ tab: 'hall', targetTodoId: t.studyTodoId, fromApp: 'life-game' });
             }
             return;
           } else if (action === 'nav-tc') {
             if (window.LifeGameIntegrations) {
-              window.LifeGameIntegrations.navigateToTimeCalendar({ tab: 'schedule', date: t.dueDate });
+              window.LifeGameIntegrations.navigateToTimeCalendar({ tab: 'calendar', date: t.dueDate, eventId: 'lg_task_' + t.id, fromApp: 'life-game' });
             }
             return;
           } else if (action === 'claim') {
@@ -1215,7 +1431,7 @@
 
           if (action === 'nav-exam') {
             if (window.LifeGameIntegrations) {
-              window.LifeGameIntegrations.navigateToStudyRoom({ tab: 'resources' });
+              window.LifeGameIntegrations.navigateToStudyRoom({ tab: 'resources', targetExamId: g.examId, fromApp: 'life-game' });
             }
             return;
           } else if (action === 'adjust-goal') {
@@ -1275,6 +1491,27 @@
                 if (res && res.leveledUp) {
                   LifeGameApp.showLevelUpModal(res.level);
                 }
+                // 阶段 4 深度联动：愿景里程碑手账与祝贺
+                if (window.LifeGameCompanion) {
+                  try {
+                    await window.LifeGameCompanion.onGoalMilestoneClaimed(g, ms, res);
+                  } catch (cErr) {
+                    console.warn('[LifeGame] LifeGameCompanion milestone hook error:', cErr);
+                  }
+                }
+                if (window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+                  try {
+                    await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+                      eventId: 'lg_milestone_' + ms.id,
+                      eventType: 'milestone_claimed',
+                      sourceApp: 'life-game',
+                      sourceRecordId: ms.id,
+                      occurrenceKey: ms.id,
+                      occurredAt: ms.claimedAt || Date.now(),
+                      payload: { goalId: g.id }
+                    });
+                  } catch (_) {}
+                }
               }
             } else {
               window.toast && window.toast(guard.msg || '里程碑已达成');
@@ -1286,19 +1523,34 @@
       });
     },
 
-    // ===== Tab 5: 成就馆与称号佩戴 =====
+    // ===== Tab 5: 成就馆与称号佩戴 (扩展 6 大分类 + 隐藏剪影 + 详情弹窗) =====
     async renderAchievementsTab(container) {
-      var achState = window.AchievementService ? await window.AchievementService.getState() : { equippedTitle: '初涉尘寰的旅人', badges: [], totalScore: 0 };
-      var badges = achState.badges || [];
+      var badges = window.LifeGameCompanion ?
+        await window.LifeGameCompanion.Achievements.getAllBadges() :
+        (window.AchievementService ? (await window.AchievementService.getState()).badges : []);
+      var achState = window.AchievementService ?
+        await window.AchievementService.getState() :
+        { equippedTitle: '见习探索者', totalScore: 0 };
+      var categories = window.LifeGameCompanion ?
+        window.LifeGameCompanion.Achievements.getCategories() :
+        [{ key: 'all', name: '全部勋章' }];
+
+      // 分类筛选
+      var filtered = badges;
+      if (_achFilter && _achFilter !== 'all') {
+        filtered = badges.filter(function(b) { return b.category === _achFilter; });
+      }
+
+      var unlockedCount = badges.filter(function(b) { return b.unlocked; }).length;
 
       var html =
         '<div class="lg-section-header">' +
           '<div class="lg-section-title"><i class="fa-solid fa-trophy"></i> 荣誉勋章与佩戴头衔</div>' +
-          '<div style="font-size:11px;font-weight:600;color:var(--c-sub);"><i class="fa-solid fa-award"></i> 总荣誉积分: ' + (achState.totalScore || 0) + '</div>' +
+          '<div style="font-size:11px;font-weight:600;color:var(--c-sub);"><i class="fa-solid fa-award"></i> 已解锁 ' + unlockedCount + ' / ' + badges.length + ' · 荣誉点: ' + (achState.totalScore || 0) + '</div>' +
         '</div>' +
 
-        // 当前穿戴头衔
-        '<div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--r-md);padding:14px;display:flex;align-items:center;justify-content:space-between;box-shadow:var(--shadow-sm);">' +
+        // 当前穿戴头衔横幅
+        '<div class="lg-title-banner">' +
           '<div>' +
             '<div style="font-size:11px;color:var(--c-sub);">当前佩戴头衔</div>' +
             '<div style="font-size:14px;font-weight:700;color:var(--c-text);margin-top:2px;">【' + escapeHtml(achState.equippedTitle || '见习探索者') + '】</div>' +
@@ -1306,33 +1558,72 @@
           '<button type="button" class="lg-btn-secondary" id="lg-btn-change-title">更换头衔</button>' +
         '</div>' +
 
-        // 勋章徽章卡片网格
+        // 6 大分类胶囊过滤栏
+        '<div class="lg-category-pills">' +
+          categories.map(function(c) {
+            return '<div class="lg-cat-pill ' + (_achFilter === c.key ? 'active' : '') + '" data-ach-cat="' + c.key + '">' + escapeHtml(c.name) + '</div>';
+          }).join('') +
+        '</div>' +
+
+        // 勋章网格 (支持剪影、锁、星标置顶)
         '<div class="lg-achievements-grid" style="margin-top:10px;">';
 
-      badges.forEach(function(badge) {
+      filtered.forEach(function(badge) {
         var isUnlocked = badge.unlocked;
+        var isHidden = badge.hidden && !isUnlocked;
+        var displayName = isHidden ? '？？？' : badge.name;
+        var displayDesc = isHidden ? '隐藏神秘成就，在特定生活契机中触发' : (badge.desc || '');
 
         html +=
-          '<div class="lg-badge-card ' + (isUnlocked ? '' : 'locked') + '">' +
-            '<div class="lg-badge-icon"><i class="' + (badge.icon || 'fa-solid fa-medal') + '"></i></div>' +
-            '<div class="lg-badge-name">' + escapeHtml(badge.name) + '</div>' +
-            '<div class="lg-badge-desc">' + escapeHtml(badge.desc) + '</div>' +
+          '<div class="lg-badge-card ' + (isUnlocked ? '' : 'locked') + ' ' + (badge.isFavorite ? 'favorite' : '') + '" data-badge-id="' + badge.id + '">' +
+            (badge.isFavorite ? '<div class="lg-badge-pin-icon" title="个人主页置顶"><i class="fa-solid fa-star"></i></div>' : '') +
+            '<div class="lg-badge-icon">' +
+              (isHidden ? '<i class="fa-solid fa-question"></i>' : ('<i class="' + (badge.icon || 'fa-solid fa-medal') + '"></i>')) +
+            '</div>' +
+            '<div class="lg-badge-name">' + escapeHtml(displayName) + '</div>' +
+            '<div class="lg-badge-desc">' + escapeHtml(displayDesc) + '</div>' +
             '<div class="lg-badge-points">+' + (badge.points || 100) + ' 荣誉点</div>' +
-            (isUnlocked ? '<span style="font-size:10px;color:var(--c-text);"><i class="fa-solid fa-check"></i> 已解锁</span>' : '<span style="font-size:10px;color:var(--c-hint);">未达成</span>') +
+            (isUnlocked ?
+              '<span class="lg-badge-status-unlocked"><i class="fa-solid fa-check"></i> 已达成</span>' :
+              '<span class="lg-badge-status-locked"><i class="fa-solid fa-lock"></i> 待解锁</span>') +
           '</div>';
       });
 
       html += '</div>';
       container.innerHTML = html;
 
+      // 绑定分类切换
+      container.querySelectorAll('[data-ach-cat]').forEach(function(el) {
+        el.onclick = function() {
+          _achFilter = el.getAttribute('data-ach-cat');
+          LifeGameApp.renderAchievementsTab(container);
+        };
+      });
+
+      // 绑定点击查看详情弹窗
+      container.querySelectorAll('.lg-badge-card').forEach(function(cardEl) {
+        cardEl.onclick = function() {
+          var bid = cardEl.getAttribute('data-badge-id');
+          var b = badges.find(function(item) { return item.id === bid; });
+          if (b) {
+            LifeGameApp.showBadgeDetailModal(b);
+          }
+        };
+      });
+
+      // 更换头衔
       var changeTitleBtn = container.querySelector('#lg-btn-change-title');
       if (changeTitleBtn) {
         changeTitleBtn.onclick = async function() {
-          var titles = ['初涉尘寰的旅人', '自律进阶学者', '敏锐深空探秘家', '博识大贤者', '超维传奇缔造者'];
-          var selected = prompt('请选择想要佩戴的头衔序号：\n1. 初涉尘寰的旅人\n2. 自律进阶学者\n3. 敏锐深空探秘家\n4. 博识大贤者\n5. 超维传奇缔造者');
+          var unlockedTitles = badges.filter(function(b) { return b.unlocked && b.titleReward; }).map(function(b) { return b.titleReward; });
+          var baseTitles = ['初涉尘寰的旅人', '自律进阶学者', '敏锐深空探秘家', '博识大贤者', '超维传奇缔造者'];
+          var allAvailable = Array.from(new Set(baseTitles.concat(unlockedTitles)));
+
+          var promptText = '请选择想要佩戴的头衔序号：\n' + allAvailable.map(function(t, idx) { return (idx + 1) + '. ' + t; }).join('\n');
+          var selected = prompt(promptText);
           var idx = parseInt(selected, 10) - 1;
-          if (idx >= 0 && idx < titles.length) {
-            var newT = titles[idx];
+          if (idx >= 0 && idx < allAvailable.length) {
+            var newT = allAvailable[idx];
             if (window.AchievementService) {
               await window.AchievementService.equipTitle(newT);
             }
@@ -1343,52 +1634,112 @@
       }
     },
 
-    // ===== Tab 6: 成长记录 (Growth Log) =====
+    // ===== Tab 6: 「我的人生冒险手账」 (Adventure Journal) =====
     async renderHistoryTab(container) {
+      var timeline = window.LifeGameCompanion ?
+        await window.LifeGameCompanion.Journal.getTimeline() :
+        [];
       var history = await LifeGameCore.getTasksHistory();
-      var settledIds = await LifeGameCore.getSettledStudyRecordIds();
       var habits = await LifeGameCore.getHabits();
       var totalStreaks = habits.reduce(function(sum, h) { return sum + (h.streak || 0); }, 0);
+      var cards = window.LifeGameCompanion ? await window.LifeGameCompanion.MementoCards.getAllCards() : [];
+
+      // 筛选分类
+      var filtered = timeline;
+      if (_journalFilter && _journalFilter !== 'all') {
+        filtered = timeline.filter(function(item) { return item.type === _journalFilter; });
+      }
 
       var html =
         '<div class="lg-section-header">' +
-          '<div class="lg-section-title"><i class="fa-solid fa-clock-rotate-left"></i> 现实成长与行动足迹</div>' +
-          '<button type="button" class="lg-btn-ai" id="lg-btn-weekly-review"><i class="fa-solid fa-feather"></i> 每周成长复盘</button>' +
+          '<div class="lg-section-title"><i class="fa-solid fa-book-bookmark"></i> 我的人生冒险手账</div>' +
+          '<div style="display:flex;gap:6px;">' +
+            '<button type="button" class="lg-btn-secondary" id="lg-btn-add-note"><i class="fa-solid fa-pen-nib"></i> 随笔手记</button>' +
+            '<button type="button" class="lg-btn-ai" id="lg-btn-weekly-review"><i class="fa-solid fa-feather"></i> 每周复盘</button>' +
+          '</div>' +
         '</div>' +
 
-        // 概览卡片 (与自习室报告 .sr-report-grid 一致)
+        // 核心真实汇总网格
         '<div class="lg-history-stats-grid">' +
           '<div class="lg-history-stat-card">' +
             '<div class="lg-history-stat-val">' + history.length + '</div>' +
             '<div class="lg-history-stat-lbl">完成委托</div>' +
           '</div>' +
           '<div class="lg-history-stat-card">' +
-            '<div class="lg-history-stat-val">' + settledIds.length + '</div>' +
-            '<div class="lg-history-stat-lbl">自习核销</div>' +
+            '<div class="lg-history-stat-val">' + cards.length + '</div>' +
+            '<div class="lg-history-stat-lbl">成长纪念卡</div>' +
           '</div>' +
           '<div class="lg-history-stat-card">' +
             '<div class="lg-history-stat-val">' + totalStreaks + '</div>' +
             '<div class="lg-history-stat-lbl">习惯连胜</div>' +
           '</div>' +
+        '</div>';
+
+      // 成长纪念卡专架
+      if (cards.length > 0) {
+        html +=
+          '<div class="lg-section-header" style="margin-top:10px;margin-bottom:6px;">' +
+            '<div class="lg-section-title" style="font-size:12px;"><i class="fa-solid fa-id-badge"></i> 珍藏成长纪念卡 (' + cards.length + ')</div>' +
+          '</div>' +
+          '<div class="lg-cards-scroll-strip">';
+
+        cards.forEach(function(card) {
+          html +=
+            '<div class="lg-mini-card ' + (card.isFavorite ? 'fav' : '') + '" data-card-id="' + card.id + '">' +
+              '<div class="lg-mini-card-tag">' + escapeHtml(card.cardType === 'level_up' ? '破阶' : (card.cardType === 'major_quest' ? '主线' : '愿景')) + '</div>' +
+              '<div class="lg-mini-card-title">' + escapeHtml(card.title) + '</div>' +
+              '<div class="lg-mini-card-date">' + escapeHtml(card.date) + '</div>' +
+            '</div>';
+        });
+
+        html += '</div>';
+      }
+
+      // 手账事件筛选器
+      html +=
+        '<div class="lg-journal-filter-bar">' +
+          '<select class="lg-select-sm" id="lg-journal-filter-type">' +
+            '<option value="all" ' + (_journalFilter === 'all' ? 'selected' : '') + '>全部足迹</option>' +
+            '<option value="quest" ' + (_journalFilter === 'quest' ? 'selected' : '') + '>现实委托</option>' +
+            '<option value="level_up" ' + (_journalFilter === 'level_up' ? 'selected' : '') + '>等级破阶</option>' +
+            '<option value="milestone" ' + (_journalFilter === 'milestone' ? 'selected' : '') + '>愿景攻关</option>' +
+            '<option value="habit" ' + (_journalFilter === 'habit' ? 'selected' : '') + '>习惯打卡</option>' +
+            '<option value="note" ' + (_journalFilter === 'note' ? 'selected' : '') + '>感悟随笔</option>' +
+            '<option value="memento_card" ' + (_journalFilter === 'memento_card' ? 'selected' : '') + '>纪念卡</option>' +
+          '</select>' +
         '</div>' +
 
-        '<div class="lg-section-title" style="margin-top:6px;"><i class="fa-solid fa-list-check"></i> 最近奖励审计流水</div>' +
-        '<div class="lg-history-timeline">';
+        '<div class="lg-journal-timeline">';
 
-      if (history.length === 0) {
-        html += '<div style="text-align:center;padding:40px 20px;color:var(--c-sub);font-size:12px;"><i class="fa-regular fa-calendar-check" style="font-size:24px;margin-bottom:8px;display:block;"></i>暂无完成记录，去达成你的第一个委托吧！</div>';
+      if (filtered.length === 0) {
+        html += '<div style="text-align:center;padding:40px 20px;color:var(--c-sub);font-size:12px;"><i class="fa-regular fa-calendar-check" style="font-size:24px;margin-bottom:8px;display:block;"></i>手账中暂无相关记录，行动起来谱写新的篇章吧！</div>';
       } else {
-        history.forEach(function(item) {
+        filtered.forEach(function(item) {
+          var typeIconMap = {
+            quest: 'fa-solid fa-check',
+            level_up: 'fa-solid fa-crown',
+            milestone: 'fa-solid fa-flag',
+            habit: 'fa-solid fa-fire',
+            badge: 'fa-solid fa-trophy',
+            note: 'fa-solid fa-quote-left',
+            memento_card: 'fa-solid fa-id-badge'
+          };
+          var icon = typeIconMap[item.type] || 'fa-solid fa-circle-dot';
+
           html +=
-            '<div class="lg-history-item">' +
-              '<div class="lg-history-item-left">' +
-                '<div class="lg-history-item-icon"><i class="fa-solid fa-check"></i></div>' +
-                '<div>' +
-                  '<div class="lg-history-item-title">' + escapeHtml(item.title) + '</div>' +
-                  '<div class="lg-history-item-time">' + formatTimeShort(item.claimedAt || item.completedAt) + '</div>' +
+            '<div class="lg-journal-item" data-id="' + item.id + '">' +
+              '<div class="lg-journal-item-icon"><i class="' + icon + '"></i></div>' +
+              '<div class="lg-journal-item-content">' +
+                '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+                  '<div class="lg-journal-item-title">' + escapeHtml(item.title) + '</div>' +
+                  '<div class="lg-journal-item-time">' + formatTimeShort(item.timestamp) + '</div>' +
+                '</div>' +
+                (item.desc ? '<div class="lg-journal-item-desc">' + escapeHtml(item.desc) + '</div>' : '') +
+                '<div class="lg-journal-tags">' +
+                  (item.tags || []).map(function(t) { return '<span class="lg-jtag">' + escapeHtml(t) + '</span>'; }).join('') +
+                  (item.type === 'note' ? '<button type="button" class="lg-btn-action-text" data-action="delete-note" data-id="' + item.id + '" title="删除手记"><i class="fa-solid fa-trash-can"></i></button>' : '') +
                 '</div>' +
               '</div>' +
-              '<div class="lg-history-item-exp">+' + (item.expGranted || 0) + ' EXP</div>' +
             '</div>';
         });
       }
@@ -1396,6 +1747,51 @@
       html += '</div>';
       container.innerHTML = html;
 
+      // 绑定手记添加
+      var addNoteBtn = container.querySelector('#lg-btn-add-note');
+      if (addNoteBtn) {
+        addNoteBtn.onclick = function() {
+          LifeGameApp.showAddJournalNoteModal();
+        };
+      }
+
+      // 绑定纪念卡点击
+      container.querySelectorAll('.lg-mini-card').forEach(function(cardEl) {
+        cardEl.onclick = async function() {
+          var cid = cardEl.getAttribute('data-card-id');
+          var allCards = window.LifeGameCompanion ? await window.LifeGameCompanion.MementoCards.getAllCards() : [];
+          var c = allCards.find(function(item) { return item.id === cid; });
+          if (c) {
+            LifeGameApp.showMementoCardModal(c);
+          }
+        };
+      });
+
+      // 绑定筛选
+      var filterSelect = container.querySelector('#lg-journal-filter-type');
+      if (filterSelect) {
+        filterSelect.onchange = function() {
+          _journalFilter = filterSelect.value;
+          LifeGameApp.renderHistoryTab(container);
+        };
+      }
+
+      // 绑定删除随笔
+      container.querySelectorAll('[data-action="delete-note"]').forEach(function(delBtn) {
+        delBtn.onclick = async function(e) {
+          e.stopPropagation();
+          var nid = delBtn.getAttribute('data-id');
+          if (confirm('确定要删除这篇生活感悟手记吗？')) {
+            if (window.LifeGameCompanion) {
+              await window.LifeGameCompanion.Journal.deleteUserNote(nid);
+            }
+            window.toast && window.toast('手记已删除');
+            LifeGameApp.renderHistoryTab(container);
+          }
+        };
+      });
+
+      // 每周复盘
       var weeklyBtn = container.querySelector('#lg-btn-weekly-review');
       if (weeklyBtn) {
         weeklyBtn.onclick = function() {
@@ -1676,7 +2072,7 @@
 
           '<div class="lg-form-group">' +
             '<label class="lg-form-label">目标达成日期</label>' +
-            '<input type="date" class="lg-input" id="modal-goal-date" value="' + (isEdit ? (goalToEdit.targetDate || '') : (function() { var d = new Date(); d.setDate(d.getDate() + 30); return d.toISOString().slice(0, 10); })()) + '">' +
+            '<input type="date" class="lg-input" id="modal-goal-date" value="' + (isEdit ? (goalToEdit.targetDate || '') : (function() { var d = new Date(); d.setDate(d.getDate() + 30); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })()) + '">' +
           '</div>' +
 
           '<div class="lg-form-group">' +
@@ -1802,6 +2198,600 @@
 
       overlay.querySelector('#lg-levelup-confirm').onclick = function() {
         overlay.remove();
+      };
+    },
+
+    // ===== 阶段 4: 多 Char 陪伴授权与主动祝贺设置弹窗 =====
+    async showCompanionSettingsModal() {
+      if (!window.LifeGameCompanion) return;
+      var comp = window.LifeGameCompanion.Companion;
+      var config = await comp.getSettings();
+      var logs = await comp.loadLogs();
+      var allChars = [];
+      try {
+        if (window.db && db.characters) {
+          var list = await db.characters.toArray();
+          allChars = list.filter(function(c) { return c && c.type !== 'user'; });
+        }
+      } catch (_) {}
+
+      var overlay = document.createElement('div');
+      overlay.className = 'lg-modal-overlay';
+
+      var html =
+        '<div class="lg-modal-card lg-modal-card-lg">' +
+          '<div class="lg-modal-title">' +
+            '<i class="fa-solid fa-user-shield"></i>' +
+            '<span>多 Char 智能陪伴与主动祝贺设置</span>' +
+          '</div>' +
+
+          '<div class="lg-notice-box">' +
+            '<i class="fa-solid fa-circle-info"></i>' +
+            '<span>陪伴机制严格基于真实成长突破（等级突破、主线告捷、愿景达成），默认关闭。需由您自主逐一授权，伴侣才会主动发送祝贺。</span>' +
+          '</div>' +
+
+          // 全局总开关
+          '<div class="lg-form-group-card">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+              '<div>' +
+                '<div style="font-size:13px;font-weight:700;color:var(--c-text);">人生游戏陪伴总开关</div>' +
+                '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">开启后，已授权的角色将在关键成长突破时主动发送祝贺</div>' +
+              '</div>' +
+              '<label class="lg-toggle-switch">' +
+                '<input type="checkbox" id="comp-global-toggle" ' + (config.globalEnabled ? 'checked' : '') + '>' +
+                '<span class="lg-toggle-slider"></span>' +
+              '</label>' +
+            '</div>' +
+          '</div>' +
+
+          // 夜间免打扰与自习室保护
+          '<div class="lg-form-group-card" style="margin-top:8px;">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+              '<div>' +
+                '<div style="font-size:13px;font-weight:700;color:var(--c-text);">夜间免打扰时段</div>' +
+                '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">在此时间段内，自动静音拦截所有主动陪伴消息</div>' +
+              '</div>' +
+              '<label class="lg-toggle-switch">' +
+                '<input type="checkbox" id="comp-quiet-toggle" ' + (config.quietHoursEnabled ? 'checked' : '') + '>' +
+                '<span class="lg-toggle-slider"></span>' +
+              '</label>' +
+            '</div>' +
+            '<div style="display:flex;gap:12px;margin-top:10px;align-items:center;">' +
+              '<div style="font-size:12px;color:var(--c-sub);">开始：</div>' +
+              '<input type="time" class="lg-input-sm" id="comp-quiet-start" value="' + (config.quietHoursStart || '23:00') + '">' +
+              '<div style="font-size:12px;color:var(--c-sub);">结束：</div>' +
+              '<input type="time" class="lg-input-sm" id="comp-quiet-end" value="' + (config.quietHoursEnd || '08:00') + '">' +
+            '</div>' +
+          '</div>' +
+
+          // 离线心意寄语兜底
+          '<div class="lg-form-group-card" style="margin-top:8px;">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+              '<div>' +
+                '<div style="font-size:13px;font-weight:700;color:var(--c-text);">允许离线心意寄语兜底</div>' +
+                '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">当 AI 离线或服务异常时，以专属心意寄语送达。关闭后若 AI 失败则不发送</div>' +
+              '</div>' +
+              '<label class="lg-toggle-switch">' +
+                '<input type="checkbox" id="comp-offline-toggle" ' + (config.allowOfflineFallback !== false ? 'checked' : '') + '>' +
+                '<span class="lg-toggle-slider"></span>' +
+              '</label>' +
+            '</div>' +
+          '</div>' +
+
+          // 多角色独立授权列表
+          '<div style="margin-top:12px;font-size:12px;font-weight:700;color:var(--c-text);display:flex;justify-content:space-between;align-items:center;">' +
+            '<span>伴侣独立感知与陪伴授权</span>' +
+            '<span style="font-size:11px;color:var(--c-sub);">' + allChars.length + ' 位可选伴侣</span>' +
+          '</div>' +
+
+          '<div class="lg-companion-settings-list">';
+
+      if (allChars.length === 0) {
+        html += '<div style="padding:16px;text-align:center;font-size:12px;color:var(--c-sub);">暂无可用伴侣角色</div>';
+      } else {
+        allChars.forEach(function(char) {
+          var cid = String(char.id);
+          var cConf = comp.getCharSettings(cid, config);
+
+          html +=
+            '<div class="lg-char-setting-card" data-cid="' + cid + '">' +
+              '<div class="lg-char-setting-top">' +
+                '<div style="display:flex;align-items:center;gap:8px;">' +
+                  '<img src="' + (char.avatar || 'img/char-default.jpg') + '" class="lg-avatar-mini" onerror="this.src=\'img/char-default.jpg\'">' +
+                  '<div>' +
+                    '<div style="font-size:13px;font-weight:700;color:var(--c-text);">' + escapeHtml(char.name) + '</div>' +
+                    '<div style="font-size:10px;color:var(--c-sub);">' + escapeHtml(char.personality || '专属伴侣') + '</div>' +
+                  '</div>' +
+                '</div>' +
+                '<label class="lg-toggle-switch">' +
+                  '<input type="checkbox" class="comp-char-toggle" data-cid="' + cid + '" ' + (cConf.enabled ? 'checked' : '') + '>' +
+                  '<span class="lg-toggle-slider"></span>' +
+                '</label>' +
+              '</div>' +
+
+              // 频次与事件范围 (折叠面板)
+              '<div class="lg-char-setting-body ' + (cConf.enabled ? '' : 'disabled') + '" id="comp-body-' + cid + '">' +
+                '<div style="display:flex;gap:10px;margin-top:8px;">' +
+                  '<div style="flex:1;">' +
+                    '<label class="lg-form-label">每日上限</label>' +
+                    '<input type="number" min="1" max="5" class="lg-input-sm comp-char-daily" data-cid="' + cid + '" value="' + (cConf.dailyLimit || 2) + '">' +
+                  '</div>' +
+                  '<div style="flex:1;">' +
+                    '<label class="lg-form-label">每周上限</label>' +
+                    '<input type="number" min="2" max="20" class="lg-input-sm comp-char-weekly" data-cid="' + cid + '" value="' + (cConf.weeklyLimit || 8) + '">' +
+                  '</div>' +
+                '</div>' +
+
+                '<div style="margin-top:8px;">' +
+                  '<label class="lg-form-label">授权感知事件范围</label>' +
+                  '<div style="display:flex;flex-wrap:wrap;gap:8px;font-size:11px;">' +
+                    '<label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="comp-scope-' + cid + '" value="level_up" ' + ((cConf.eventScope || []).indexOf('level_up') !== -1 ? 'checked' : '') + '> 等级破阶</label>' +
+                    '<label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="comp-scope-' + cid + '" value="main_quest" ' + ((cConf.eventScope || []).indexOf('main_quest') !== -1 ? 'checked' : '') + '> 主线告捷</label>' +
+                    '<label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="comp-scope-' + cid + '" value="goal_achieved" ' + ((cConf.eventScope || []).indexOf('goal_achieved') !== -1 ? 'checked' : '') + '> 愿景达成</label>' +
+                    '<label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="comp-scope-' + cid + '" value="study_focus" ' + ((cConf.eventScope || []).indexOf('study_focus') !== -1 ? 'checked' : '') + '> 自习深潜</label>' +
+                  '</div>' +
+                '</div>' +
+
+                '<div style="margin-top:8px;">' +
+                  '<label class="lg-form-label">专属语气偏好 (可选)</label>' +
+                  '<input type="text" class="lg-input-sm comp-char-tone" data-cid="' + cid + '" placeholder="如：清冷沉静、温柔宠溺、活泼好奇" value="' + escapeHtml(cConf.customToneHint || '') + '">' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+        });
+      }
+
+      html +=
+          '</div>' +
+
+          // 审计日志预览按钮
+          '<div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">' +
+            '<span style="font-size:11px;color:var(--c-sub);">已累计记录 ' + logs.length + ' 条陪伴事件</span>' +
+            '<button type="button" class="lg-btn-action-text" id="comp-btn-logs-toggle"><i class="fa-solid fa-list-check"></i> 查看祝贺日志</button>' +
+          '</div>' +
+
+          // 审计日志预览容器
+          '<div id="comp-logs-container" style="display:none;margin-top:8px;max-height:140px;overflow-y:auto;background:var(--c-bg);border:1px solid var(--c-border);border-radius:var(--r-sm);padding:8px;">' +
+            (logs.length === 0 ?
+              '<div style="font-size:11px;color:var(--c-sub);text-align:center;padding:10px;">暂无祝贺与触发日志</div>' :
+              logs.map(function(l) {
+                return (
+                  '<div style="font-size:11px;padding:4px 0;border-bottom:1px dashed var(--c-border);display:flex;justify-content:space-between;">' +
+                    '<div><strong>' + escapeHtml(l.charName || '伴侣') + '</strong> · ' + escapeHtml(l.eventTitle || l.eventType) + '</div>' +
+                    '<div style="color:var(--c-sub);">' + (l.status === 'delivered' ? '已投递微信' : (l.skipReason || l.status)) + '</div>' +
+                  '</div>'
+                );
+              }).join('')) +
+          '</div>' +
+
+          '<div class="lg-modal-footer">' +
+            '<button type="button" class="lg-btn-secondary" id="comp-btn-cancel">取消</button>' +
+            '<button type="button" class="lg-btn-primary" id="comp-btn-save">保存授权配置</button>' +
+          '</div>' +
+        '</div>';
+
+      overlay.innerHTML = html;
+      document.body.appendChild(overlay);
+
+      // 切换角色面板禁用状态
+      overlay.querySelectorAll('.comp-char-toggle').forEach(function(tg) {
+        tg.onchange = function() {
+          var cid = tg.getAttribute('data-cid');
+          var bodyEl = overlay.querySelector('#comp-body-' + cid);
+          if (bodyEl) {
+            if (tg.checked) bodyEl.classList.remove('disabled');
+            else bodyEl.classList.add('disabled');
+          }
+        };
+      });
+
+      // 切换日志显示
+      var toggleLogBtn = overlay.querySelector('#comp-btn-logs-toggle');
+      if (toggleLogBtn) {
+        toggleLogBtn.onclick = function() {
+          var box = overlay.querySelector('#comp-logs-container');
+          if (box) {
+            box.style.display = box.style.display === 'none' ? 'block' : 'none';
+          }
+        };
+      }
+
+      overlay.querySelector('#comp-btn-cancel').onclick = function() {
+        overlay.remove();
+      };
+
+      overlay.querySelector('#comp-btn-save').onclick = async function() {
+        var globalEn = overlay.querySelector('#comp-global-toggle').checked;
+        var quietEn = overlay.querySelector('#comp-quiet-toggle').checked;
+        var quietStart = overlay.querySelector('#comp-quiet-start').value;
+        var quietEnd = overlay.querySelector('#comp-quiet-end').value;
+        var offlineToggle = overlay.querySelector('#comp-offline-toggle');
+        var offlineEn = offlineToggle ? offlineToggle.checked : true;
+
+        config.globalEnabled = globalEn;
+        config.quietHoursEnabled = quietEn;
+        config.quietHoursStart = quietStart;
+        config.quietHoursEnd = quietEnd;
+        config.allowOfflineFallback = offlineEn;
+
+        allChars.forEach(function(char) {
+          var cid = String(char.id);
+          var tg = overlay.querySelector('.comp-char-toggle[data-cid="' + cid + '"]');
+          var dailyInput = overlay.querySelector('.comp-char-daily[data-cid="' + cid + '"]');
+          var weeklyInput = overlay.querySelector('.comp-char-weekly[data-cid="' + cid + '"]');
+          var toneInput = overlay.querySelector('.comp-char-tone[data-cid="' + cid + '"]');
+
+          var scopes = [];
+          overlay.querySelectorAll('.comp-scope-' + cid + ':checked').forEach(function(sc) {
+            scopes.push(sc.value);
+          });
+
+          if (!config.chars) config.chars = {};
+          config.chars[cid] = {
+            enabled: tg ? tg.checked : false,
+            dailyLimit: dailyInput ? (parseInt(dailyInput.value, 10) || 2) : 2,
+            weeklyLimit: weeklyInput ? (parseInt(weeklyInput.value, 10) || 8) : 8,
+            eventScope: scopes.length > 0 ? scopes : ['level_up', 'main_quest'],
+            customToneHint: toneInput ? toneInput.value.trim() : ''
+          };
+        });
+
+        await comp.saveSettings(config);
+
+        // 如果用户首次授权了伴侣，检查解锁成就「心意授权」
+        if (config.globalEnabled && Object.values(config.chars || {}).some(function(c) { return c.enabled; })) {
+          if (window.AchievementService) {
+            await window.AchievementService.checkAndUnlockBadge('badge_companion_grant');
+          }
+        }
+
+        overlay.remove();
+        window.toast && window.toast('伴侣陪伴授权配置已生效');
+        LifeGameApp.render();
+      };
+    },
+
+    // ===== 阶段 4: 编辑玩家冒险档案弹窗 =====
+    async showEditProfileModal(currentProfile) {
+      var overlay = document.createElement('div');
+      overlay.className = 'lg-modal-overlay';
+
+      overlay.innerHTML =
+        '<div class="lg-modal-card">' +
+          '<div class="lg-modal-title">' +
+            '<i class="fa-solid fa-user-pen"></i>' +
+            '<span>编辑玩家现实成长档案</span>' +
+          '</div>' +
+
+          '<div class="lg-notice-box">' +
+            '<i class="fa-solid fa-shield-halved"></i>' +
+            '<span>档案仅用于个性化展示与手账署名。修改档案信息不会影响角色等级、属性或经验数值。</span>' +
+          '</div>' +
+
+          '<div class="lg-form-group">' +
+            '<label class="lg-form-label">冒险者昵称 *</label>' +
+            '<input type="text" class="lg-input" id="profile-edit-name" maxlength="20" placeholder="如：初心探索者、极境行者" value="' + escapeHtml(currentProfile.adventurerName || '') + '">' +
+          '</div>' +
+
+          '<div class="lg-form-group">' +
+            '<label class="lg-form-label">个性签名 / 现实座右铭</label>' +
+            '<textarea class="lg-textarea" id="profile-edit-bio" rows="2" maxlength="100" placeholder="写一句激励自己的现实座右铭...">' + escapeHtml(currentProfile.bio || '') + '</textarea>' +
+          '</div>' +
+
+          '<div class="lg-form-group">' +
+            '<label class="lg-form-label">头像图片路径 (支持本地相对路径或图片 URL)</label>' +
+            '<input type="text" class="lg-input" id="profile-edit-avatar" placeholder="如：img/char-default.jpg" value="' + escapeHtml(currentProfile.avatar || '') + '">' +
+          '</div>' +
+
+          '<div class="lg-modal-footer">' +
+            '<button type="button" class="lg-btn-secondary" id="profile-edit-cancel">取消</button>' +
+            '<button type="button" class="lg-btn-primary" id="profile-edit-save">保存档案</button>' +
+          '</div>' +
+        '</div>';
+
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#profile-edit-cancel').onclick = function() {
+        overlay.remove();
+      };
+
+      overlay.querySelector('#profile-edit-save').onclick = async function() {
+        var name = overlay.querySelector('#profile-edit-name').value.trim();
+        if (!name) {
+          window.toast && window.toast('请输入冒险者昵称');
+          return;
+        }
+        var bio = overlay.querySelector('#profile-edit-bio').value.trim();
+        var avatar = overlay.querySelector('#profile-edit-avatar').value.trim() || 'img/char-default.jpg';
+
+        if (window.LifeGameCompanion) {
+          await window.LifeGameCompanion.PlayerProfile.updateProfile({
+            adventurerName: name,
+            bio: bio,
+            avatar: avatar
+          });
+        }
+
+        overlay.remove();
+        window.toast && window.toast('玩家档案已更新');
+        LifeGameApp.render();
+      };
+    },
+
+    // ===== 阶段 4: 六维属性成长轨迹与分析弹窗 =====
+    async showStatHistoryModal(currentStats) {
+      var summary = window.LifeGameCompanion ?
+        await window.LifeGameCompanion.PlayerProfile.getStatGrowthAnalysis() :
+        {};
+      var history = window.LifeGameCompanion ?
+        await window.LifeGameCompanion.PlayerProfile.getStatHistory() :
+        [];
+
+      var overlay = document.createElement('div');
+      overlay.className = 'lg-modal-overlay';
+
+      var statMeta = {
+        INT: { label: '智力 (INT)', desc: '知识储备与深度求索', icon: 'fa-brain' },
+        CHA: { label: '魅力 (CHA)', desc: '真挚共情与温暖表达', icon: 'fa-comments' },
+        WIL: { label: '意志 (WIL)', desc: '长线自律与抗压韧性', icon: 'fa-shield-heart' },
+        PHY: { label: '体能 (PHY)', desc: '机体活力与现实运动', icon: 'fa-person-running' },
+        PER: { label: '敏锐 (PER)', desc: '日程洞察与生活复盘', icon: 'fa-eye' },
+        INS: { label: '灵感 (INS)', desc: '创造力与多元泛读', icon: 'fa-lightbulb' }
+      };
+
+      var html =
+        '<div class="lg-modal-card lg-modal-card-lg">' +
+          '<div class="lg-modal-title">' +
+            '<i class="fa-solid fa-chart-line"></i>' +
+            '<span>六维属性成长轨迹与溯源</span>' +
+          '</div>' +
+
+          '<div class="lg-notice-box">' +
+            '<i class="fa-solid fa-seedling"></i>' +
+            '<span>属性轨迹完全来源于真实日常探索结算。历史若缺少细分流水将真实提示，绝不凭空伪造。</span>' +
+          '</div>' +
+
+          // 六维成长综述网格
+          '<div class="lg-stat-analysis-grid">';
+
+      Object.keys(statMeta).forEach(function(k) {
+        var meta = statMeta[k];
+        var s = summary[k] || { totalGained: 0, topSource: '现实自律', recent7Days: 0 };
+        var curVal = currentStats[k] || 70;
+
+        html +=
+          '<div class="lg-stat-analysis-card">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+              '<div style="font-weight:700;font-size:13px;color:var(--c-text);"><i class="fa-solid ' + meta.icon + '"></i> ' + meta.label + '</div>' +
+              '<div style="font-size:14px;font-weight:800;color:var(--c-text);">' + curVal + '</div>' +
+            '</div>' +
+            '<div style="font-size:10px;color:var(--c-sub);margin-top:2px;">' + meta.desc + '</div>' +
+            '<div style="margin-top:6px;font-size:11px;color:var(--c-text);background:var(--c-bg);padding:4px 8px;border-radius:var(--r-sm);border:1px solid var(--c-border);">' +
+              '<div>主来源：<strong>' + escapeHtml(s.topSource) + '</strong></div>' +
+              '<div>近7天增益：<strong>+' + s.recent7Days + '</strong> · 累计轨迹：+' + s.totalGained + '</div>' +
+            '</div>' +
+          '</div>';
+      });
+
+      html +=
+          '</div>' +
+
+          // 最近流水
+          '<div style="margin-top:14px;font-size:12px;font-weight:700;color:var(--c-text);"><i class="fa-solid fa-clock-rotate-left"></i> 最近属性入账审计明细</div>' +
+          '<div style="margin-top:6px;max-height:160px;overflow-y:auto;background:var(--c-bg);border:1px solid var(--c-border);border-radius:var(--r-sm);padding:8px;">';
+
+      if (history.length === 0) {
+        html += '<div style="font-size:11px;color:var(--c-sub);text-align:center;padding:14px;">历史累计值，详细来源待补充（完成新委托后自动记账）</div>';
+      } else {
+        history.slice(0, 30).forEach(function(it) {
+          html +=
+            '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--c-border);font-size:11px;">' +
+              '<div><strong>+' + it.amount + ' ' + it.statKey + '</strong> <span style="color:var(--c-sub);">· ' + escapeHtml(it.sourceTitle) + '</span></div>' +
+              '<div style="color:var(--c-hint);">' + formatTimeShort(it.timestamp) + '</div>' +
+            '</div>';
+        });
+      }
+
+      html +=
+          '</div>' +
+
+          '<div class="lg-modal-footer">' +
+            '<button type="button" class="lg-btn-primary" id="modal-stat-close" style="width:100%;">确认</button>' +
+          '</div>' +
+        '</div>';
+
+      overlay.innerHTML = html;
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#modal-stat-close').onclick = function() {
+        overlay.remove();
+      };
+    },
+
+    // ===== 阶段 4: 勋章荣誉详情弹窗 =====
+    async showBadgeDetailModal(badge) {
+      var overlay = document.createElement('div');
+      overlay.className = 'lg-modal-overlay';
+
+      var isUnlocked = badge.unlocked;
+      var hasTitle = Boolean(badge.titleReward);
+
+      overlay.innerHTML =
+        '<div class="lg-modal-card">' +
+          '<div style="text-align:center;padding-top:10px;">' +
+            '<div class="lg-badge-icon-lg ' + (isUnlocked ? '' : 'locked') + '">' +
+              '<i class="' + (badge.icon || 'fa-solid fa-medal') + '"></i>' +
+            '</div>' +
+            '<div style="font-size:16px;font-weight:700;margin-top:10px;color:var(--c-text);">' + escapeHtml(badge.name) + '</div>' +
+            '<div style="font-size:11px;color:var(--c-sub);margin-top:2px;">所属分类：' + escapeHtml(badge.category) + ' · 荣誉点 +' + (badge.points || 100) + '</div>' +
+          '</div>' +
+
+          '<div style="margin-top:14px;background:var(--c-bg);padding:10px 12px;border-radius:var(--r-sm);border:1px solid var(--c-border);">' +
+            '<div style="font-size:11px;font-weight:700;color:var(--c-text);">【达成条件】</div>' +
+            '<div style="font-size:12px;color:var(--c-sub);margin-top:4px;">' + escapeHtml(badge.requirement || badge.desc || '完成现实特定自律目标') + '</div>' +
+            '<div style="font-size:11px;font-weight:700;color:var(--c-text);margin-top:8px;">【勋章寄语】</div>' +
+            '<div style="font-size:12px;color:var(--c-sub);margin-top:4px;">' + escapeHtml(badge.desc || '') + '</div>' +
+            (badge.unlockedAt ?
+              '<div style="font-size:10px;color:var(--c-hint);margin-top:8px;"><i class="fa-solid fa-clock"></i> 解锁于：' + formatTimeShort(badge.unlockedAt) + '</div>' :
+              '<div style="font-size:10px;color:var(--c-hint);margin-top:8px;"><i class="fa-solid fa-lock"></i> 尚未达成，等待现实行动解锁</div>') +
+          '</div>' +
+
+          (hasTitle ?
+            ('<div style="margin-top:10px;background:var(--c-surface-2);padding:10px;border-radius:var(--r-sm);border:1px solid var(--c-border);display:flex;align-items:center;justify-content:space-between;">' +
+              '<div>' +
+                '<div style="font-size:10px;color:var(--c-sub);">专属解锁称号</div>' +
+                '<div style="font-size:13px;font-weight:700;color:var(--c-text);">【' + escapeHtml(badge.titleReward) + '】</div>' +
+              '</div>' +
+              (isUnlocked ?
+                '<button type="button" class="lg-btn-secondary" id="badge-modal-equip-title"><i class="fa-solid fa-crown"></i> 立即佩戴</button>' :
+                '<span style="font-size:10px;color:var(--c-hint);">解锁后可佩戴</span>') +
+            '</div>') : '') +
+
+          '<div class="lg-modal-footer" style="margin-top:14px;">' +
+            '<button type="button" class="lg-btn-secondary" id="badge-modal-fav">' +
+              (badge.isFavorite ? '<i class="fa-solid fa-star" style="color:var(--c-text);"></i> 取消置顶' : '<i class="fa-regular fa-star"></i> 置顶到主页') +
+            '</button>' +
+            '<button type="button" class="lg-btn-primary" id="badge-modal-close">关闭</button>' +
+          '</div>' +
+        '</div>';
+
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#badge-modal-close').onclick = function() {
+        overlay.remove();
+      };
+
+      var equipBtn = overlay.querySelector('#badge-modal-equip-title');
+      if (equipBtn) {
+        equipBtn.onclick = async function() {
+          if (window.AchievementService) {
+            await window.AchievementService.equipTitle(badge.titleReward);
+            window.toast && window.toast('👑 已成功佩戴称号：【' + badge.titleReward + '】');
+            overlay.remove();
+            LifeGameApp.render();
+          }
+        };
+      }
+
+      var favBtn = overlay.querySelector('#badge-modal-fav');
+      if (favBtn) {
+        favBtn.onclick = async function() {
+          if (window.LifeGameCompanion) {
+            var nowFav = await window.LifeGameCompanion.Achievements.toggleFavoriteBadge(badge.id);
+            window.toast && window.toast(nowFav ? '已设为个人主页代表勋章' : '已取消置顶');
+            overlay.remove();
+            LifeGameApp.render();
+          }
+        };
+      }
+    },
+
+    // ===== 阶段 4: 成长纪念卡全屏赏阅弹窗 =====
+    async showMementoCardModal(card) {
+      var overlay = document.createElement('div');
+      overlay.className = 'lg-modal-overlay';
+
+      var html =
+        '<div class="lg-memento-card-modal">' +
+          '<div class="lg-memento-card-inner">' +
+            '<div class="lg-memento-card-badge"><i class="fa-solid fa-id-badge"></i> 成长纪念卡</div>' +
+            '<div class="lg-memento-card-title">' + escapeHtml(card.title) + '</div>' +
+            '<div class="lg-memento-card-sub">' + escapeHtml(card.subtitle || '现实成长足迹纪事') + '</div>' +
+            '<div class="lg-memento-card-date">' + escapeHtml(card.date || '') + '</div>' +
+
+            (card.levelSnapshot ?
+              ('<div class="lg-memento-card-level">达成等级 · LV.' + card.levelSnapshot + '</div>') : '') +
+
+            '<div class="lg-memento-card-quote">「' + escapeHtml(card.quote || '脚踏实地的自律，终将铸就照亮现实的星光。') + '」</div>' +
+
+            (card.charWish ?
+              ('<div class="lg-memento-card-wish">' +
+                '<div style="font-size:10px;color:var(--c-sub);margin-bottom:2px;">伴侣同行赠言</div>' +
+                '<div>' + escapeHtml(card.charWish) + '</div>' +
+              '</div>') : '') +
+
+            '<div class="lg-memento-card-footer">' +
+              '<button type="button" class="lg-btn-secondary" id="memento-btn-copy"><i class="fa-regular fa-copy"></i> 复制纪事</button>' +
+              '<button type="button" class="lg-btn-primary" id="memento-btn-close">珍藏收入</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+
+      overlay.innerHTML = html;
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#memento-btn-close').onclick = function() {
+        overlay.remove();
+      };
+
+      overlay.querySelector('#memento-btn-copy').onclick = function() {
+        var copyText = '【人生游戏成长纪念卡】\n' + card.title + '\n日期：' + card.date + '\n寄语：' + card.quote;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(copyText).then(function() {
+            window.toast && window.toast('成长纪念纪事已复制到剪贴板');
+          });
+        } else {
+          prompt('请复制以下纪念卡内容：', copyText);
+        }
+      };
+    },
+
+    // ===== 阶段 4: 新增手账随笔手记弹窗 =====
+    showAddJournalNoteModal() {
+      var overlay = document.createElement('div');
+      overlay.className = 'lg-modal-overlay';
+
+      overlay.innerHTML =
+        '<div class="lg-modal-card">' +
+          '<div class="lg-modal-title">' +
+            '<i class="fa-solid fa-pen-nib"></i>' +
+            '<span>写一篇人生冒险感悟手记</span>' +
+          '</div>' +
+
+          '<div class="lg-form-group">' +
+            '<label class="lg-form-label">手记标题 (可选)</label>' +
+            '<input type="text" class="lg-input" id="journal-note-title" placeholder="如：攻克雅思精读后的静谧午后">' +
+          '</div>' +
+
+          '<div class="lg-form-group">' +
+            '<label class="lg-form-label">生活感悟与自律手记 *</label>' +
+            '<textarea class="lg-textarea" id="journal-note-content" rows="4" placeholder="记录下当下现实里的微小胜利、思考或与伴侣同行的点滴心境..."></textarea>' +
+          '</div>' +
+
+          '<div class="lg-form-group">' +
+            '<label class="lg-form-label">标签 (逗号分隔)</label>' +
+            '<input type="text" class="lg-input" id="journal-note-tags" placeholder="生活手记, 深度专注, 自我超越">' +
+          '</div>' +
+
+          '<div class="lg-modal-footer">' +
+            '<button type="button" class="lg-btn-secondary" id="journal-note-cancel">取消</button>' +
+            '<button type="button" class="lg-btn-primary" id="journal-note-save">录入手账</button>' +
+          '</div>' +
+        '</div>';
+
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#journal-note-cancel').onclick = function() {
+        overlay.remove();
+      };
+
+      overlay.querySelector('#journal-note-save').onclick = async function() {
+        var content = overlay.querySelector('#journal-note-content').value.trim();
+        if (!content) {
+          window.toast && window.toast('请输入手记内容');
+          return;
+        }
+        var title = overlay.querySelector('#journal-note-title').value.trim();
+        var rawTags = overlay.querySelector('#journal-note-tags').value.trim();
+        var tags = rawTags ? rawTags.split(/[,，]/).map(function(t) { return t.trim(); }).filter(Boolean) : ['生活感悟'];
+
+        if (window.LifeGameCompanion) {
+          await window.LifeGameCompanion.Journal.addUserNote(title, content, tags);
+        }
+
+        overlay.remove();
+        window.toast && window.toast('✨ 随笔已收入人生冒险手账');
+        LifeGameApp.render();
       };
     }
   };

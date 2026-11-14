@@ -658,7 +658,10 @@
   // ====================================================
   // 4. 成就馆 (全域成就、勋章、碎片、称号联动)
   // ====================================================
-  async function showAchievementPage() {
+  async function showAchievementPage(options) {
+    if (window.AchievementHallApp && typeof window.AchievementHallApp.open === 'function') {
+      return await window.AchievementHallApp.open(options);
+    }
     var existing = document.getElementById('achievement-page');
     if (existing) existing.remove();
 
@@ -1707,7 +1710,10 @@
   window.showBrowserApp = showBrowserPage;
   window.showStudyRoomApp = showStudyRoomPage;
   window.showOurHomeApp = showOurHomePage;
-  window.showAchievementApp = showAchievementPage;
+  if (!window.AchievementHallApp) {
+    window.showAchievementPage = showAchievementPage;
+    window.showAchievementApp = showAchievementPage;
+  }
   if (!window.TimeCalendarApp) {
     window.showTimeCalendarApp = showTimeCalendarPage;
   }

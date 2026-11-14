@@ -11,6 +11,8 @@
     STUDY_EXAMS: 'wanwan_study_exams',
     STUDY_RECORDS: 'wanwan_study_records',
     SETTLED_STUDY: 'life_game_records_settled_v1',
+    FOCUS_ALLOCATIONS: 'life_game_focus_allocations_v1',
+    UNALLOCATED_FOCUS_RECORDS: 'life_game_unallocated_focus_records_v1',
     CALENDAR_EVENTS: 'time_calendar_events',
     TASKS: 'life_game_tasks_v1',
     GOALS: 'life_game_goals_v1'
@@ -64,8 +66,26 @@
     return (prefix || 'link') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
   }
 
+  function formatLocalDate(d) {
+    if (!d) return '';
+    var dateObj = d instanceof Date ? d : new Date(d);
+    if (isNaN(dateObj.getTime())) return '';
+    return dateObj.getFullYear() + '-' + String(dateObj.getMonth() + 1).padStart(2, '0') + '-' + String(dateObj.getDate()).padStart(2, '0');
+  }
+
   function getTodayStr() {
-    return new Date().toISOString().slice(0, 10);
+    if (global.TimeCalendarIntegrations && typeof global.TimeCalendarIntegrations.getTodayLocalDateStr === 'function') {
+      return global.TimeCalendarIntegrations.getTodayLocalDateStr();
+    }
+    return formatLocalDate(new Date());
+  }
+
+  function computeEndTimeFromStart(startTime, durationMins) {
+    if (!startTime || !/^\d{2}:\d{2}$/.test(startTime)) return '';
+    var p = startTime.split(':');
+    var total = parseInt(p[0], 10) * 60 + parseInt(p[1], 10) + (Math.max(15, parseInt(durationMins, 10) || 60));
+    if (total >= 24 * 60) total = 23 * 60 + 59;
+    return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
   }
 
   // ==========================================
@@ -159,23 +179,68 @@
   // 2. 人生游戏 × 陪伴自习室待办双向联动
   // ==========================================
   var StudyTodoIntegration = {
-    // 2.1 将人生游戏委托关联/同步至自习室待办
+    // 2.1 将人生游戏委托关联/同步至自习室待办 (幂等查找、防重复创建、支持成功/部分成功/失败多态状态)
     async linkTaskToStudyTodo(task, options) {
-      if (!task || !task.id) return null;
+      options = options || {};
+      if (!task || !task.id) {
+        return {
+          status: 'failed',
+          success: false,
+          partial: false,
+          stepResults: { lifeGameTask: { success: false, error: 'task_missing' } },
+          error: 'task_missing'
+        };
+      }
       var lockKey = 'sr_todo_sync_' + task.id;
-      if (!acquireLock(lockKey)) return null;
+      if (!acquireLock(lockKey)) {
+        return {
+          status: 'failed',
+          success: false,
+          partial: false,
+          stepResults: { lifeGameTask: { success: true, taskId: task.id }, lock: { acquired: false } },
+          error: 'locked'
+        };
+      }
+
+      var stepResults = {
+        lifeGameTask: { success: true, taskId: task.id },
+        studyRoomTodo: { success: false },
+        linkRegistry: { success: false }
+      };
 
       try {
         var todos = await loadConfig(STORAGE_KEYS.STUDY_TODOS, []);
         if (!Array.isArray(todos)) todos = [];
 
+        // 核心加固：按稳定来源 ID 与任务 ID 查找已有记录，重试或修复时绝不重复创建
+        var stableTodoId = 'sr_todo_lg_' + task.id;
         var existingLink = await LinkRegistry.findLink('life-game', task.id, 'study-room');
         var targetTodo = null;
 
         if (existingLink && existingLink.targetId) {
           targetTodo = todos.find(function(t) { return String(t.id) === String(existingLink.targetId); });
-        } else if (task.studyTodoId) {
+        }
+        if (!targetTodo && task.studyTodoId) {
           targetTodo = todos.find(function(t) { return String(t.id) === String(task.studyTodoId); });
+        }
+        if (!targetTodo) {
+          targetTodo = todos.find(function(t) {
+            return String(t.id) === stableTodoId ||
+              (t.source && t.source.app === 'life-game' && String(t.source.taskId) === String(task.id));
+          });
+        }
+
+        // 故障注入测试点：测试人生游戏任务保存成功、自习室待办创建失败
+        if (options._injectStudyRoomFailure) {
+          stepResults.studyRoomTodo.error = 'injected_study_room_failure';
+          await LinkRegistry.logSync('linkTaskToStudyTodo_partial_fail', { taskId: task.id, step: 'studyRoomTodo' });
+          return {
+            status: 'partial',
+            success: false,
+            partial: true,
+            stepResults: stepResults,
+            error: 'study_room_creation_failed'
+          };
         }
 
         var todoDate = task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : getTodayStr();
@@ -189,10 +254,10 @@
             targetTodo.done = isDone;
             targetTodo.updatedAt = Date.now();
           }
+          stepResults.studyRoomTodo = { success: true, todoId: targetTodo.id, reused: true };
         } else {
-          var newTodoId = 'sr_todo_lg_' + task.id;
           targetTodo = {
-            id: newTodoId,
+            id: stableTodoId,
             text: task.title,
             date: todoDate,
             done: isDone,
@@ -208,6 +273,7 @@
             }
           };
           todos.push(targetTodo);
+          stepResults.studyRoomTodo = { success: true, todoId: targetTodo.id, created: true };
         }
 
         await saveConfig(STORAGE_KEYS.STUDY_TODOS, todos);
@@ -222,7 +288,7 @@
         if (task.studyTodoId !== targetTodo.id) {
           task.studyTodoId = targetTodo.id;
           task.linkedSource = 'studyRoom';
-          if (global.LifeGameCore && options && options.saveTaskDirectly) {
+          if (global.LifeGameCore && options.saveTaskDirectly) {
             var tasks = await global.LifeGameCore.getTasks();
             var cur = tasks.find(function(t) { return t.id === task.id; });
             if (cur) {
@@ -233,8 +299,22 @@
           }
         }
 
+        // 故障注入测试点：测试自习室创建成功、链接注册表保存失败（部分成功状态）
+        if (options._injectLinkRegistryFailure) {
+          stepResults.linkRegistry.error = 'injected_link_registry_failure';
+          await LinkRegistry.logSync('linkTaskToStudyTodo_partial_fail', { taskId: task.id, step: 'linkRegistry' });
+          return Object.assign(targetTodo, {
+            status: 'partial',
+            success: false,
+            partial: true,
+            stepResults: stepResults,
+            todo: targetTodo,
+            error: 'link_registry_save_failed'
+          });
+        }
+
         // 注册关联映射
-        await LinkRegistry.createOrUpdateLink({
+        var linkRecord = await LinkRegistry.createOrUpdateLink({
           sourceApp: 'life-game',
           sourceType: 'task',
           sourceId: task.id,
@@ -243,6 +323,7 @@
           targetId: targetTodo.id,
           charId: task.charId || null
         });
+        stepResults.linkRegistry = { success: true, linkId: linkRecord.linkId };
 
         await LinkRegistry.logSync('linkTaskToStudyTodo', { taskId: task.id, todoId: targetTodo.id });
 
@@ -251,7 +332,14 @@
           global.TimeCalendarIntegrations.emit('todo_changed', { todoId: targetTodo.id, originApp: 'life-game' });
         }
 
-        return targetTodo;
+        // 返回兼具 Todo 实体属性与显式状态报告的对象（既完全兼容老代码直接读 .id/.text，又提供 .status）
+        return Object.assign(targetTodo, {
+          status: 'success',
+          success: true,
+          partial: false,
+          stepResults: stepResults,
+          todo: targetTodo
+        });
       } finally {
         releaseLock(lockKey);
       }
@@ -391,9 +479,197 @@
   };
 
   // ==========================================
-  // 3. 自习室真实专注时长自动推进 RPG 学习任务
+  // 3. 自习室真实专注时长自动推进 RPG 学习任务 (加固版)
+  // 核心安全原则：稳定任务 ID 优先、严禁乱计入最新任务、未匹配留存待分配池、时长防多任务重用、基础经验与任务进度独立判定
   // ==========================================
   var StudyFocusSessionIntegration = {
+    // 读取任务时长分配注册表 { [recordId]: { taskId, taskTitle, durationMinutes, allocatedAt } }
+    async getAllocations() {
+      return await loadConfig(STORAGE_KEYS.FOCUS_ALLOCATIONS, {});
+    },
+
+    async saveAllocations(allocations) {
+      await saveConfig(STORAGE_KEYS.FOCUS_ALLOCATIONS, allocations);
+    },
+
+    // 读取待分配专注记录池
+    async getUnallocatedRecords() {
+      return await loadConfig(STORAGE_KEYS.UNALLOCATED_FOCUS_RECORDS, []);
+    },
+
+    async saveUnallocatedRecords(records) {
+      await saveConfig(STORAGE_KEYS.UNALLOCATED_FOCUS_RECORDS, records);
+    },
+
+    // 内部方法：将无法匹配的专注记录记入待分配池（防重复添加）
+    async _recordAsUnallocated(payload, recId, duration) {
+      try {
+        var unallocated = await this.getUnallocatedRecords();
+        if (!Array.isArray(unallocated)) unallocated = [];
+        var exists = unallocated.some(function(r) { return r.recordId === recId; });
+        if (!exists) {
+          unallocated.unshift({
+            recordId: recId,
+            durationMinutes: duration,
+            taskName: (payload.taskName || payload.name || '').trim(),
+            todoId: payload.todoId || null,
+            charId: payload.companionCharId || (payload.companionChar && payload.companionChar.id) || null,
+            charName: payload.companionCharName || (payload.companionChar && payload.companionChar.name) || '',
+            status: 'unallocated',
+            timestamp: payload.timestamp || Date.now(),
+            createdAt: Date.now()
+          });
+          if (unallocated.length > 100) unallocated = unallocated.slice(0, 100);
+          await this.saveUnallocatedRecords(unallocated);
+          await LinkRegistry.logSync('focusRecordUnallocated', { recordId: recId, duration: duration, taskName: payload.taskName });
+        }
+      } catch (e) {
+        console.warn('[LifeGameIntegrations] _recordAsUnallocated error:', e);
+      }
+    },
+
+    // 内部方法：从待分配池中移除已分配记录
+    async _removeUnallocatedRecord(recId) {
+      try {
+        var unallocated = await this.getUnallocatedRecords();
+        if (!Array.isArray(unallocated)) return;
+        var filtered = unallocated.filter(function(r) { return r.recordId !== recId; });
+        if (filtered.length !== unallocated.length) {
+          await this.saveUnallocatedRecords(filtered);
+        }
+      } catch (_) {}
+    },
+
+    // 核心推进引擎：为具体任务分配专注进度
+    async allocateFocusRecord(payload, options) {
+      options = options || {};
+      if (!payload || !payload.durationMinutes) return { status: 'ignored', reason: 'invalid_duration' };
+      var duration = Number(payload.durationMinutes) || 0;
+      if (duration <= 0) return { status: 'ignored', reason: 'invalid_duration' };
+
+      var recId = payload.recordId || payload.id || ('focus_' + (payload.timestamp || Date.now()) + '_' + duration);
+
+      // 1. 防重复消费：检查该段专注时长是否已被分配给任务
+      var allocations = await this.getAllocations();
+      if (allocations && allocations[recId]) {
+        return {
+          status: 'already_allocated',
+          taskId: allocations[recId].taskId,
+          allocatedMinutes: allocations[recId].durationMinutes,
+          taskTitle: allocations[recId].taskTitle
+        };
+      }
+
+      if (!global.LifeGameCore) return { status: 'failed', reason: 'core_unavailable' };
+      var tasks = await global.LifeGameCore.getTasks();
+      if (!Array.isArray(tasks) || tasks.length === 0) {
+        await this._recordAsUnallocated(payload, recId, duration);
+        return { status: 'unallocated', recordId: recId, reason: 'no_tasks' };
+      }
+
+      var targetTask = null;
+      var taskName = (payload.taskName || payload.name || '').trim();
+
+      // 规则 A：稳定任务 ID 严格优先
+      if (payload.taskId) {
+        targetTask = tasks.find(function(t) {
+          return String(t.id) === String(payload.taskId) && (t.status === 'pending' || (options.allowCompleted && t.status === 'completed'));
+        });
+      }
+
+      // 规则 B：关联的自习待办 ID 匹配
+      if (!targetTask && payload.todoId) {
+        targetTask = tasks.find(function(t) {
+          return (t.status === 'pending' || (options.allowCompleted && t.status === 'completed')) && String(t.studyTodoId) === String(payload.todoId);
+        });
+      }
+
+      // 规则 C：严格规范化的学习类任务标题匹配 (必须包含或完全吻合)
+      if (!targetTask && taskName) {
+        targetTask = tasks.find(function(t) {
+          if (t.status !== 'pending' && !(options.allowCompleted && t.status === 'completed')) return false;
+          if (t.category !== 'study') return false;
+          var cleanTitle = t.title.trim().toLowerCase();
+          var cleanTarget = taskName.toLowerCase();
+          return cleanTitle === cleanTarget || cleanTitle.indexOf(cleanTarget) >= 0 || cleanTarget.indexOf(cleanTitle) >= 0;
+        });
+      }
+
+      // 严格安全屏障：禁止将无法匹配的专注记录自动计入最新学习任务！未匹配记录保留为待分配状态
+      if (!targetTask) {
+        await this._recordAsUnallocated(payload, recId, duration);
+        return {
+          status: 'unallocated',
+          recordId: recId,
+          reason: 'no_matching_study_task'
+        };
+      }
+
+      // 记录任务消费绑定（防止同一段专注时长被后续其他任务冒领）
+      allocations[recId] = {
+        taskId: targetTask.id,
+        taskTitle: targetTask.title,
+        durationMinutes: duration,
+        allocatedAt: Date.now()
+      };
+      await this.saveAllocations(allocations);
+
+      // 推进任务 accumulatedMinutes
+      targetTask.accumulatedMinutes = (targetTask.accumulatedMinutes || 0) + duration;
+      var targetMins = targetTask.targetMinutes || 30;
+      var justCompleted = false;
+      if (targetTask.accumulatedMinutes >= targetMins && targetTask.status === 'pending') {
+        targetTask.status = 'completed';
+        targetTask.completedAt = Date.now();
+        justCompleted = true;
+      }
+
+      await global.LifeGameCore.saveTasks(tasks);
+
+      // 若此前留存在待分配池，清除待分配状态
+      await this._removeUnallocatedRecord(recId);
+
+      await LinkRegistry.logSync('focusRecordAllocated', {
+        recordId: recId,
+        taskId: targetTask.id,
+        duration: duration,
+        accumulatedMinutes: targetTask.accumulatedMinutes,
+        status: targetTask.status
+      });
+
+      return {
+        status: 'allocated',
+        taskId: targetTask.id,
+        allocatedMinutes: duration,
+        accumulatedMinutes: targetTask.accumulatedMinutes,
+        completed: targetTask.status === 'completed',
+        justCompleted: justCompleted,
+        task: targetTask
+      };
+    },
+
+    // 手动/显式将待分配记录指派给目标任务
+    async allocateRecordToTask(recordId, taskId) {
+      if (!recordId || !taskId) return { success: false, msg: '参数不全' };
+      var unallocated = await this.getUnallocatedRecords();
+      var rec = unallocated.find(function(r) { return r.recordId === recordId; });
+      if (!rec) return { success: false, msg: '未在待分配池中找到该专注记录' };
+
+      var allocRes = await this.allocateFocusRecord({
+        recordId: rec.recordId,
+        durationMinutes: rec.durationMinutes,
+        taskName: rec.taskName,
+        taskId: taskId
+      });
+
+      return {
+        success: allocRes.status === 'allocated',
+        result: allocRes
+      };
+    },
+
+    // 全域专注结束统一接收入口
+    // 关键架构：基础经验核销 (life_game_records_settled_v1) 与 任务进度分配 (life_game_focus_allocations_v1) 独立判定！
     async handleFocusSessionCompleted(payload) {
       if (!payload || !payload.durationMinutes) return;
       var duration = Number(payload.durationMinutes) || 0;
@@ -404,68 +680,62 @@
       if (!acquireLock(lockKey)) return;
 
       try {
-        // 1. 记入已结算专注流水，防止手动核销重复累加
-        if (global.LifeGameCore && typeof global.LifeGameCore.addSettledStudyRecordId === 'function') {
-          await global.LifeGameCore.addSettledStudyRecordId(recId);
-        }
+        // ----------------------------------------------------
+        // 步骤 1: 基础经验核销独立判定
+        // ----------------------------------------------------
+        var settledIds = global.LifeGameCore && typeof global.LifeGameCore.getSettledStudyRecordIds === 'function' ?
+          await global.LifeGameCore.getSettledStudyRecordIds() : [];
 
-        if (!global.LifeGameCore) return;
-        var tasks = await global.LifeGameCore.getTasks();
-        if (!Array.isArray(tasks) || tasks.length === 0) return;
+        var isBaseSettled = settledIds.indexOf(recId) !== -1;
+        if (!isBaseSettled) {
+          var eventId = 'study_record_' + recId;
+          var expReq = Math.round(duration * 1.2);
+          var coinsReq = Math.round(duration * 0.5);
 
-        var taskName = (payload.taskName || '').trim();
-        var targetTask = null;
+          var guard = global.WanwanSharedHub && global.WanwanSharedHub.RewardGuard ?
+            await global.WanwanSharedHub.RewardGuard.validateAndGrant(eventId, expReq, coinsReq, duration) :
+            { allowed: true, expGranted: expReq, coinsGranted: coinsReq };
 
-        // 匹配逻辑优先级：
-        // A. 具有相同 studyTodoId 或关联记录的任务
-        if (payload.todoId) {
-          targetTask = tasks.find(function(t) {
-            return t.status === 'pending' && t.studyTodoId === payload.todoId;
-          });
-        }
-        // B. 标题包含自习室当前任务名的学习类任务
-        if (!targetTask && taskName) {
-          targetTask = tasks.find(function(t) {
-            return t.status === 'pending' && t.category === 'study' && (t.title.indexOf(taskName) >= 0 || taskName.indexOf(t.title) >= 0);
-          });
-        }
-        // C. 任意第一个待完成的学习攻坚任务
-        if (!targetTask) {
-          targetTask = tasks.find(function(t) {
-            return t.status === 'pending' && t.category === 'study';
-          });
-        }
-
-        if (targetTask) {
-          var targetMins = targetTask.targetMinutes || 30;
-          targetTask.accumulatedMinutes = (targetTask.accumulatedMinutes || 0) + duration;
-
-          var justCompleted = false;
-          if (targetTask.accumulatedMinutes >= targetMins && targetTask.status === 'pending') {
-            targetTask.status = 'completed';
-            targetTask.completedAt = Date.now();
-            justCompleted = true;
+          if (guard.allowed) {
+            if (global.LifeGameService && guard.expGranted > 0) {
+              await global.LifeGameService.addExpAndStats(
+                guard.expGranted,
+                { INT: Math.max(1, Math.round(duration / 25)), WIL: Math.max(1, Math.round(duration / 35)) },
+                '自习室专注 ' + duration + ' 分钟',
+                eventId,
+                { alreadyValidated: true }
+              );
+            }
+            if (global.SharedEconomyService && guard.coinsGranted > 0) {
+              await global.SharedEconomyService.addCoins(guard.coinsGranted, '自习室专注结算收益', 'studyRoom');
+            }
           }
 
-          await global.LifeGameCore.saveTasks(tasks);
-
-          await LinkRegistry.logSync('focusSessionProgression', {
-            taskId: targetTask.id,
-            duration: duration,
-            accumulated: targetTask.accumulatedMinutes,
-            status: targetTask.status
-          });
-
-          // 如果任务刚好达成，触发轻提示引导用户到人生游戏领奖
-          if (justCompleted && global.toast) {
-            global.toast('🎯 现实委托「' + targetTask.title + '」已达成！前往人生游戏领取丰厚奖励！');
-          }
-
-          var page = document.getElementById('life-game-page');
-          if (page && global.LifeGameApp) {
-            global.LifeGameApp.render();
+          if (global.LifeGameCore && typeof global.LifeGameCore.addSettledStudyRecordId === 'function') {
+            await global.LifeGameCore.addSettledStudyRecordId(recId);
           }
         }
+
+        // ----------------------------------------------------
+        // 步骤 2: 任务进度分配独立判定 (即使已核销基础经验，未分配进度的合法任务依然必须推进)
+        // ----------------------------------------------------
+        var allocResult = await this.allocateFocusRecord(payload);
+
+        if (allocResult.status === 'allocated' && allocResult.justCompleted) {
+          if (global.toast) {
+            global.toast('🎯 现实委托「' + (allocResult.task ? allocResult.task.title : '学习任务') + '」已达成！前往人生游戏领取丰厚奖励！');
+          }
+        }
+
+        var page = document.getElementById('life-game-page');
+        if (page && global.LifeGameApp) {
+          global.LifeGameApp.render();
+        }
+
+        return {
+          baseRewardSettled: true,
+          allocationResult: allocResult
+        };
       } finally {
         releaseLock(lockKey);
       }
@@ -606,21 +876,36 @@
         }
 
         var isDone = task.status === 'completed' || task.status === 'claimed';
+        var isClaimed = task.status === 'claimed';
         var charObj = task.charId ? charMap[String(task.charId)] : null;
         var charName = charObj ? (charObj.name || '') : (task.charName || '');
+        var hasStartTime = !!(task.startTime && /^\d{2}:\d{2}$/.test(String(task.startTime)));
+        var startTime = hasStartTime ? String(task.startTime) : '';
+        var plannedDuration = Number(task.plannedDuration || task.targetMinutes || 0);
+        var endTime = (task.endTime && /^\d{2}:\d{2}$/.test(String(task.endTime)))
+          ? String(task.endTime)
+          : (hasStartTime ? computeEndTimeFromStart(startTime, plannedDuration || 60) : '');
 
         events.push({
           id: 'lg_task_' + task.id,
           title: '人生委托 · ' + (task.title || '现实委托'),
           date: taskDate,
-          isAllDay: true,
-          startTime: task.startTime || '',
-          endTime: '',
-          category: 'other',
+          isAllDay: !hasStartTime,
+          startTime: startTime,
+          endTime: endTime,
+          category: task.category === 'study' ? 'study' : 'other',
           relationType: task.charId ? 'specificChar' : 'personal',
           charId: task.charId || null,
           charName: charName,
-          notes: (task.desc || '') + ' [难度: ' + (task.difficulty || 'mid') + ' | 奖励: +' + (task.rewardExp || 35) + 'EXP]',
+          priority: task.priority || 'normal',
+          difficulty: task.difficulty || 'mid',
+          plannedDuration: plannedDuration,
+          rewardExp: Number(task.rewardExp || 35),
+          rewardCoins: Number(task.rewardCoins || 0),
+          status: task.status || 'pending',
+          readOnly: isClaimed,
+          sourceRevision: task.updatedAt || task.createdAt || 1,
+          notes: (task.desc || '') + ' [难度: ' + (task.difficulty || 'mid') + ' | 奖励: +' + (task.rewardExp || 35) + 'EXP' + (task.rewardCoins ? ' +' + task.rewardCoins + '金币' : '') + ']',
           showInCountdown: false,
           completed: isDone,
           isPinned: false,
@@ -630,7 +915,8 @@
             app: 'life-game',
             type: 'task',
             taskId: task.id,
-            readOnly: false
+            charId: task.charId || null,
+            readOnly: isClaimed
           }
         });
       });
@@ -638,17 +924,32 @@
       return events;
     },
 
-    // 5.2 日历中修改委托任务（标题、排期日期、说明）时回写权威源 (LifeGameCore)
+    // 5.2 日历中修改委托任务（标题、排期日期、起止时间、说明）时回写权威源 (LifeGameCore)
     async saveTaskFromCalendar(item) {
-      if (!item || !item.source || item.source.app !== 'life-game' || !global.LifeGameCore) return false;
+      if (!item || !item.source || item.source.app !== 'life-game' || !global.LifeGameCore) {
+        return { success: false, changed: false, error: 'invalid_source', message: '无效的人生游戏任务来源' };
+      }
       var taskId = item.source.taskId;
       var lockKey = 'tc_task_edit_' + taskId;
-      if (!acquireLock(lockKey)) return false;
+      if (!acquireLock(lockKey)) {
+        return { success: false, changed: false, error: 'locked', message: '同步操作正在进行，请稍后再试' };
+      }
 
       try {
         var tasks = await global.LifeGameCore.getTasks();
         var task = tasks.find(function(t) { return t.id === taskId; });
-        if (!task) return false;
+        if (!task) {
+          return { success: false, changed: false, error: 'not_found', message: '人生游戏原委托不存在或已删除' };
+        }
+
+        if (task.status === 'claimed') {
+          return {
+            success: false,
+            changed: false,
+            error: 'already_claimed',
+            message: '已领奖入账的任务不可通过日历改期或修改'
+          };
+        }
 
         var changed = false;
         if (item.title) {
@@ -664,10 +965,26 @@
           changed = true;
         }
 
+        if (item.startTime !== undefined) {
+          var nextStart = item.isAllDay ? '' : (item.startTime || '');
+          if (nextStart !== (task.startTime || '')) {
+            task.startTime = nextStart;
+            changed = true;
+          }
+        }
+
+        if (item.endTime !== undefined) {
+          var nextEnd = item.isAllDay ? '' : (item.endTime || '');
+          if (nextEnd !== (task.endTime || '')) {
+            task.endTime = nextEnd;
+            changed = true;
+          }
+        }
+
         if (item.notes !== undefined) {
           // 清除附带的 [难度: ... | 奖励: ...] 后缀避免重复嵌套
-          var cleanDesc = item.notes.replace(/\s*\[难度:[^\]]+\]\s*$/, '').trim();
-          if (cleanDesc !== task.desc) {
+          var cleanDesc = String(item.notes).replace(/\s*\[难度:[^\]]+\]\s*$/, '').trim();
+          if (cleanDesc !== (task.desc || '')) {
             task.desc = cleanDesc;
             changed = true;
           }
@@ -682,7 +999,13 @@
             await StudyTodoIntegration.linkTaskToStudyTodo(task);
           }
 
-          await LinkRegistry.logSync('saveTaskFromCalendar', { taskId: task.id, title: task.title, date: task.dueDate });
+          await LinkRegistry.logSync('saveTaskFromCalendar', {
+            taskId: task.id,
+            title: task.title,
+            date: task.dueDate,
+            startTime: task.startTime || '',
+            endTime: task.endTime || ''
+          });
 
           var page = document.getElementById('life-game-page');
           if (page && global.LifeGameApp) {
@@ -690,7 +1013,7 @@
           }
         }
 
-        return true;
+        return { success: true, changed: changed, task: task };
       } finally {
         releaseLock(lockKey);
       }
@@ -744,7 +1067,91 @@
       }
     },
 
-    // 5.4 从日历中移除排期 (解除日期，不删除人生游戏任务实体)
+    // 5.4 显式将任务排期到日历 (支持成功/部分成功/失败多态报告与断点重试)
+    async scheduleTaskToCalendar(task, date, options) {
+      options = options || {};
+      if (!task || !task.id) {
+        return {
+          status: 'failed',
+          success: false,
+          partial: false,
+          stepResults: { task: { success: false, error: 'task_missing' } },
+          error: 'task_missing'
+        };
+      }
+      var lockKey = 'tc_schedule_' + task.id;
+      if (!acquireLock(lockKey)) {
+        return {
+          status: 'failed',
+          success: false,
+          partial: false,
+          stepResults: { task: { success: true, taskId: task.id }, lock: { acquired: false } },
+          error: 'locked'
+        };
+      }
+
+      var stepResults = {
+        calendarScheduled: { success: false, date: date },
+        linkRegistry: { success: false }
+      };
+
+      try {
+        task.dueDate = date;
+        if (global.LifeGameCore && options.saveTaskDirectly) {
+          var allTasks = await global.LifeGameCore.getTasks();
+          var curT = allTasks.find(function(t) { return t.id === task.id; });
+          if (curT) {
+            curT.dueDate = date;
+            await global.LifeGameCore.saveTasks(allTasks);
+          }
+        }
+        stepResults.calendarScheduled = { success: true, date: date, eventId: 'lg_task_' + task.id };
+
+        // 故障注入测试点：排期成功，链接注册表保存失败 (部分成功状态)
+        if (options._injectLinkRegistryFailure) {
+          stepResults.linkRegistry.error = 'injected_link_registry_failure';
+          return {
+            status: 'partial',
+            success: false,
+            partial: true,
+            stepResults: stepResults,
+            error: 'link_registry_save_failed'
+          };
+        }
+
+        var linkRecord = await LinkRegistry.createOrUpdateLink({
+          sourceApp: 'life-game',
+          sourceType: 'task',
+          sourceId: task.id,
+          targetApp: 'time-calendar',
+          targetType: 'calendar-event',
+          targetId: 'lg_task_' + task.id,
+          charId: task.charId || null
+        });
+        stepResults.linkRegistry = { success: true, linkId: linkRecord.linkId };
+
+        await LinkRegistry.logSync('scheduleTaskToCalendar', { taskId: task.id, date: date });
+
+        return {
+          status: 'success',
+          success: true,
+          partial: false,
+          stepResults: stepResults
+        };
+      } catch (e) {
+        return {
+          status: 'failed',
+          success: false,
+          partial: false,
+          stepResults: stepResults,
+          error: e.message || String(e)
+        };
+      } finally {
+        releaseLock(lockKey);
+      }
+    },
+
+    // 5.5 从日历中移除排期 (解除日期，不删除人生游戏任务实体)
     async unlinkTaskFromCalendar(taskId) {
       if (!taskId || !global.LifeGameCore) return false;
       var tasks = await global.LifeGameCore.getTasks();
@@ -753,6 +1160,11 @@
 
       task.dueDate = '';
       await global.LifeGameCore.saveTasks(tasks);
+
+      var existingLink = await LinkRegistry.findLink('life-game', taskId, 'time-calendar');
+      if (existingLink) {
+        await LinkRegistry.removeLink(existingLink.linkId);
+      }
 
       await LinkRegistry.logSync('unlinkTaskFromCalendar', { taskId: taskId });
       return true;
@@ -763,14 +1175,22 @@
   // 6. 三个 App 之间安全跳转与深度链接 (CrossAppNav)
   // ==========================================
   var CrossAppNav = {
-    // 6.1 跳转至陪伴自习室
+    // 6.1 跳转至陪伴自习室 (记录返回上下文并保留计时器状态)
     async navigateToStudyRoom(options) {
       options = options || {};
       var targetTab = options.tab || 'duo';
+      var fromApp = options.fromApp || (document.getElementById('life-game-page') ? 'life-game' : '');
+      if (fromApp && fromApp !== 'study-room' && global.TimeCalendarIntegrations && typeof global.TimeCalendarIntegrations.pushReturnContext === 'function') {
+        var ctx = options.returnContext || global.TimeCalendarIntegrations.captureCurrentPageContext(fromApp);
+        if (ctx) global.TimeCalendarIntegrations.pushReturnContext(ctx);
+      }
       if (global.showStudyRoomPage) {
         await global.showStudyRoomPage({
           tab: targetTab,
-          targetTodoId: options.targetTodoId || null
+          targetTodoId: options.targetTodoId || null,
+          targetExamId: options.targetExamId || null,
+          preserveTimer: true,
+          fromApp: fromApp
         });
         if (global.toast) global.toast('已跳转至陪伴自习室');
       } else {
@@ -778,14 +1198,20 @@
       }
     },
 
-    // 6.2 跳转至时光日历
+    // 6.2 跳转至时光日历 (记录返回上下文并定位目标日程)
     async navigateToTimeCalendar(options) {
       options = options || {};
+      var fromApp = options.fromApp || (document.getElementById('life-game-page') ? 'life-game' : '');
+      if (fromApp && fromApp !== 'time-calendar' && global.TimeCalendarIntegrations && typeof global.TimeCalendarIntegrations.pushReturnContext === 'function') {
+        var ctx = options.returnContext || global.TimeCalendarIntegrations.captureCurrentPageContext(fromApp);
+        if (ctx) global.TimeCalendarIntegrations.pushReturnContext(ctx);
+      }
       if (global.showTimeCalendarPage) {
         await global.showTimeCalendarPage({
           tab: options.tab || 'schedule',
           date: options.date || null,
-          eventId: options.eventId || null
+          eventId: options.eventId || null,
+          fromApp: fromApp
         });
         if (global.toast) global.toast('已跳转至时光日历');
       } else {
@@ -800,7 +1226,9 @@
         await global.showLifeGamePage({
           tab: options.tab || 'tasks',
           targetTaskId: options.targetTaskId || null,
-          targetGoalId: options.targetGoalId || null
+          targetGoalId: options.targetGoalId || null,
+          fromApp: options.fromApp || '',
+          returnContext: options.returnContext || null
         });
         if (global.toast) global.toast('已跳转至人生游戏');
       } else {
@@ -810,10 +1238,18 @@
   };
 
   // ==========================================
-  // 7. 异常自愈与补偿机制 (Self-Healing & Reconcile)
+  // 7. 异常自愈与补偿机制 (Self-Healing & Reconcile 加固版)
+  // 覆盖：部分成功恢复、孤儿引用优雅剥离、稳定 ID 重新对齐、防二次重复创建
   // ==========================================
   async function reconcileLinks() {
-    var report = { checkedTasks: 0, checkedGoals: 0, repairedLinks: 0, orphanedDetached: 0 };
+    var report = {
+      status: 'success',
+      checkedTasks: 0,
+      checkedGoals: 0,
+      repairedLinks: 0,
+      orphanedDetached: 0,
+      recoveredPartials: 0
+    };
     if (!global.LifeGameCore) return report;
 
     try {
@@ -832,10 +1268,12 @@
       var examMap = {};
       (exams || []).forEach(function(e) { if (e && e.id) examMap[String(e.id)] = e; });
 
-      // 1. 校验任务的自习待办链接真实性
+      // 1. 校验任务的自习待办链接真实性与部分成功自愈
       var tasksModified = false;
       for (var i = 0; i < tasks.length; i++) {
         var t = tasks[i];
+
+        // 场景 A: 任务有 studyTodoId
         if (t.studyTodoId) {
           if (!todoMap[String(t.studyTodoId)]) {
             // 目标待办已在自习室物理删除，优雅解除引用而不损坏任务
@@ -846,16 +1284,66 @@
           } else {
             // 状态自愈同步
             var todo = todoMap[String(t.studyTodoId)];
-            var tDone = t.status === 'completed' || t.status === 'claimed';
             if (todo.done && t.status === 'pending') {
               t.status = 'completed';
               t.completedAt = Date.now();
               tasksModified = true;
               report.repairedLinks++;
             }
+
+            // 检查 LinkRegistry 是否缺失（部分成功恢复）
+            var activeLink = await LinkRegistry.findLink('life-game', t.id, 'study-room');
+            if (!activeLink) {
+              await LinkRegistry.createOrUpdateLink({
+                sourceApp: 'life-game',
+                sourceType: 'task',
+                sourceId: t.id,
+                targetApp: 'study-room',
+                targetType: 'todo',
+                targetId: todo.id,
+                charId: t.charId || null
+              });
+              report.recoveredPartials++;
+            }
+          }
+        } else {
+          // 场景 B: 任务自身没记 studyTodoId，但自习室中存在稳定 ID 的 todo (例如中途崩溃)
+          var stableTodoId = 'sr_todo_lg_' + t.id;
+          if (todoMap[stableTodoId]) {
+            t.studyTodoId = stableTodoId;
+            t.linkedSource = 'studyRoom';
+            tasksModified = true;
+            await LinkRegistry.createOrUpdateLink({
+              sourceApp: 'life-game',
+              sourceType: 'task',
+              sourceId: t.id,
+              targetApp: 'study-room',
+              targetType: 'todo',
+              targetId: stableTodoId,
+              charId: t.charId || null
+            });
+            report.recoveredPartials++;
+          }
+        }
+
+        // 场景 C: 任务有 dueDate，但 LinkRegistry 缺失日历日程关联
+        if (t.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(t.dueDate)) {
+          var calLink = await LinkRegistry.findLink('life-game', t.id, 'time-calendar');
+          if (!calLink) {
+            await LinkRegistry.createOrUpdateLink({
+              sourceApp: 'life-game',
+              sourceType: 'task',
+              sourceId: t.id,
+              targetApp: 'time-calendar',
+              targetType: 'calendar-event',
+              targetId: 'lg_task_' + t.id,
+              charId: t.charId || null
+            });
+            report.recoveredPartials++;
           }
         }
       }
+
       if (tasksModified) {
         await global.LifeGameCore.saveTasks(tasks);
       }
@@ -886,6 +1374,8 @@
       await LinkRegistry.logSync('reconcileLinks', report);
     } catch (err) {
       console.warn('[LifeGameIntegrations] reconcile error:', err);
+      report.status = 'partial';
+      report.error = err.message || String(err);
     }
 
     return report;
@@ -949,7 +1439,12 @@
     getTasksAsCalendarEvents: CalendarScheduleIntegration.getTasksAsCalendarEvents,
     saveTaskFromCalendar: CalendarScheduleIntegration.saveTaskFromCalendar,
     toggleTaskFromCalendar: CalendarScheduleIntegration.toggleTaskFromCalendar,
+    scheduleTaskToCalendar: CalendarScheduleIntegration.scheduleTaskToCalendar,
     unlinkTaskFromCalendar: CalendarScheduleIntegration.unlinkTaskFromCalendar,
+
+    allocateFocusRecord: StudyFocusSessionIntegration.allocateFocusRecord.bind(StudyFocusSessionIntegration),
+    allocateRecordToTask: StudyFocusSessionIntegration.allocateRecordToTask.bind(StudyFocusSessionIntegration),
+    getUnallocatedRecords: StudyFocusSessionIntegration.getUnallocatedRecords.bind(StudyFocusSessionIntegration),
 
     navigateToStudyRoom: CrossAppNav.navigateToStudyRoom,
     navigateToTimeCalendar: CrossAppNav.navigateToTimeCalendar,

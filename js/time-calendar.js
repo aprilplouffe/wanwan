@@ -69,6 +69,53 @@
     return names[d.getDay()];
   }
 
+  function getClampedMonthDay(year, month1To12, day1To31) {
+    var maxDays = new Date(year, month1To12, 0).getDate();
+    return Math.min(Math.max(1, day1To31), maxDays);
+  }
+
+  function buildClampedYearMonthDay(year, month1To12, day1To31) {
+    var d = getClampedMonthDay(year, month1To12, day1To31);
+    return year + '-' + String(month1To12).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+  }
+
+  function isAnniversaryOnDate(startDateStr, targetDateStr) {
+    if (!startDateStr || !targetDateStr) return false;
+    var sDate = parseLocalDate(startDateStr);
+    var tDate = parseLocalDate(targetDateStr);
+    if (!sDate || !tDate) return false;
+    var sMonth = sDate.getMonth() + 1;
+    var tMonth = tDate.getMonth() + 1;
+    if (sMonth !== tMonth) return false;
+    var clamped = getClampedMonthDay(tDate.getFullYear(), tMonth, sDate.getDate());
+    return tDate.getDate() === clamped;
+  }
+
+  function matchesCharFilterLocal(ev, filterCharId) {
+    if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.matchesCharFilter === 'function') {
+      return window.TimeCalendarIntegrations.matchesCharFilter(ev, filterCharId);
+    }
+    if (!ev) return false;
+    if (!filterCharId || filterCharId === 'all') return true;
+    if (filterCharId === 'personal') {
+      if (ev.visibility === 'private') return true;
+      if (ev.relationType === 'personal' && !ev.charId) return true;
+      if (ev.visibility === 'selected-chars' && ev.relationType !== 'specificChar' && !ev.charId) return true;
+      if (!ev.charId && (!ev.source || !ev.source.charId) && ev.relationType !== 'specificChar') return true;
+      return false;
+    }
+    var targetId = String(filterCharId);
+    if (ev.visibility === 'private') return false;
+    if (ev.visibility === 'selected-chars' && Array.isArray(ev.allowedCharIds)) {
+      return ev.allowedCharIds.map(String).indexOf(targetId) >= 0;
+    }
+    if (ev.relationType === 'specificChar' && ev.charId && String(ev.charId) === targetId) return true;
+    if (ev.ownerCharId && String(ev.ownerCharId) === targetId) return true;
+    if (ev.charId && String(ev.charId) === targetId) return true;
+    if (ev.source && ev.source.charId && String(ev.source.charId) === targetId) return true;
+    return false;
+  }
+
   function uid(prefix) {
     return (prefix || 'tc') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
   }
@@ -113,10 +160,146 @@
     } catch (_) {}
   }
 
+  // ===== 2.0 阶段 1: 重复日程安全引擎 (TimeCalendarRecurrence) =====
+  // 规则驱动，动态计算各周期日期，绝不向存储层无限膨胀复制日程
+  // 严格支持每天、每周、每月(月末对齐安全截断)、每年(2月29日闰平年平移截断)以及单次修改/单次删除
+  var TimeCalendarRecurrence = {
+    // 判断特定事件是否在 targetDateStr 发生
+    isOccurringOnDate: function(event, targetDateStr) {
+      if (!event || !event.date || !targetDateStr) return false;
+      var r = event.recurrence;
+      if (!r || !r.type || r.type === 'none') {
+        return event.date === targetDateStr;
+      }
+
+      // 发生日期不得早于基准起始日
+      if (targetDateStr < event.date) return false;
+
+      // 发生日期不得晚于重复截止日期
+      if (r.endDate && targetDateStr > r.endDate) return false;
+
+      // 排除已被单次删除的日期
+      if (Array.isArray(r.excludedDates) && r.excludedDates.indexOf(targetDateStr) !== -1) {
+        return false;
+      }
+
+      var baseDate = parseLocalDate(event.date);
+      var targetDate = parseLocalDate(targetDateStr);
+      if (!baseDate || !targetDate) return false;
+
+      var interval = Math.max(1, parseInt(r.interval, 10) || 1);
+      var diffDays = getLocalDaysDiff(targetDateStr, event.date);
+
+      switch (r.type) {
+        case 'daily':
+          return diffDays >= 0 && (diffDays % interval === 0);
+
+        case 'weekly':
+          return diffDays >= 0 && (diffDays % (7 * interval) === 0);
+
+        case 'custom':
+          return diffDays >= 0 && (diffDays % interval === 0);
+
+        case 'monthly': {
+          var baseYear = baseDate.getFullYear();
+          var baseMonth = baseDate.getMonth();
+          var baseDay = baseDate.getDate();
+
+          var targetYear = targetDate.getFullYear();
+          var targetMonth = targetDate.getMonth();
+          var targetDay = targetDate.getDate();
+
+          var totalMonthDiff = (targetYear - baseYear) * 12 + (targetMonth - baseMonth);
+          if (totalMonthDiff < 0 || (totalMonthDiff % interval !== 0)) return false;
+
+          // 月末对齐截断安全处理: 如 31 号在 2 月截断为 28/29，在 4 月截断为 30
+          var maxDaysInTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+          var clampedDay = Math.min(baseDay, maxDaysInTargetMonth);
+          return targetDay === clampedDay;
+        }
+
+        case 'yearly': {
+          var bYear = baseDate.getFullYear();
+          var bMonth = baseDate.getMonth();
+          var bDay = baseDate.getDate();
+
+          var tYear = targetDate.getFullYear();
+          var tMonth = targetDate.getMonth();
+          var tDay = targetDate.getDate();
+
+          var yearDiff = tYear - bYear;
+          if (yearDiff < 0 || (yearDiff % interval !== 0)) return false;
+          if (tMonth !== bMonth) return false;
+
+          // 闰年 2月29日截断处理: 平年截断为 28日，闰年维持 29日
+          var maxDaysInTargetMonthYearly = new Date(tYear, tMonth + 1, 0).getDate();
+          var clampedDayYearly = Math.min(bDay, maxDaysInTargetMonthYearly);
+          return tDay === clampedDayYearly;
+        }
+
+        default:
+          return event.date === targetDateStr;
+      }
+    },
+
+    // 针对指定日期生成一份事件展示副本 (融合单次修改与单次完成状态)
+    createOccurrence: function(masterEvent, targetDateStr) {
+      if (!masterEvent) return null;
+      var isMasterDay = (masterEvent.date === targetDateStr);
+      var overrides = (masterEvent.recurrence && masterEvent.recurrence.overrides) ? masterEvent.recurrence.overrides[targetDateStr] : null;
+
+      var clone = Object.assign({}, masterEvent);
+      clone.date = targetDateStr;
+      clone.isOccurrence = !isMasterDay;
+      clone.masterEventId = masterEvent.id;
+      clone.occurrenceDate = targetDateStr;
+
+      // 叠加上单次修改/完成状态
+      if (overrides) {
+        if (overrides.title !== undefined) clone.title = overrides.title;
+        if (overrides.startTime !== undefined) clone.startTime = overrides.startTime;
+        if (overrides.endTime !== undefined) clone.endTime = overrides.endTime;
+        if (overrides.isAllDay !== undefined) clone.isAllDay = overrides.isAllDay;
+        if (overrides.category !== undefined) clone.category = overrides.category;
+        if (overrides.notes !== undefined) clone.notes = overrides.notes;
+        if (overrides.completed !== undefined) clone.completed = overrides.completed;
+        clone.hasInstanceOverride = true;
+      } else if (!isMasterDay) {
+        clone.completed = false;
+      }
+
+      return clone;
+    },
+
+    // 格式化展示重复描述文字
+    formatRuleText: function(recurrence) {
+      if (!recurrence || !recurrence.type || recurrence.type === 'none') return '单次日程 (不重复)';
+      var interval = Math.max(1, parseInt(recurrence.interval, 10) || 1);
+      var str = '';
+      if (recurrence.type === 'daily') {
+        str = interval === 1 ? '每天重复' : ('每 ' + interval + ' 天重复');
+      } else if (recurrence.type === 'weekly') {
+        str = interval === 1 ? '每周重复' : ('每 ' + interval + ' 周重复');
+      } else if (recurrence.type === 'monthly') {
+        str = interval === 1 ? '每月重复 (月末自动对齐)' : ('每 ' + interval + ' 个月重复');
+      } else if (recurrence.type === 'yearly') {
+        str = interval === 1 ? '每年重复 (闰年安全对齐)' : ('每 ' + interval + ' 年重复');
+      } else if (recurrence.type === 'custom') {
+        str = '每 ' + interval + ' 天重复';
+      }
+      if (recurrence.endDate) {
+        str += '，截止至 ' + recurrence.endDate;
+      }
+      return str;
+    }
+  };
+
   // ===== 状态管理 =====
   var _state = {
-    // 页面活跃 Tab: 'calendar' (日历) | 'countdowns' (倒计时) | 'anniversaries' (纪念日) | 'schedules' (日程)
+    // 页面活跃 Tab: 'calendar' (日历) | 'schedules' (日程) | 'anniversaries' (纪念日与倒计时) | 'settings' (设置)
     activeTab: 'calendar',
+    // 纪念日 Tab 下的子分段: 'anniversaries' (纪念日) | 'countdowns' (倒计时)
+    anniversarySubTab: 'anniversaries',
     // 日历视图: 'month' (月视图) | 'week' (周视图) | 'day' (日视图)
     calendarView: 'month',
     // 浏览指针年月与选定日期 (本地字符串)
@@ -133,9 +316,10 @@
     countdowns: [],
     settings: {
       defaultView: 'month',
-      firstDayOfWeek: 1,
+      firstDayOfWeek: 1, // 1: 周一, 0: 周日
       showStudyRoomRecords: true,
-      showLoveDiaryAnniversaries: true
+      showLoveDiaryAnniversaries: true,
+      showLifeGameTasks: true
     },
     // 阶段 3 跨软件双向联动数据池
     loveDiaryAnniversaries: [],
@@ -168,9 +352,11 @@
 
     var startYear = sDate.getFullYear();
     var curYear = bDate.getFullYear();
+    var sMonth1 = sDate.getMonth() + 1;
+    var sDay1 = sDate.getDate();
 
-    // 计算当年的周年日期
-    var thisYearTargetStr = curYear + '-' + String(sDate.getMonth() + 1).padStart(2, '0') + '-' + String(sDate.getDate()).padStart(2, '0');
+    // 计算当年的周年日期 (2月29日在平年安全截断为2月28日)
+    var thisYearTargetStr = buildClampedYearMonthDay(curYear, sMonth1, sDay1);
     var daysToThisYear = getLocalDaysDiff(thisYearTargetStr, todayStr);
 
     var targetYears = curYear - startYear;
@@ -180,7 +366,7 @@
     if (daysToThisYear < 0) {
       // 当年已过，算下一年
       targetYears = (curYear + 1) - startYear;
-      nextDateStr = (curYear + 1) + '-' + String(sDate.getMonth() + 1).padStart(2, '0') + '-' + String(sDate.getDate()).padStart(2, '0');
+      nextDateStr = buildClampedYearMonthDay(curYear + 1, sMonth1, sDay1);
       daysToNext = getLocalDaysDiff(nextDateStr, todayStr);
     } else if (daysToThisYear === 0) {
       // 今天正好是周年日！
@@ -344,37 +530,39 @@
     }
     list = list.concat(_state.anniversaries || []);
 
-    if (_state.filterCharId === 'personal') {
-      return list.filter(function(a) { return a.relationType === 'personal'; });
-    } else if (_state.filterCharId !== 'all') {
-      var targetId = String(_state.filterCharId);
-      return list.filter(function(a) {
-        return a.relationType === 'personal' || (a.charId && String(a.charId) === targetId);
-      });
-    }
-    return list;
+    return list.filter(function(a) {
+      return matchesCharFilterLocal(a, _state.filterCharId);
+    });
   }
 
   function getEffectiveCountdowns() {
-    var list = [].concat(_state.countdowns || []);
+    var list = [].concat(_state.countdowns || []).filter(function(c) {
+      return c && c.status !== 'cancelled';
+    });
 
-    // 阶段 3: 混入自习室备考计划倒计时
+    // 阶段 3/4: 混入自习室备考计划倒计时
     if (_state.studyRoomExams && _state.studyRoomExams.length) {
-      list = list.concat(_state.studyRoomExams);
+      list = list.concat(_state.studyRoomExams.filter(function(ex) { return ex && ex.status !== 'cancelled'; }));
     }
 
-    // 同时把勾选了 showInCountdown 的日程也作为倒计时展示
-    _state.events.forEach(function(ev) {
-      if (ev.showInCountdown && ev.date) {
+    // 同时把勾选了 showInCountdown 且未取消的日程也作为倒计时展示 (绝不复制出第二份权威日程)
+    (_state.events || []).forEach(function(ev) {
+      if (ev && ev.showInCountdown && ev.date && ev.status !== 'cancelled') {
         list.push({
           id: 'cd_evt_' + ev.id,
+          linkedEventId: ev.id,
           title: ev.title,
           targetDate: ev.date,
           category: ev.category || 'life',
           relationType: ev.relationType || 'personal',
+          visibility: ev.visibility,
+          allowedCharIds: ev.allowedCharIds,
+          ownerCharId: ev.ownerCharId,
           charId: ev.charId,
           charName: ev.charName,
           isPinned: !!ev.isPinned,
+          completed: !!ev.completed,
+          status: ev.status || (ev.completed ? 'completed' : 'pending'),
           notes: ev.notes,
           source: ev.source || { app: 'timeCalendar', recordId: ev.id, readOnly: false }
         });
@@ -387,10 +575,14 @@
       var milestone = computeAnniversaryMilestone(an.startDate);
       list.push({
         id: 'cd_anniv_' + an.id,
+        linkedAnniversaryId: an.id,
         title: an.title + ' (' + milestone.nextYears + '周年)',
         targetDate: milestone.nextDateStr,
         category: 'anniversary',
         relationType: an.relationType,
+        visibility: an.visibility,
+        allowedCharIds: an.allowedCharIds,
+        ownerCharId: an.ownerCharId,
         charId: an.charId,
         charName: an.charName,
         isPinned: an.isPinned,
@@ -399,47 +591,51 @@
       });
     });
 
-    // 筛选隔离
-    if (_state.filterCharId === 'personal') {
-      list = list.filter(function(c) { return c.relationType === 'personal'; });
-    } else if (_state.filterCharId !== 'all') {
-      var targetId = String(_state.filterCharId);
-      list = list.filter(function(c) {
-        return c.relationType === 'personal' || (c.charId && String(c.charId) === targetId);
-      });
-    }
-    return list;
+    // 统一字符与多 Char 隐私过滤
+    return list.filter(function(c) {
+      return matchesCharFilterLocal(c, _state.filterCharId);
+    });
   }
 
   function getEffectiveEvents(dateFilter) {
-    var list = [].concat(_state.events || []);
-
-    // 阶段 3: 混入来自恋爱记具有日期的心愿
-    if (_state.loveDiaryWishes && _state.loveDiaryWishes.length) {
-      list = list.concat(_state.loveDiaryWishes);
-    }
-    // 阶段 3: 混入来自自习室的待办事项
-    if (_state.studyRoomTodos && _state.studyRoomTodos.length) {
-      list = list.concat(_state.studyRoomTodos);
-    }
-    // 阶段 3: 混入来自人生游戏的现实委托排期
-    if (_state.lifeGameTasks && _state.lifeGameTasks.length) {
-      list = list.concat(_state.lifeGameTasks);
-    }
+    var list = [];
+    var baseEvents = (_state.events || []).filter(function(ev) {
+      return ev && ev.status !== 'cancelled';
+    });
 
     if (dateFilter) {
-      list = list.filter(function(ev) { return ev.date === dateFilter; });
-    }
-    // 角色隔离
-    if (_state.filterCharId === 'personal') {
-      list = list.filter(function(ev) { return ev.relationType === 'personal'; });
-    } else if (_state.filterCharId !== 'all') {
-      var targetId = String(_state.filterCharId);
-      list = list.filter(function(ev) {
-        return ev.relationType === 'personal' || (ev.charId && String(ev.charId) === targetId);
+      baseEvents.forEach(function(ev) {
+        if (TimeCalendarRecurrence.isOccurringOnDate(ev, dateFilter)) {
+          list.push(TimeCalendarRecurrence.createOccurrence(ev, dateFilter));
+        }
       });
+    } else {
+      list = [].concat(baseEvents);
     }
-    return list;
+
+    // 阶段 3/4: 混入来自恋爱记具有日期的心愿
+    if (_state.settings.showLoveDiaryAnniversaries && _state.loveDiaryWishes && _state.loveDiaryWishes.length) {
+      var wishes = _state.loveDiaryWishes;
+      if (dateFilter) wishes = wishes.filter(function(w) { return w.date === dateFilter; });
+      list = list.concat(wishes);
+    }
+    // 阶段 3/4: 混入来自自习室的待办事项
+    if (_state.settings.showStudyRoomRecords && _state.studyRoomTodos && _state.studyRoomTodos.length) {
+      var todos = _state.studyRoomTodos;
+      if (dateFilter) todos = todos.filter(function(t) { return t.date === dateFilter; });
+      list = list.concat(todos);
+    }
+    // 阶段 3/4: 混入来自人生游戏的现实委托排期
+    if (_state.settings.showLifeGameTasks !== false && _state.lifeGameTasks && _state.lifeGameTasks.length) {
+      var lgTasks = _state.lifeGameTasks;
+      if (dateFilter) lgTasks = lgTasks.filter(function(t) { return t.date === dateFilter; });
+      list = list.concat(lgTasks);
+    }
+
+    // 角色隔离 (统一使用 matchesCharFilterLocal，个人视角保留用户本人授权给 Char 的日程，同时严格保护私密与隔离特定 Char 专属日程)
+    return list.filter(function(ev) {
+      return matchesCharFilterLocal(ev, _state.filterCharId);
+    });
   }
 
   // ===== 3. 渲染主壳容器与底部四入口 =====
@@ -450,11 +646,22 @@
     var page = document.createElement('div');
     page.id = 'time-calendar-page';
 
+    var retCtx = (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function')
+      ? window.TimeCalendarIntegrations.peekReturnContext()
+      : null;
+    var backLabel = '桌面';
+    if (retCtx && retCtx.fromApp && retCtx.fromApp !== 'time-calendar') {
+      if (retCtx.fromApp === 'study-room') backLabel = '返回自习室';
+      else if (retCtx.fromApp === 'life-game') backLabel = '返回人生游戏';
+      else if (retCtx.fromApp === 'love-diary') backLabel = '返回恋爱记';
+      else backLabel = '返回原应用';
+    }
+
     page.innerHTML =
       '<div class="tc-header">' +
         '<div class="tc-header-left">' +
           '<button class="tc-back-btn" id="tc-btn-back">' +
-            '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+            '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
           '</button>' +
           '<div class="tc-title-group">' +
             '<div class="tc-icon-mini"><i class="fa-solid fa-calendar-days"></i></div>' +
@@ -469,7 +676,7 @@
           '</div>' +
         '</div>' +
       '</div>' +
-      '<div class="tc-view-switcher" id="tc-view-switcher">' +
+      '<div class="tc-view-switcher" id="tc-view-switcher" style="' + (_state.activeTab === 'calendar' ? 'display: flex;' : 'display: none;') + '">' +
         '<div class="tc-nav-cluster">' +
           '<button class="tc-nav-btn" id="tc-nav-prev" title="前一个周期"><i class="fa fa-chevron-left"></i></button>' +
           '<button class="tc-today-btn" id="tc-nav-today">今天</button>' +
@@ -483,30 +690,38 @@
         '</div>' +
       '</div>' +
       '<div class="tc-content-scroll" id="tc-content-scroll"></div>' +
-      '<button class="tc-fab" id="tc-fab" title="新建"><i class="fa fa-plus"></i></button>' +
+      '<button class="tc-fab" id="tc-fab" title="新建" style="' + (_state.activeTab === 'settings' ? 'display: none;' : 'display: flex;') + '"><i class="fa fa-plus"></i></button>' +
       '<div class="tc-bottom-bar">' +
         '<button class="tc-tab-btn ' + (_state.activeTab === 'calendar' ? 'active' : '') + '" data-tab="calendar">' +
           '<i class="fa-solid fa-calendar-days"></i><span>日历</span>' +
         '</button>' +
-        '<button class="tc-tab-btn ' + (_state.activeTab === 'countdowns' ? 'active' : '') + '" data-tab="countdowns">' +
-          '<i class="fa-solid fa-hourglass-half"></i><span>倒计时</span>' +
+        '<button class="tc-tab-btn ' + (_state.activeTab === 'schedules' ? 'active' : '') + '" data-tab="schedules">' +
+          '<i class="fa-solid fa-list-check"></i><span>日程</span>' +
         '</button>' +
         '<button class="tc-tab-btn ' + (_state.activeTab === 'anniversaries' ? 'active' : '') + '" data-tab="anniversaries">' +
           '<i class="fa-solid fa-heart"></i><span>纪念日</span>' +
         '</button>' +
-        '<button class="tc-tab-btn ' + (_state.activeTab === 'schedules' ? 'active' : '') + '" data-tab="schedules">' +
-          '<i class="fa-solid fa-list-check"></i><span>日程</span>' +
+        '<button class="tc-tab-btn ' + (_state.activeTab === 'settings' ? 'active' : '') + '" data-tab="settings">' +
+          '<i class="fa-solid fa-gear"></i><span>设置</span>' +
         '</button>' +
       '</div>';
 
     _state.pageEl = page;
     bindShellEvents(page);
+    updateHeaderCharPill();
     return page;
   }
 
   function bindShellEvents(page) {
-    // 返回桌面生命周期
-    page.querySelector('#tc-btn-back').addEventListener('click', function() {
+    // 返回来源应用或桌面生命周期
+    page.querySelector('#tc-btn-back').addEventListener('click', async function() {
+      if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function') {
+        var curRet = window.TimeCalendarIntegrations.peekReturnContext();
+        if (curRet && curRet.fromApp && curRet.fromApp !== 'time-calendar') {
+          var handled = await window.TimeCalendarIntegrations.returnToCaller('time-calendar');
+          if (handled) return;
+        }
+      }
       if (window.closePage) {
         window.closePage('time-calendar-page');
       } else {
@@ -525,6 +740,10 @@
         if (switcher) {
           switcher.style.display = tab === 'calendar' ? 'flex' : 'none';
         }
+        var fab = page.querySelector('#tc-fab');
+        if (fab) {
+          fab.style.display = tab === 'settings' ? 'none' : 'flex';
+        }
         renderActiveTabContent();
       });
     });
@@ -539,7 +758,7 @@
       });
     });
 
-    // 前进、后退、返回今天
+    // 前进、后退、返回今天 (今日入口：一键立即返回今天，保持状态平滑同步)
     page.querySelector('#tc-nav-prev').addEventListener('click', function() { navigatePeriod(-1); });
     page.querySelector('#tc-nav-next').addEventListener('click', function() { navigatePeriod(1); });
     page.querySelector('#tc-nav-today').addEventListener('click', function() {
@@ -555,10 +774,12 @@
 
     // FAB 快速新建
     page.querySelector('#tc-fab').addEventListener('click', function() {
-      if (_state.activeTab === 'countdowns') {
-        showAddCountdownModal();
-      } else if (_state.activeTab === 'anniversaries') {
-        showAddAnniversaryModal();
+      if (_state.activeTab === 'anniversaries') {
+        if (_state.anniversarySubTab === 'countdowns') {
+          showAddCountdownModal();
+        } else {
+          showAddAnniversaryModal();
+        }
       } else {
         showAddEventModal(_state.selectedDateStr);
       }
@@ -601,14 +822,17 @@
     var switcher = _state.pageEl.querySelector('#tc-view-switcher');
     if (switcher) switcher.style.display = _state.activeTab === 'calendar' ? 'flex' : 'none';
 
+    var fab = _state.pageEl.querySelector('#tc-fab');
+    if (fab) fab.style.display = _state.activeTab === 'settings' ? 'none' : 'flex';
+
     if (_state.activeTab === 'calendar') {
       renderCalendarView();
-    } else if (_state.activeTab === 'countdowns') {
-      renderCountdownsTab();
-    } else if (_state.activeTab === 'anniversaries') {
-      renderAnniversariesTab();
     } else if (_state.activeTab === 'schedules') {
       renderSchedulesTab();
+    } else if (_state.activeTab === 'anniversaries') {
+      renderAnniversariesTab();
+    } else if (_state.activeTab === 'settings') {
+      renderSettingsTab();
     }
   }
 
@@ -702,25 +926,34 @@
     var y = _state.viewYear;
     var m = _state.viewMonth;
 
+    var firstDay = _state.settings.firstDayOfWeek === 0 ? 0 : 1; // 0: 周日, 1: 周一
     var firstDayWeekday = new Date(y, m - 1, 1).getDay(); // 0 是周日
-    var firstDayIndex = firstDayWeekday === 0 ? 6 : firstDayWeekday - 1; // 转换为周一为起始 (0 - 6)
+    var firstDayIndex;
+    if (firstDay === 1) {
+      firstDayIndex = firstDayWeekday === 0 ? 6 : firstDayWeekday - 1; // 周一为 0
+    } else {
+      firstDayIndex = firstDayWeekday; // 周日为 0
+    }
+
     var daysInCurrentMonth = new Date(y, m, 0).getDate();
     var daysInPrevMonth = new Date(y, m - 1, 0).getDate();
 
-    // 汇总有事件、纪念日或自习打卡的日期集合
+    // 汇总当月每一天是否有事件 (包括通过重复引擎动态生成的日程，安全防冗余)
     var eventDatesMap = {};
-    getEffectiveEvents().forEach(function(ev) {
-      if (ev.date) eventDatesMap[ev.date] = true;
-    });
+    for (var dayIdx = 1; dayIdx <= daysInCurrentMonth; dayIdx++) {
+      var checkDateStr = y + '-' + String(m).padStart(2, '0') + '-' + String(dayIdx).padStart(2, '0');
+      var dayEvts = getEffectiveEvents(checkDateStr);
+      if (dayEvts.length > 0) {
+        eventDatesMap[checkDateStr] = true;
+      }
+    }
 
     var annivDatesMap = {};
     getEffectiveAnniversaries().forEach(function(an) {
       if (an.startDate) {
-        // 标记每月对应的相合日期
-        var p = an.startDate.split('-');
-        if (p.length >= 3) {
-          var targetDay = p[2];
-          var thisMonthDateStr = y + '-' + String(m).padStart(2, '0') + '-' + targetDay;
+        var sD = parseLocalDate(an.startDate);
+        if (sD && (sD.getMonth() + 1) === m) {
+          var thisMonthDateStr = buildClampedYearMonthDay(y, m, sD.getDate());
           annivDatesMap[thisMonthDateStr] = true;
         }
       }
@@ -728,16 +961,30 @@
 
     var todayStr = getTodayLocalDateStr();
 
+    var weekdayHeadersMon = [
+      '<div class="tc-weekday-cell">一</div>',
+      '<div class="tc-weekday-cell">二</div>',
+      '<div class="tc-weekday-cell">三</div>',
+      '<div class="tc-weekday-cell">四</div>',
+      '<div class="tc-weekday-cell">五</div>',
+      '<div class="tc-weekday-cell weekend">六</div>',
+      '<div class="tc-weekday-cell weekend">日</div>'
+    ];
+    var weekdayHeadersSun = [
+      '<div class="tc-weekday-cell weekend">日</div>',
+      '<div class="tc-weekday-cell">一</div>',
+      '<div class="tc-weekday-cell">二</div>',
+      '<div class="tc-weekday-cell">三</div>',
+      '<div class="tc-weekday-cell">四</div>',
+      '<div class="tc-weekday-cell">五</div>',
+      '<div class="tc-weekday-cell weekend">六</div>'
+    ];
+    var weekdayHeaders = firstDay === 1 ? weekdayHeadersMon : weekdayHeadersSun;
+
     var html =
       '<div class="tc-calendar-card">' +
         '<div class="tc-weekday-row">' +
-          '<div class="tc-weekday-cell">一</div>' +
-          '<div class="tc-weekday-cell">二</div>' +
-          '<div class="tc-weekday-cell">三</div>' +
-          '<div class="tc-weekday-cell">四</div>' +
-          '<div class="tc-weekday-cell">五</div>' +
-          '<div class="tc-weekday-cell weekend">六</div>' +
-          '<div class="tc-weekday-cell weekend">日</div>' +
+          weekdayHeaders.join('') +
         '</div>' +
         '<div class="tc-month-grid">';
 
@@ -782,58 +1029,205 @@
     return html;
   }
 
-  // 渲染周视图
+  // 渲染周视图 (七天横向条 + 7天全面安排清单)
   function renderWeekViewHtml() {
     var cur = parseLocalDate(_state.selectedDateStr) || new Date();
     var dayOfWeek = cur.getDay(); // 0 是周日
-    var mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    var firstDay = _state.settings.firstDayOfWeek === 0 ? 0 : 1; // 0: 周日, 1: 周一
 
-    var monday = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + mondayOffset);
+    var offset;
+    if (firstDay === 1) {
+      offset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    } else {
+      offset = -dayOfWeek;
+    }
 
-    var html = '<div class="tc-week-container"><div class="tc-week-strip">';
+    var startDay = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + offset);
+
+    var html = '<div class="tc-week-container">';
+    html += '<div class="tc-week-strip">';
     var todayStr = getTodayLocalDateStr();
 
+    var weekLabelsMon = ['一', '二', '三', '四', '五', '六', '日'];
+    var weekLabelsSun = ['日', '一', '二', '三', '四', '五', '六'];
+    var weekLabels = firstDay === 1 ? weekLabelsMon : weekLabelsSun;
+
+    var weekDates = [];
     for (var i = 0; i < 7; i++) {
-      var d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+      var d = new Date(startDay.getFullYear(), startDay.getMonth(), startDay.getDate() + i);
       var dStr = formatLocalDate(d);
+      weekDates.push(dStr);
       var isSel = (dStr === _state.selectedDateStr);
       var isToday = (dStr === todayStr);
-      var dayLabel = ['一', '二', '三', '四', '五', '六', '日'][i];
+      var dayLabel = weekLabels[i];
 
       var studyMin = _state.studyRoomRecordsMap[dStr] ? _state.studyRoomRecordsMap[dStr].totalMinutes : 0;
+      var hasEvents = getEffectiveEvents(dStr).length > 0;
       var badgeText = studyMin > 0 ? studyMin + 'm' : (isToday ? '今' : '');
 
       html +=
         '<div class="tc-week-day-box ' + (isSel ? 'is-selected' : '') + '" data-date="' + dStr + '">' +
           '<span class="tc-week-day-label">' + dayLabel + '</span>' +
           '<span class="tc-week-day-number">' + d.getDate() + '</span>' +
-          (badgeText ? '<span class="tc-week-day-badge">' + badgeText + '</span>' : '') +
+          (badgeText ? '<span class="tc-week-day-badge">' + badgeText + '</span>' : (hasEvents ? '<span class="tc-week-dot"></span>' : '')) +
         '</div>';
     }
-    html += '</div></div>';
+    html += '</div>'; // end tc-week-strip
+
+    // 七天全面安排清单 (tc-week-agenda)
+    html += '<div class="tc-week-agenda">';
+    weekDates.forEach(function(dStr, idx) {
+      var dObj = parseLocalDate(dStr);
+      var isToday = (dStr === todayStr);
+      var isSelected = (dStr === _state.selectedDateStr);
+      var dayEvts = getEffectiveEvents(dStr);
+      var dayAnnivs = getEffectiveAnniversaries().filter(function(an) {
+        return isAnniversaryOnDate(an.startDate, dStr);
+      });
+
+      html +=
+        '<div class="tc-week-agenda-day ' + (isSelected ? 'is-selected' : '') + (isToday ? ' is-today' : '') + '" data-agenda-date="' + dStr + '">' +
+          '<div class="tc-week-agenda-header">' +
+            '<div class="tc-week-agenda-date-info">' +
+              '<span class="tc-week-agenda-wname">周' + weekLabels[idx] + '</span>' +
+              '<span class="tc-week-agenda-date">' + (dObj.getMonth() + 1) + '月' + dObj.getDate() + '日</span>' +
+              (isToday ? '<span class="tc-tag" style="background: var(--c-text); color: var(--c-bg);">今天</span>' : '') +
+            '</div>' +
+            '<button type="button" class="tc-week-add-btn" data-action="quick-add-date" data-date="' + dStr + '" title="为这一天添加日程"><i class="fa fa-plus"></i></button>' +
+          '</div>';
+
+      if (dayAnnivs.length > 0) {
+        dayAnnivs.forEach(function(an) {
+          var ms = computeAnniversaryMilestone(an.startDate, dStr);
+          html +=
+            '<div class="tc-agenda-anniv-item">' +
+              '<i class="fa-solid fa-heart" style="color: #ff477e;"></i>' +
+              '<span>' + esc(an.title) + ' (' + ms.nextYears + '周年)</span>' +
+            '</div>';
+        });
+      }
+
+      if (dayEvts.length === 0) {
+        html += '<div class="tc-week-agenda-empty">无日程安排</div>';
+      } else {
+        html += '<div class="tc-week-agenda-list">';
+        dayEvts.forEach(function(ev) {
+          var timeStr = ev.isAllDay ? '全天' : (ev.startTime || '--:--');
+          var catLabel = getCategoryLabel(ev.category);
+          html +=
+            '<div class="tc-agenda-event-row ' + (ev.completed ? 'completed' : '') + '" data-id="' + ev.id + '" data-date="' + dStr + '">' +
+              '<div class="tc-checkbox mini ' + (ev.completed ? 'checked' : '') + '" data-action="toggle-complete-occurrence" data-id="' + ev.id + '" data-date="' + dStr + '">' +
+                '<i class="fa fa-check"></i>' +
+              '</div>' +
+              '<span class="tc-agenda-event-time">' + timeStr + '</span>' +
+              '<span class="tc-agenda-event-title" data-action="view-detail" data-id="' + ev.id + '" data-date="' + dStr + '">' + esc(ev.title) + '</span>' +
+              '<span class="tc-tag mini tag-' + (ev.category || 'other') + '">' + catLabel + '</span>' +
+            '</div>';
+        });
+        html += '</div>';
+      }
+
+      html += '</div>'; // end tc-week-agenda-day
+    });
+    html += '</div>'; // end tc-week-agenda
+
+    html += '</div>'; // end tc-week-container
     return html;
   }
 
-  // 渲染日视图
+  // 渲染日视图 (全天安排 + 24小时时间轴)
   function renderDayViewHtml() {
     var sDate = parseLocalDate(_state.selectedDateStr) || new Date();
     var weekday = getWeekdayName(_state.selectedDateStr);
     var dayEvents = getEffectiveEvents(_state.selectedDateStr);
     var studyInfo = _state.studyRoomRecordsMap[_state.selectedDateStr];
+    var isToday = (_state.selectedDateStr === getTodayLocalDateStr());
+
+    // 区分全天事件与按时间排序事件
+    var allDayEvents = dayEvents.filter(function(e) { return e.isAllDay; });
+    var timedEvents = dayEvents.filter(function(e) { return !e.isAllDay; });
+    timedEvents.sort(function(a, b) {
+      return (a.startTime || '').localeCompare(b.startTime || '');
+    });
 
     var html =
       '<div class="tc-dayview-container">' +
         '<div class="tc-dayview-banner">' +
           '<div class="tc-dayview-banner-left">' +
-            '<div class="tc-dayview-title">' + sDate.getDate() + '日 · ' + weekday + '</div>' +
+            '<div class="tc-dayview-title">' + sDate.getDate() + '日 · ' + weekday + (isToday ? ' (今天)' : '') + '</div>' +
             '<div class="tc-dayview-sub">' +
               (dayEvents.length > 0 ? '共有 ' + dayEvents.length + ' 项日程安排' : '今日暂无日程安排') +
               (studyInfo ? ' · 自习专注 ' + studyInfo.totalMinutes + ' 分钟' : '') +
             '</div>' +
           '</div>' +
           '<button class="tc-btn tc-btn-primary" id="tc-btn-add-today-event"><i class="fa fa-plus"></i> 新建</button>' +
-        '</div>' +
-      '</div>';
+        '</div>';
+
+    // 全天事项卡片 (如果有)
+    if (allDayEvents.length > 0) {
+      html +=
+        '<div class="tc-allday-card">' +
+          '<div class="tc-allday-header"><i class="fa-solid fa-sun"></i><span>全天事项 (' + allDayEvents.length + ')</span></div>' +
+          '<div class="tc-allday-list">';
+      allDayEvents.forEach(function(ev) {
+        html +=
+          '<div class="tc-allday-item ' + (ev.completed ? 'completed' : '') + '" data-id="' + ev.id + '" data-action="view-detail" data-date="' + _state.selectedDateStr + '">' +
+            '<div class="tc-checkbox mini ' + (ev.completed ? 'checked' : '') + '" data-action="toggle-complete-occurrence" data-id="' + ev.id + '" data-date="' + _state.selectedDateStr + '">' +
+              '<i class="fa fa-check"></i>' +
+            '</div>' +
+            '<span class="tc-allday-title">' + esc(ev.title) + '</span>' +
+            '<span class="tc-tag mini tag-' + (ev.category || 'other') + '">' + getCategoryLabel(ev.category) + '</span>' +
+          '</div>';
+      });
+      html += '</div></div>';
+    }
+
+    // 按时间排列的时间轴
+    html += '<div class="tc-timeline-card">';
+    html += '<div class="tc-timeline-header"><i class="fa-solid fa-clock"></i><span>按时间排列</span></div>';
+    html += '<div class="tc-day-timeline">';
+
+    // 当前时间指示红线
+    if (isToday) {
+      var now = new Date();
+      var nowStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+      html +=
+        '<div class="tc-current-time-marker" data-time-str="' + nowStr + '">' +
+          '<span class="tc-cur-time-tag">' + nowStr + '</span>' +
+          '<div class="tc-cur-time-line"></div>' +
+        '</div>';
+    }
+
+    if (timedEvents.length === 0) {
+      html +=
+        '<div class="tc-empty-state" style="padding: 30px 10px;">' +
+          '<i class="fa-regular fa-clock"></i>' +
+          '<span>暂无按时间设置的日程，点击右上角快速添加</span>' +
+        '</div>';
+    } else {
+      timedEvents.forEach(function(ev) {
+        var start = ev.startTime || '09:00';
+        var end = ev.endTime || '';
+        var timeLabel = start + (end ? ' ~ ' + end : '');
+        html +=
+          '<div class="tc-timeline-item ' + (ev.completed ? 'completed' : '') + '" data-id="' + ev.id + '" data-date="' + _state.selectedDateStr + '">' +
+            '<div class="tc-timeline-time-badge">' + timeLabel + '</div>' +
+            '<div class="tc-timeline-body" data-action="view-detail" data-id="' + ev.id + '" data-date="' + _state.selectedDateStr + '">' +
+              '<div class="tc-timeline-title-row">' +
+                '<span class="tc-timeline-title">' + esc(ev.title) + '</span>' +
+                '<span class="tc-tag mini tag-' + (ev.category || 'other') + '">' + getCategoryLabel(ev.category) + '</span>' +
+              '</div>' +
+              (ev.notes ? '<div class="tc-timeline-notes">' + esc(ev.notes) + '</div>' : '') +
+            '</div>' +
+            '<div class="tc-timeline-action">' +
+              '<button type="button" class="tc-checkbox mini ' + (ev.completed ? 'checked' : '') + '" data-action="toggle-complete-occurrence" data-id="' + ev.id + '" data-date="' + _state.selectedDateStr + '" title="完成/待办"><i class="fa fa-check"></i></button>' +
+            '</div>' +
+          '</div>';
+      });
+    }
+
+    html += '</div></div>'; // end tc-day-timeline & tc-timeline-card
+    html += '</div>'; // end tc-dayview-container
     return html;
   }
 
@@ -842,14 +1236,10 @@
     var dateStr = _state.selectedDateStr;
     var dayEvents = getEffectiveEvents(dateStr);
     var todayStudy = _state.studyRoomRecordsMap[dateStr];
-    var todayTodos = _state.studyRoomTodosMap[dateStr] || [];
 
-    // 检查此日期是否恰逢纪念日
+    // 检查此日期是否恰逢纪念日 (含2月29日平年安全对齐)
     var todayAnnivs = getEffectiveAnniversaries().filter(function(an) {
-      if (!an.startDate) return false;
-      var p = an.startDate.split('-');
-      var curP = dateStr.split('-');
-      return (p[1] === curP[1] && p[2] === curP[2]);
+      return isAnniversaryOnDate(an.startDate, dateStr);
     });
 
     var html = '<div class="tc-section-card">';
@@ -933,19 +1323,32 @@
         } else if (ev.source && ev.source.app === 'study-room') {
           sourceBadge = '<span class="tc-source-badge tc-badge-study" data-action="jump-source-evt" data-id="' + ev.id + '" title="来自陪伴自习室 · 点击跳转"><i class="fa-solid fa-book-open"></i> 自习室</span>';
           jumpBtn = '<button class="tc-icon-action-btn" data-action="jump-source-evt" data-id="' + ev.id + '" title="前往自习室"><i class="fa fa-arrow-up-right-from-square"></i></button>';
+        } else if (ev.source && ev.source.app === 'life-game') {
+          sourceBadge = '<span class="tc-source-badge tc-badge-lifegame" data-action="jump-source-evt" data-id="' + ev.id + '" title="来自人生游戏 · 点击跳转"><i class="fa-solid fa-gamepad"></i> 人生游戏</span>';
+          jumpBtn = '<button class="tc-icon-action-btn" data-action="jump-source-evt" data-id="' + ev.id + '" title="前往人生游戏"><i class="fa fa-arrow-up-right-from-square"></i></button>';
+        }
+
+        var extraMetaTags = '';
+        if (ev.source && ev.source.app === 'life-game') {
+          if (ev.priority === 'high') extraMetaTags += '<span class="tc-tag tc-tag-priority-high">高优先</span>';
+          if (ev.rewardExp) extraMetaTags += '<span class="tc-tag tc-tag-reward">+' + ev.rewardExp + ' EXP</span>';
+          if (ev.status === 'claimed') extraMetaTags += '<span class="tc-tag tag-done">已领奖入账</span>';
+        } else if (ev.source && ev.source.app === 'study-room' && ev.source.type === 'todo' && ev.estimatedMinutes > 0) {
+          extraMetaTags += '<span class="tc-tag tc-tag-duration">约' + ev.estimatedMinutes + '分钟</span>';
         }
 
         html +=
-          '<div class="tc-event-item ' + (ev.completed ? 'completed' : '') + '" data-id="' + ev.id + '">' +
-            '<div class="tc-checkbox ' + (ev.completed ? 'checked' : '') + '" data-action="toggle-complete" data-id="' + ev.id + '" title="完成/未完成">' +
+          '<div class="tc-event-item ' + (ev.completed ? 'completed' : '') + '" data-id="' + ev.id + '" data-date="' + dateStr + '">' +
+            '<div class="tc-checkbox ' + (ev.completed ? 'checked' : '') + (ev.readOnly ? ' is-readonly' : '') + '" data-action="toggle-complete-occurrence" data-id="' + ev.id + '" data-date="' + dateStr + '" title="' + (ev.readOnly ? '已入账归档' : '完成/未完成') + '">' +
               '<i class="fa fa-check"></i>' +
             '</div>' +
-            '<div class="tc-event-info">' +
+            '<div class="tc-event-info" data-action="view-detail" data-id="' + ev.id + '" data-date="' + dateStr + '">' +
               '<div class="tc-event-title-row">' +
                 '<span class="tc-event-title-text">' + esc(ev.title) + '</span>' +
                 '<span class="tc-tag ' + catClass + '">' + catLabel + '</span>' +
                 charBadge +
                 sourceBadge +
+                extraMetaTags +
                 reminderBadge +
                 repeatBadge +
               '</div>' +
@@ -956,8 +1359,8 @@
             '</div>' +
             '<div class="tc-event-actions">' +
               jumpBtn +
-              '<button class="tc-icon-action-btn" data-action="edit-event" data-id="' + ev.id + '" title="编辑"><i class="fa fa-pen"></i></button>' +
-              '<button class="tc-icon-action-btn btn-delete" data-action="delete-event" data-id="' + ev.id + '" title="删除"><i class="fa fa-trash"></i></button>' +
+              '<button class="tc-icon-action-btn" data-action="edit-event" data-id="' + ev.id + '" data-date="' + dateStr + '" title="' + (ev.readOnly ? '查看' : '编辑') + '"><i class="fa fa-pen"></i></button>' +
+              '<button class="tc-icon-action-btn btn-delete" data-action="delete-event" data-id="' + ev.id + '" data-date="' + dateStr + '" title="删除/移除"><i class="fa fa-trash"></i></button>' +
             '</div>' +
           '</div>';
       });
@@ -975,7 +1378,6 @@
   // 渲染近期重要日期摘要
   function renderUpcomingCountdownsSectionHtml() {
     var list = getEffectiveCountdowns();
-    // 过滤出未来的倒计时并按天数升序排序
     var futureList = list.filter(function(cd) {
       return getLocalDaysDiff(cd.targetDate) >= 0;
     }).sort(function(a, b) {
@@ -1029,7 +1431,7 @@
       });
     }
 
-    // 日期点击选中
+    // 日期点击选中 (月网格 & 周网格)
     container.querySelectorAll('.tc-day-cell[data-date], .tc-week-day-box[data-date]').forEach(function(el) {
       el.addEventListener('click', function() {
         var dStr = el.dataset.date;
@@ -1040,7 +1442,19 @@
       });
     });
 
-    // 日期安排中的快速新建
+    // 周视图日程日期行快速切换
+    container.querySelectorAll('.tc-week-agenda-day[data-agenda-date]').forEach(function(el) {
+      el.addEventListener('click', function(e) {
+        if (e.target.closest('button') || e.target.closest('.tc-checkbox') || e.target.closest('[data-action]')) return;
+        var dStr = el.dataset.agendaDate;
+        if (dStr && dStr !== _state.selectedDateStr) {
+          _state.selectedDateStr = dStr;
+          renderCalendarView();
+        }
+      });
+    });
+
+    // 快捷新建
     var btnAdd = container.querySelector('#tc-btn-card-add-event');
     if (btnAdd) {
       btnAdd.addEventListener('click', function() { showAddEventModal(_state.selectedDateStr); });
@@ -1049,25 +1463,32 @@
     if (btnTodayAdd) {
       btnTodayAdd.addEventListener('click', function() { showAddEventModal(_state.selectedDateStr); });
     }
+    container.querySelectorAll('[data-action="quick-add-date"]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var dStr = btn.dataset.date;
+        showAddEventModal(dStr);
+      });
+    });
 
-    // 自习室今日卡片快速进入
+    // 自习室今日卡片快速进入 (携带返回栈上下文且保留计时状态)
     container.querySelectorAll('[data-action="jump-study-today"]').forEach(function(btn) {
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         if (window.TimeCalendarIntegrations) {
-          window.TimeCalendarIntegrations.navigate({ app: 'study-room', type: 'duo' });
+          window.TimeCalendarIntegrations.navigate({ app: 'study-room', type: 'duo' }, { fromApp: 'time-calendar' });
         }
       });
     });
 
-    // 来源应用跳转
+    // 来源应用跳转 (携带返回栈上下文)
     container.querySelectorAll('[data-action="jump-source-an"]').forEach(function(btn) {
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         var id = btn.dataset.id;
         var an = getEffectiveAnniversaries().find(function(a) { return a.id === id; });
         if (an && an.source && window.TimeCalendarIntegrations) {
-          window.TimeCalendarIntegrations.navigate(an.source);
+          window.TimeCalendarIntegrations.navigate(an.source, { fromApp: 'time-calendar' });
         }
       });
     });
@@ -1078,43 +1499,63 @@
         var id = btn.dataset.id;
         var ev = getEffectiveEvents().find(function(e) { return e.id === id; });
         if (ev && ev.source && window.TimeCalendarIntegrations) {
-          window.TimeCalendarIntegrations.navigate(ev.source);
+          window.TimeCalendarIntegrations.navigate(ev.source, { fromApp: 'time-calendar' });
         }
       });
     });
 
-    // 完成/未完成切换
-    container.querySelectorAll('[data-action="toggle-complete"]').forEach(function(btn) {
-      btn.addEventListener('click', function(e) {
+    // 查看日程详情弹窗 (底部抽屉卡片)
+    container.querySelectorAll('[data-action="view-detail"]').forEach(function(el) {
+      el.addEventListener('click', function(e) {
         e.stopPropagation();
-        var id = btn.dataset.id;
-        toggleEventCompletion(id);
+        var id = el.dataset.id;
+        var dateStr = el.dataset.date || _state.selectedDateStr;
+        var dayEvts = getEffectiveEvents(dateStr);
+        var ev = dayEvts.find(function(item) { return item.id === id || item.masterEventId === id; }) ||
+                 _state.events.find(function(item) { return item.id === id; });
+        if (ev) showEventDetailModal(ev, dateStr);
       });
     });
 
-    // 编辑日程 (支持本地日程与联动心愿/待办)
+    // 完成/未完成切换 (支持重复实例单次完成)
+    container.querySelectorAll('[data-action="toggle-complete"], [data-action="toggle-complete-occurrence"]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var id = btn.dataset.id;
+        var dateStr = btn.dataset.date || _state.selectedDateStr;
+        toggleEventCompletion(id, dateStr);
+      });
+    });
+
+    // 编辑日程 (单次 vs 系列安全选择)
     container.querySelectorAll('[data-action="edit-event"]').forEach(function(btn) {
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         var id = btn.dataset.id;
-        var ev = getEffectiveEvents().find(function(item) { return item.id === id; });
-        if (ev) showEditEventModal(ev);
+        var dateStr = btn.dataset.date || _state.selectedDateStr;
+        var dayEvts = getEffectiveEvents(dateStr);
+        var ev = dayEvts.find(function(item) { return item.id === id || item.masterEventId === id; }) ||
+                 _state.events.find(function(item) { return item.id === id; });
+        if (ev) handleEditEventWithRecurrenceChoice(ev, dateStr);
       });
     });
 
-    // 删除日程
+    // 删除日程 (单次 vs 系列安全选择)
     container.querySelectorAll('[data-action="delete-event"]').forEach(function(btn) {
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         var id = btn.dataset.id;
-        deleteEvent(id);
+        var dateStr = btn.dataset.date || _state.selectedDateStr;
+        var dayEvts = getEffectiveEvents(dateStr);
+        var ev = dayEvts.find(function(item) { return item.id === id || item.masterEventId === id; }) ||
+                 _state.events.find(function(item) { return item.id === id; });
+        if (ev) handleDeleteEventWithRecurrenceChoice(ev, dateStr);
       });
     });
   }
 
-  // ===== 6. 渲染倒计时 Tab =====
-  function renderCountdownsTab() {
-    var container = _state.pageEl.querySelector('#tc-content-scroll');
+  // ===== 6. 渲染倒计时内容 =====
+  function buildCountdownsContentHtml() {
     var list = getEffectiveCountdowns();
 
     // 分类筛选
@@ -1170,29 +1611,47 @@
         var absDays = Math.abs(diff);
 
         var isReadOnly = cd.source && cd.source.readOnly;
+        var isLinkedEventCd = String(cd.id || '').indexOf('cd_evt_') === 0;
+        var isLinkedAnnivCd = String(cd.id || '').indexOf('cd_anniv_') === 0;
+        var isStudyExamCd = cd.source && cd.source.app === 'study-room';
+        var studyProg = cd.studyProgress || null;
+        var progressHtml = '';
+        if (isStudyExamCd && studyProg) {
+          var showMins = studyProg.matchedMinutes > 0 ? studyProg.matchedMinutes : studyProg.totalStudyMinutes;
+          var showSessions = studyProg.matchedSessions > 0 ? studyProg.matchedSessions : studyProg.totalStudySessions;
+          progressHtml =
+            '<div class="tc-cd-study-progress">' +
+              '<span><i class="fa-solid fa-book-open"></i> ' + (cd.subject ? esc(cd.subject) + ' · ' : '') + '累计专注 ' + showMins + ' 分钟 (' + showSessions + ' 次)</span>' +
+            '</div>';
+        }
 
         html +=
-          '<div class="tc-countdown-card ' + (cd.isPinned ? 'is-pinned' : '') + '">' +
+          '<div class="tc-countdown-card ' + (cd.isPinned ? 'is-pinned' : '') + (cd.completed ? ' is-completed' : '') + '">' +
             '<div class="tc-countdown-left">' +
               '<div class="tc-countdown-title">' +
                 (cd.isPinned ? '<i class="fa fa-thumbtack" style="font-size: 11px;"></i>' : '') +
                 '<span>' + esc(cd.title) + '</span>' +
+                (cd.completed ? '<span class="tc-tag tag-done">已完成</span>' : '') +
                 (cd.charName ? '<span class="tc-tag">' + esc(cd.charName) + '</span>' : '') +
+                (isStudyExamCd ? '<span class="tc-tag tc-badge-study">自习室备考</span>' : '') +
+                (isLinkedEventCd ? '<span class="tc-tag">关联日程</span>' : '') +
                 (isReadOnly ? '<span class="tc-tag tag-source-love">联动 (只读)</span>' : '') +
               '</div>' +
               '<div class="tc-countdown-date">目标日期：' + esc(cd.targetDate) + ' · ' + getWeekdayName(cd.targetDate) + (cd.notes ? ' · ' + esc(cd.notes) : '') + '</div>' +
+              progressHtml +
             '</div>' +
             '<div class="tc-countdown-right">' +
               '<div class="tc-countdown-badge-box">' +
                 '<span class="tc-countdown-prefix">' + prefix + '</span>' +
                 '<span class="tc-countdown-num">' + (isToday ? '今' : absDays) + '</span>' +
-                '<span class="tc-countdown-unit">' + (isToday ? '天' : '天') + '</span>' +
+                '<span class="tc-countdown-unit">天</span>' +
               '</div>' +
               (!isReadOnly ? (
                 '<div style="display: flex; gap: 4px; margin-top: 4px;">' +
-                  '<button class="tc-icon-action-btn" data-action="toggle-pin-cd" data-id="' + cd.id + '" title="' + (cd.isPinned ? '取消置顶' : '置顶') + '"><i class="fa fa-thumbtack"></i></button>' +
+                  (isStudyExamCd ? '<button class="tc-icon-action-btn" data-action="jump-source-cd" data-id="' + cd.id + '" title="前往自习室备考"><i class="fa fa-arrow-up-right-from-square"></i></button>' : '') +
+                  (!isLinkedEventCd && !isLinkedAnnivCd ? '<button class="tc-icon-action-btn" data-action="toggle-pin-cd" data-id="' + cd.id + '" title="' + (cd.isPinned ? '取消置顶' : '置顶') + '"><i class="fa fa-thumbtack"></i></button>' : '') +
                   '<button class="tc-icon-action-btn" data-action="edit-cd" data-id="' + cd.id + '" title="编辑"><i class="fa fa-pen"></i></button>' +
-                  '<button class="tc-icon-action-btn btn-delete" data-action="delete-cd" data-id="' + cd.id + '" title="删除"><i class="fa fa-trash"></i></button>' +
+                  '<button class="tc-icon-action-btn btn-delete" data-action="delete-cd" data-id="' + cd.id + '" title="' + (isLinkedEventCd ? '取消倒计时展示/删除' : '删除') + '"><i class="fa fa-trash"></i></button>' +
                 '</div>'
               ) : '') +
             '</div>' +
@@ -1201,15 +1660,31 @@
       html += '</div>';
     }
 
-    container.innerHTML = html;
-    bindCountdownsTabEvents(container);
+    return html;
+  }
+
+  function renderCountdownsTab() {
+    _state.activeTab = 'anniversaries';
+    _state.anniversarySubTab = 'countdowns';
+    renderAnniversariesTab();
   }
 
   function bindCountdownsTabEvents(container) {
     container.querySelectorAll('[data-cd-cat]').forEach(function(chip) {
       chip.addEventListener('click', function() {
         _state.countdownCategoryFilter = chip.dataset.cdCat;
-        renderCountdownsTab();
+        renderAnniversariesTab();
+      });
+    });
+
+    container.querySelectorAll('[data-action="jump-source-cd"]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var id = btn.dataset.id;
+        var cd = getEffectiveCountdowns().find(function(c) { return c.id === id; });
+        if (cd && cd.source && window.TimeCalendarIntegrations) {
+          window.TimeCalendarIntegrations.navigate(cd.source, { fromApp: 'time-calendar' });
+        }
       });
     });
 
@@ -1222,7 +1697,7 @@
           cd.isPinned = !cd.isPinned;
           cd.updatedAt = Date.now();
           saveConfigKey(STORAGE_KEYS.COUNTDOWNS, _state.countdowns);
-          renderCountdownsTab();
+          renderAnniversariesTab();
         }
       });
     });
@@ -1231,7 +1706,20 @@
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         var id = btn.dataset.id;
-        var cd = _state.countdowns.find(function(c) { return c.id === id; });
+        if (String(id).indexOf('cd_evt_') === 0) {
+          var rawEvtId = id.replace(/^cd_evt_/, '');
+          var masterEv = _state.events.find(function(ev) { return ev.id === rawEvtId; });
+          if (masterEv) showEditEventModal(masterEv);
+          return;
+        }
+        if (String(id).indexOf('cd_anniv_') === 0) {
+          var rawAnId = id.replace(/^cd_anniv_/, '');
+          var masterAn = getEffectiveAnniversaries().find(function(an) { return an.id === rawAnId; });
+          if (masterAn) showEditAnniversaryModal(masterAn);
+          return;
+        }
+        var cd = _state.countdowns.find(function(c) { return c.id === id; }) ||
+                 (_state.studyRoomExams || []).find(function(c) { return c.id === id; });
         if (cd) showEditCountdownModal(cd);
       });
     });
@@ -1245,9 +1733,49 @@
     });
   }
 
-  // ===== 7. 渲染纪念日 Tab =====
+  // ===== 7. 渲染纪念日 Tab (包含 [纪念日 | 倒计时] 子分段切换) =====
   function renderAnniversariesTab() {
     var container = _state.pageEl.querySelector('#tc-content-scroll');
+    var subTab = _state.anniversarySubTab || 'anniversaries';
+
+    var html =
+      '<div class="tc-anniv-subtabs-wrap">' +
+        '<div class="tc-anniv-subtabs">' +
+          '<button type="button" class="tc-anniv-subtab-btn ' + (subTab === 'anniversaries' ? 'active' : '') + '" data-subtab="anniversaries">' +
+            '<i class="fa-solid fa-heart" style="margin-right: 4px;"></i>纪念日' +
+          '</button>' +
+          '<button type="button" class="tc-anniv-subtab-btn ' + (subTab === 'countdowns' ? 'active' : '') + '" data-subtab="countdowns">' +
+            '<i class="fa-solid fa-hourglass-half" style="margin-right: 4px;"></i>倒计时' +
+          '</button>' +
+        '</div>' +
+      '</div>';
+
+    if (subTab === 'countdowns') {
+      html += buildCountdownsContentHtml();
+      container.innerHTML = html;
+      bindSubtabSwitchEvents(container);
+      bindCountdownsTabEvents(container);
+    } else {
+      html += buildAnniversariesContentHtml();
+      container.innerHTML = html;
+      bindSubtabSwitchEvents(container);
+      bindAnniversariesTabEvents(container);
+    }
+  }
+
+  function bindSubtabSwitchEvents(container) {
+    container.querySelectorAll('.tc-anniv-subtab-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var nextTab = btn.dataset.subtab;
+        if (nextTab && nextTab !== _state.anniversarySubTab) {
+          _state.anniversarySubTab = nextTab;
+          renderAnniversariesTab();
+        }
+      });
+    });
+  }
+
+  function buildAnniversariesContentHtml() {
     var list = getEffectiveAnniversaries();
 
     // 排序：置顶优先，其次按距今相守天数降序排序
@@ -1323,16 +1851,17 @@
       html += '</div>';
     }
 
-    container.innerHTML = html;
-    bindAnniversariesTabEvents(container);
+    return html;
   }
 
   function bindAnniversariesTabEvents(container) {
     container.querySelectorAll('[data-char-filter]').forEach(function(chip) {
-      chip.addEventListener('click', function() {
+      chip.addEventListener('click', async function() {
         _state.filterCharId = chip.dataset.charFilter;
-        // 同步顶部小胶囊名称
         updateHeaderCharPill();
+        await loadLoveDiaryLinkage();
+        await loadStudyRoomLinkage();
+        await loadLifeGameLinkage();
         renderAnniversariesTab();
       });
     });
@@ -1383,15 +1912,9 @@
   // ===== 8. 渲染日程 Tab (全能日程管理) =====
   function renderSchedulesTab() {
     var container = _state.pageEl.querySelector('#tc-content-scroll');
-    var list = [].concat(_state.events);
-
-    // 1. 角色筛选
-    if (_state.filterCharId === 'personal') {
-      list = list.filter(function(e) { return e.relationType === 'personal'; });
-    } else if (_state.filterCharId !== 'all') {
-      var tId = String(_state.filterCharId);
-      list = list.filter(function(e) { return e.relationType === 'personal' || String(e.charId) === tId; });
-    }
+    // 统一使用 getEffectiveEvents()，确保 1) 个人视角与多 Char 权限一致，2) 跨 App 投影一致性呈现
+    var allEffective = getEffectiveEvents();
+    var list = [].concat(allEffective);
 
     // 2. 状态筛选
     if (_state.scheduleStatusFilter === 'pending') {
@@ -1421,15 +1944,18 @@
     });
 
     var todayStr = getTodayLocalDateStr();
-    var pendingTotal = _state.events.filter(function(e) { return !e.completed; }).length;
-    var completedTotal = _state.events.filter(function(e) { return e.completed; }).length;
+    var pendingTotal = allEffective.filter(function(e) { return !e.completed; }).length;
+    var completedTotal = allEffective.filter(function(e) { return e.completed; }).length;
 
     var html =
-      '<div style="display: flex; gap: 8px; align-items: center;">' +
-        '<div class="tc-search-box" style="flex: 1;">' +
+      '<div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">' +
+        '<div class="tc-search-box" style="flex: 1; min-width: 140px;">' +
           '<i class="fa fa-search"></i>' +
           '<input class="tc-search-input" id="tc-schedule-search" placeholder="搜索日程标题或备注..." value="' + esc(_state.scheduleSearchQuery) + '">' +
         '</div>' +
+        '<button class="tc-btn-ai-schedule" id="tc-btn-ai-schedule" title="自然语言智能排期与冲突检测">' +
+          '<i class="fa-solid fa-wand-magic-sparkles"></i><span>✨ AI 帮我安排</span>' +
+        '</button>' +
         '<button class="tc-btn" id="tc-btn-open-reminders" style="padding: 6px 10px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border-radius: var(--r-pill); background: var(--c-surface); border: 1px solid var(--c-border); color: var(--c-text); cursor: pointer;" title="智能提醒管理与免打扰设置">' +
           '<i class="fa-solid fa-bell"></i><span>提醒</span>' +
         '</button>' +
@@ -1438,7 +1964,7 @@
         '</button>' +
       '</div>' +
       '<div class="tc-filter-strip" style="margin-top: 8px;">' +
-        '<button class="tc-filter-chip ' + (_state.scheduleStatusFilter === 'all' ? 'active' : '') + '" data-status="all">全部 (' + _state.events.length + ')</button>' +
+        '<button class="tc-filter-chip ' + (_state.scheduleStatusFilter === 'all' ? 'active' : '') + '" data-status="all">全部 (' + allEffective.length + ')</button>' +
         '<button class="tc-filter-chip ' + (_state.scheduleStatusFilter === 'pending' ? 'active' : '') + '" data-status="pending">待办 (' + pendingTotal + ')</button>' +
         '<button class="tc-filter-chip ' + (_state.scheduleStatusFilter === 'completed' ? 'active' : '') + '" data-status="completed">已完成 (' + completedTotal + ')</button>' +
       '</div>' +
@@ -1470,17 +1996,31 @@
         var reminderBadge = hasReminder ? '<span class="tc-meta-badge has-reminder" title="已设置提醒"><i class="fa fa-bell" style="font-size: 10px;"></i></span>' : '';
         var repeatBadge = hasRepeat ? '<span class="tc-meta-badge has-repeat" title="重复日程"><i class="fa fa-rotate" style="font-size: 10px;"></i></span>' : '';
 
+        var sourceBadge = '';
+        var jumpBtn = '';
+        if (ev.source && ev.source.app === 'love-diary') {
+          sourceBadge = '<span class="tc-source-badge tc-badge-love" data-action="jump-source-evt" data-id="' + ev.id + '"><i class="fa-solid fa-heart"></i> 恋爱记</span>';
+          jumpBtn = '<button class="tc-icon-action-btn" data-action="jump-source-evt" data-id="' + ev.id + '" title="前往恋爱记"><i class="fa fa-arrow-up-right-from-square"></i></button>';
+        } else if (ev.source && ev.source.app === 'study-room') {
+          sourceBadge = '<span class="tc-source-badge tc-badge-study" data-action="jump-source-evt" data-id="' + ev.id + '"><i class="fa-solid fa-book-open"></i> 自习室</span>';
+          jumpBtn = '<button class="tc-icon-action-btn" data-action="jump-source-evt" data-id="' + ev.id + '" title="前往自习室"><i class="fa fa-arrow-up-right-from-square"></i></button>';
+        } else if (ev.source && ev.source.app === 'life-game') {
+          sourceBadge = '<span class="tc-source-badge tc-badge-lifegame" data-action="jump-source-evt" data-id="' + ev.id + '"><i class="fa-solid fa-gamepad"></i> 人生游戏</span>';
+          jumpBtn = '<button class="tc-icon-action-btn" data-action="jump-source-evt" data-id="' + ev.id + '" title="前往人生游戏"><i class="fa fa-arrow-up-right-from-square"></i></button>';
+        }
+
         html +=
-          '<div class="tc-event-item ' + (ev.completed ? 'completed' : '') + '" data-id="' + ev.id + '">' +
-            '<div class="tc-checkbox ' + (ev.completed ? 'checked' : '') + '" data-action="toggle-complete" data-id="' + ev.id + '" title="完成/未完成">' +
+          '<div class="tc-event-item ' + (ev.completed ? 'completed' : '') + '" data-id="' + ev.id + '" data-date="' + ev.date + '">' +
+            '<div class="tc-checkbox ' + (ev.completed ? 'checked' : '') + (ev.readOnly ? ' is-readonly' : '') + '" data-action="toggle-complete" data-id="' + ev.id + '" data-date="' + ev.date + '" title="' + (ev.readOnly ? '已入账归档' : '完成/未完成') + '">' +
               '<i class="fa fa-check"></i>' +
             '</div>' +
-            '<div class="tc-event-info">' +
+            '<div class="tc-event-info" data-action="view-detail" data-id="' + ev.id + '" data-date="' + ev.date + '">' +
               '<div class="tc-event-title-row">' +
                 '<span class="tc-event-title-text">' + esc(ev.title) + '</span>' +
                 '<span class="tc-tag ' + catClass + '">' + catLabel + '</span>' +
                 (isToday ? '<span class="tc-tag" style="background: var(--c-text); color: var(--c-bg);">今天</span>' : '') +
                 (ev.charName ? '<span class="tc-tag">' + esc(ev.charName) + '</span>' : '') +
+                sourceBadge +
                 reminderBadge +
                 repeatBadge +
               '</div>' +
@@ -1491,8 +2031,9 @@
               '</div>' +
             '</div>' +
             '<div class="tc-event-actions">' +
-              '<button class="tc-icon-action-btn" data-action="edit-event" data-id="' + ev.id + '" title="编辑"><i class="fa fa-pen"></i></button>' +
-              '<button class="tc-icon-action-btn btn-delete" data-action="delete-event" data-id="' + ev.id + '" title="删除"><i class="fa fa-trash"></i></button>' +
+              jumpBtn +
+              '<button class="tc-icon-action-btn" data-action="edit-event" data-id="' + ev.id + '" data-date="' + ev.date + '" title="编辑"><i class="fa fa-pen"></i></button>' +
+              '<button class="tc-icon-action-btn btn-delete" data-action="delete-event" data-id="' + ev.id + '" data-date="' + ev.date + '" title="删除"><i class="fa fa-trash"></i></button>' +
             '</div>' +
           '</div>';
       });
@@ -1504,6 +2045,15 @@
   }
 
   function bindSchedulesTabEvents(container) {
+    var aiBtn = container.querySelector('#tc-btn-ai-schedule');
+    if (aiBtn) {
+      aiBtn.addEventListener('click', function() {
+        if (window.TimeCalendarAI) {
+          window.TimeCalendarAI.showAICreateModal({ baseDate: _state.selectedDateStr });
+        }
+      });
+    }
+
     var remindersBtn = container.querySelector('#tc-btn-open-reminders');
     if (remindersBtn) {
       remindersBtn.addEventListener('click', function() {
@@ -1525,7 +2075,6 @@
       searchInput.addEventListener('input', function() {
         _state.scheduleSearchQuery = searchInput.value;
         renderSchedulesTab();
-        // 保持聚焦
         var reInput = container.querySelector('#tc-schedule-search');
         if (reInput) {
           reInput.focus();
@@ -1548,11 +2097,33 @@
       });
     });
 
+    container.querySelectorAll('[data-action="jump-source-evt"]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var id = btn.dataset.id;
+        var ev = getEffectiveEvents().find(function(item) { return item.id === id; }) || _state.events.find(function(item) { return item.id === id; });
+        if (ev && ev.source && window.TimeCalendarIntegrations) {
+          window.TimeCalendarIntegrations.navigate(ev.source, { fromApp: 'time-calendar' });
+        }
+      });
+    });
+
+    container.querySelectorAll('[data-action="view-detail"]').forEach(function(el) {
+      el.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var id = el.dataset.id;
+        var dateStr = el.dataset.date;
+        var ev = getEffectiveEvents().find(function(item) { return item.id === id; }) || _state.events.find(function(item) { return item.id === id; });
+        if (ev) showEventDetailModal(ev, dateStr);
+      });
+    });
+
     container.querySelectorAll('[data-action="toggle-complete"]').forEach(function(btn) {
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         var id = btn.dataset.id;
-        toggleEventCompletion(id);
+        var dateStr = btn.dataset.date;
+        toggleEventCompletion(id, dateStr);
       });
     });
 
@@ -1560,8 +2131,9 @@
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         var id = btn.dataset.id;
-        var ev = _state.events.find(function(item) { return item.id === id; });
-        if (ev) showEditEventModal(ev);
+        var dateStr = btn.dataset.date;
+        var ev = getEffectiveEvents().find(function(item) { return item.id === id; }) || _state.events.find(function(item) { return item.id === id; });
+        if (ev) handleEditEventWithRecurrenceChoice(ev, dateStr);
       });
     });
 
@@ -1569,13 +2141,17 @@
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         var id = btn.dataset.id;
-        deleteEvent(id);
+        var dateStr = btn.dataset.date;
+        var ev = getEffectiveEvents().find(function(item) { return item.id === id; }) || _state.events.find(function(item) { return item.id === id; });
+        if (ev) handleDeleteEventWithRecurrenceChoice(ev, dateStr);
       });
     });
   }
 
-  // ===== 9. 日程操作 (增删改查) =====
-  async function toggleEventCompletion(id) {
+  // ===== 9. 日程操作 (增删改查及重复日程单次/系列安全隔离) =====
+  async function toggleEventCompletion(id, targetDate) {
+    var checkDate = targetDate || _state.selectedDateStr;
+
     // 检查是否为恋爱记心愿
     var linkedWish = _state.loveDiaryWishes && _state.loveDiaryWishes.find(function(w) { return w.id === id; });
     if (linkedWish && window.TimeCalendarIntegrations) {
@@ -1589,30 +2165,563 @@
     // 检查是否为自习室待办
     var linkedTodo = _state.studyRoomTodos && _state.studyRoomTodos.find(function(t) { return t.id === id; });
     if (linkedTodo && window.TimeCalendarIntegrations) {
-      var nextDone = await window.TimeCalendarIntegrations.toggleLinkedItem(linkedTodo);
-      linkedTodo.completed = nextDone;
+      var nextDoneSr = await window.TimeCalendarIntegrations.toggleLinkedItem(linkedTodo);
+      linkedTodo.completed = nextDoneSr;
       renderActiveTabContent();
-      if (window.toast) window.toast(nextDone ? '已在自习室中打勾完成待办 ✍️' : '自习待办状态已重置');
+      if (window.toast) window.toast(nextDoneSr ? '已在自习室中打勾完成待办 ✍️' : '自习待办状态已重置');
       return;
     }
 
-    // 检查是否为人生游戏现实委托
+    // 检查是否为人生游戏现实委托 (只允许切换 pending <-> completed，严禁在日历中结算奖励；claimed 不可反选)
     var linkedLifeGameTask = _state.lifeGameTasks && _state.lifeGameTasks.find(function(t) { return t.id === id; });
     if (linkedLifeGameTask && window.TimeCalendarIntegrations) {
+      if (linkedLifeGameTask.status === 'claimed' || linkedLifeGameTask.readOnly || (linkedLifeGameTask.source && linkedLifeGameTask.source.readOnly)) {
+        if (window.toast) window.toast('已领奖入账的人生游戏委托不可在日历中修改状态');
+        return;
+      }
       var nextLgDone = await window.TimeCalendarIntegrations.toggleLinkedItem(linkedLifeGameTask);
       linkedLifeGameTask.completed = nextLgDone;
+      linkedLifeGameTask.status = nextLgDone ? 'completed' : 'pending';
       renderActiveTabContent();
       if (window.toast) window.toast(nextLgDone ? '已在人生游戏中标记达成（请前往人生游戏领取奖励）' : '现实委托状态已重置');
       return;
     }
 
-    var ev = _state.events.find(function(e) { return e.id === id; });
-    if (!ev) return;
-    ev.completed = !ev.completed;
-    ev.updatedAt = Date.now();
+    var master = _state.events.find(function(e) { return e.id === id; });
+    if (!master) return;
+
+    var hasRepeat = master.recurrence && master.recurrence.type && master.recurrence.type !== 'none';
+    if (hasRepeat && checkDate) {
+      master.recurrence.overrides = master.recurrence.overrides || {};
+      var curInstance = master.recurrence.overrides[checkDate] || {};
+      var curCompleted = curInstance.completed !== undefined ? curInstance.completed : (checkDate === master.date ? master.completed : false);
+      curInstance.completed = !curCompleted;
+      curInstance.updatedAt = Date.now();
+      master.recurrence.overrides[checkDate] = curInstance;
+      master.updatedAt = curInstance.updatedAt;
+      await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+      if (curInstance.completed && window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+        try {
+          await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+            eventId: 'tc_done_' + master.id + '#' + checkDate,
+            eventType: 'event_completed',
+            sourceApp: 'time-calendar',
+            sourceRecordId: master.id,
+            occurrenceKey: master.id + '#' + checkDate,
+            charId: master.charId ? String(master.charId) : null,
+            occurredAt: master.updatedAt,
+            payload: {
+              recurrence: true,
+              occurrenceDate: checkDate,
+              visibility: master.visibility || 'public',
+              source: master.source || { app: 'timeCalendar' }
+            }
+          });
+        } catch (_) {}
+      }
+      renderActiveTabContent();
+      if (window.toast) window.toast(curInstance.completed ? '已完成日程' : '已重置为待办');
+      return;
+    }
+
+    master.completed = !master.completed;
+    master.updatedAt = Date.now();
     await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+    if (master.completed && window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+      try {
+        await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+          eventId: 'tc_done_' + master.id,
+          eventType: 'event_completed',
+          sourceApp: 'time-calendar',
+          sourceRecordId: master.id,
+          occurrenceKey: master.id,
+          charId: master.charId ? String(master.charId) : null,
+          occurredAt: master.updatedAt,
+          payload: {
+            recurrence: false,
+            visibility: master.visibility || 'public',
+            source: master.source || { app: 'timeCalendar' }
+          }
+        });
+      } catch (_) {}
+    }
     renderActiveTabContent();
-    if (window.toast) window.toast(ev.completed ? '已完成日程「' + ev.title + '」' : '已重置为待办');
+    if (window.toast) window.toast(master.completed ? '已完成日程「' + master.title + '」' : '已重置为待办');
+  }
+
+  // 单次 vs 系列修改决策入口
+  function handleEditEventWithRecurrenceChoice(ev, occurrenceDate) {
+    var targetDate = occurrenceDate || ev.date || _state.selectedDateStr;
+    var master = _state.events.find(function(e) { return e.id === ev.id || e.id === ev.masterEventId; });
+
+    if (ev.source && ev.source.app !== 'timeCalendar') {
+      return showEditEventModal(ev);
+    }
+    if (!master) return;
+
+    var hasRepeat = master.recurrence && master.recurrence.type && master.recurrence.type !== 'none';
+    if (!hasRepeat) {
+      return showEditEventModal(master);
+    }
+
+    // 弹出单次修改与整个系列修改的选择弹窗
+    showRecurrenceActionChoiceSheet({
+      title: '编辑重复日程',
+      desc: '日程「' + master.title + '」属于重复系列，请选择编辑范围：',
+      singleLabel: '仅修改此日程 (' + targetDate + ')',
+      seriesLabel: '修改整个重复系列',
+      onSingle: function() {
+        var currentInstance = TimeCalendarRecurrence.createOccurrence(master, targetDate);
+        showEditEventModal(currentInstance, { isSingleInstanceEdit: true, masterEvent: master, instanceDate: targetDate });
+      },
+      onSeries: function() {
+        showEditEventModal(master, { isSingleInstanceEdit: false });
+      }
+    });
+  }
+
+  // 单次 vs 系列删除决策入口
+  async function handleDeleteEventWithRecurrenceChoice(ev, occurrenceDate) {
+    var targetDate = occurrenceDate || ev.date || _state.selectedDateStr;
+    var master = _state.events.find(function(e) { return e.id === ev.id || e.id === ev.masterEventId; });
+
+    if (ev.source && ev.source.app !== 'timeCalendar') {
+      return deleteEvent(ev.id);
+    }
+    if (!master) return;
+
+    var hasRepeat = master.recurrence && master.recurrence.type && master.recurrence.type !== 'none';
+    if (!hasRepeat) {
+      return deleteEvent(master.id);
+    }
+
+    // 弹出单次删除与整个系列删除的选择弹窗
+    showRecurrenceActionChoiceSheet({
+      title: '删除重复日程',
+      desc: '日程「' + master.title + '」属于重复系列，请选择删除范围：',
+      singleLabel: '仅删除此日程 (' + targetDate + ')',
+      seriesLabel: '删除整个重复系列',
+      onSingle: async function() {
+        master.recurrence.excludedDates = master.recurrence.excludedDates || [];
+        if (master.recurrence.excludedDates.indexOf(targetDate) === -1) {
+          master.recurrence.excludedDates.push(targetDate);
+        }
+        master.updatedAt = Date.now();
+        await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+        renderActiveTabContent();
+        if (window.toast) window.toast('已从重复系列中移除该日日程');
+      },
+      onSeries: async function() {
+        _state.events = _state.events.filter(function(e) { return e.id !== master.id; });
+        await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+        if (window.TimeCalendarReminders && typeof window.TimeCalendarReminders.onEventDeleted === 'function') {
+          await window.TimeCalendarReminders.onEventDeleted(master.id);
+        }
+        renderActiveTabContent();
+        if (window.toast) window.toast('整个重复系列已删除');
+      }
+    });
+  }
+
+  function showRecurrenceActionChoiceSheet(options) {
+    var overlay = document.createElement('div');
+    overlay.className = 'tc-modal-overlay';
+    overlay.innerHTML =
+      '<div class="tc-modal-dialog" style="max-width: 340px;">' +
+        '<div class="tc-modal-header">' +
+          '<div class="tc-modal-title">' + esc(options.title) + '</div>' +
+          '<button class="tc-modal-close-btn" id="tc-choice-close"><i class="fa fa-xmark"></i></button>' +
+        '</div>' +
+        '<div class="tc-modal-body" style="padding: 16px;">' +
+          '<p style="font-size: 13px; color: var(--c-text-muted); line-height: 1.5; margin-bottom: 16px;">' + esc(options.desc) + '</p>' +
+          '<div style="display: flex; flex-direction: column; gap: 8px;">' +
+            '<button type="button" class="tc-btn" id="tc-btn-choice-single" style="justify-content: flex-start; padding: 10px 14px; font-weight: 500;">' +
+              '<i class="fa-regular fa-calendar-check" style="margin-right: 8px; color: var(--c-text);"></i>' +
+              '<span>' + esc(options.singleLabel) + '</span>' +
+            '</button>' +
+            '<button type="button" class="tc-btn" id="tc-btn-choice-series" style="justify-content: flex-start; padding: 10px 14px; font-weight: 500;">' +
+              '<i class="fa-solid fa-rotate" style="margin-right: 8px; color: var(--c-text);"></i>' +
+              '<span>' + esc(options.seriesLabel) + '</span>' +
+            '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(overlay);
+
+    overlay.querySelector('#tc-choice-close').addEventListener('click', function() { overlay.remove(); });
+    overlay.querySelector('#tc-btn-choice-single').addEventListener('click', function() {
+      overlay.remove();
+      if (typeof options.onSingle === 'function') options.onSingle();
+    });
+    overlay.querySelector('#tc-btn-choice-series').addEventListener('click', function() {
+      overlay.remove();
+      if (typeof options.onSeries === 'function') options.onSeries();
+    });
+  }
+
+  // 综合日程详情底部抽屉/弹窗 (查看详情、完成状态、快捷编辑、删除及来源直达)
+  function showEventDetailModal(ev, occurrenceDate) {
+    if (!ev) return;
+    var targetDate = occurrenceDate || ev.date || _state.selectedDateStr;
+    var overlay = document.createElement('div');
+    overlay.className = 'tc-modal-overlay';
+
+    var catLabel = getCategoryLabel(ev.category);
+    var isAllDay = !!ev.isAllDay;
+    var timeStr = isAllDay ? '全天事件' : ((ev.startTime || '--:--') + ' ~ ' + (ev.endTime || '--:--'));
+    var hasRepeat = ev.recurrence && ev.recurrence.type && ev.recurrence.type !== 'none';
+    var repeatDesc = hasRepeat ? TimeCalendarRecurrence.formatRuleText(ev.recurrence) : '单次日程 (不重复)';
+
+    var remindersList = Array.isArray(ev.reminders) ? ev.reminders : [];
+    var reminderDesc = remindersList.length > 0 ? (remindersList.map(function(r) { return '提前 ' + r.advanceMinutes + ' 分钟'; }).join('、')) : '未设置提醒';
+
+    var sourceName = '时光日历本地';
+    if (ev.source && ev.source.app === 'life-game') sourceName = '人生游戏 · 现实委托投影';
+    if (ev.source && ev.source.app === 'study-room') sourceName = '陪伴自习室 · 待办投影';
+    if (ev.source && ev.source.app === 'love-diary') sourceName = '恋爱记 · 心愿清单投影';
+
+    overlay.innerHTML =
+      '<div class="tc-modal-dialog tc-detail-modal">' +
+        '<div class="tc-modal-header">' +
+          '<div class="tc-modal-title">日程详情</div>' +
+          '<button class="tc-modal-close-btn" id="tc-detail-close"><i class="fa fa-xmark"></i></button>' +
+        '</div>' +
+        '<div class="tc-modal-body tc-detail-body">' +
+          '<div class="tc-detail-title-card">' +
+            '<div class="tc-detail-title-text">' + esc(ev.title) + '</div>' +
+            '<div class="tc-detail-badges">' +
+              '<span class="tc-tag tag-' + (ev.category || 'other') + '">' + catLabel + '</span>' +
+              '<span class="tc-tag ' + (ev.completed ? 'tag-done' : 'tag-pending') + '">' + (ev.completed ? '已完成' : '待办') + '</span>' +
+              (ev.visibility === 'private' ? '<span class="tc-tag" style="background: var(--c-surface-2);"><i class="fa fa-lock" style="font-size: 10px; margin-right: 3px;"></i>私密</span>' : (ev.visibility === 'selected-chars' ? '<span class="tc-tag" style="background: var(--c-surface-2);"><i class="fa fa-users" style="font-size: 10px; margin-right: 3px;"></i>授权角色可见</span>' : '')) +
+              (ev.companionEnabled !== false ? '<span class="tc-tag" style="background: var(--c-surface-2); color: #ec4899;"><i class="fa-solid fa-heart" style="font-size: 10px; margin-right: 3px;"></i>伴侣关怀</span>' : '') +
+              (ev.charName ? '<span class="tc-tag">' + esc(ev.charName) + '</span>' : '') +
+              (ev.isOccurrence ? '<span class="tc-tag" style="background: var(--c-surface-2);">重复实例</span>' : '') +
+            '</div>' +
+          '</div>' +
+
+          '<div class="tc-detail-info-grid">' +
+            '<div class="tc-detail-info-row">' +
+              '<span class="tc-detail-info-lbl"><i class="fa-regular fa-calendar"></i> 日期</span>' +
+              '<span class="tc-detail-info-val">' + esc(targetDate) + ' (' + getWeekdayName(targetDate) + ')</span>' +
+            '</div>' +
+            '<div class="tc-detail-info-row">' +
+              '<span class="tc-detail-info-lbl"><i class="fa-regular fa-clock"></i> 时间</span>' +
+              '<span class="tc-detail-info-val">' + esc(timeStr) + '</span>' +
+            '</div>' +
+            '<div class="tc-detail-info-row">' +
+              '<span class="tc-detail-info-lbl"><i class="fa-solid fa-rotate"></i> 重复</span>' +
+              '<span class="tc-detail-info-val">' + esc(repeatDesc) + '</span>' +
+            '</div>' +
+            '<div class="tc-detail-info-row">' +
+              '<span class="tc-detail-info-lbl"><i class="fa-regular fa-bell"></i> 提醒</span>' +
+              '<span class="tc-detail-info-val">' + esc(reminderDesc) + '</span>' +
+            '</div>' +
+            '<div class="tc-detail-info-row">' +
+              '<span class="tc-detail-info-lbl"><i class="fa-solid fa-link"></i> 来源</span>' +
+              '<span class="tc-detail-info-val">' + esc(sourceName) + '</span>' +
+            '</div>' +
+            (ev.notes ? (
+              '<div class="tc-detail-info-row tc-detail-notes-row">' +
+                '<span class="tc-detail-info-lbl"><i class="fa-regular fa-note-sticky"></i> 备注</span>' +
+                '<div class="tc-detail-notes-val">' + esc(ev.notes) + '</div>' +
+              '</div>'
+            ) : '') +
+          '</div>' +
+        '</div>' +
+
+        '<div class="tc-modal-footer tc-detail-footer">' +
+          '<button class="tc-btn" id="tc-detail-toggle-complete">' + (ev.completed ? '标记为未完成' : '标记为已完成') + '</button>' +
+          '<button class="tc-btn" id="tc-detail-edit">编辑</button>' +
+          '<button class="tc-btn tc-btn-danger" id="tc-detail-delete">删除</button>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(overlay);
+
+    overlay.querySelector('#tc-detail-close').addEventListener('click', function() { overlay.remove(); });
+
+    overlay.querySelector('#tc-detail-toggle-complete').addEventListener('click', async function() {
+      overlay.remove();
+      await toggleEventCompletion(ev.id, targetDate);
+    });
+
+    overlay.querySelector('#tc-detail-edit').addEventListener('click', function() {
+      overlay.remove();
+      handleEditEventWithRecurrenceChoice(ev, targetDate);
+    });
+
+    overlay.querySelector('#tc-detail-delete').addEventListener('click', async function() {
+      overlay.remove();
+      await handleDeleteEventWithRecurrenceChoice(ev, targetDate);
+    });
+  }
+
+  // ===== 10. 设置 Tab (用户习惯、跨 App 联动开关、智能提醒、伴侣关怀与存储状态) =====
+  function renderSettingsTab() {
+    var container = _state.pageEl.querySelector('#tc-content-scroll');
+    var s = _state.settings;
+
+    var totalEvents = _state.events.length;
+    var recurringEvents = _state.events.filter(function(e) {
+      return e.recurrence && e.recurrence.type && e.recurrence.type !== 'none';
+    }).length;
+    var totalAnnivs = _state.anniversaries.length + (_state.loveDiaryAnniversaries ? _state.loveDiaryAnniversaries.length : 0);
+    var totalCds = _state.countdowns.length;
+    var aiPrefs = (window.TimeCalendarAI && typeof window.TimeCalendarAI.getPreferences === 'function')
+      ? window.TimeCalendarAI.getPreferences()
+      : { lunchBreakEnabled: true, lunchBreakStart: '12:00', lunchBreakEnd: '13:30', nightRestEnabled: true, nightRestStart: '23:00', nightRestEnd: '07:30', minBufferMinutes: 10 };
+
+    var html =
+      '<div class="tc-settings-page">' +
+        // 1. 视图与习惯
+        '<div class="tc-settings-card">' +
+          '<div class="tc-settings-card-header">' +
+            '<i class="fa-solid fa-sliders"></i><span>日历视图习惯</span>' +
+          '</div>' +
+          '<div class="tc-settings-row">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">默认启动视图</div>' +
+              '<div class="tc-settings-sub">打开日历时默认呈现的排期视角</div>' +
+            '</div>' +
+            '<select class="tc-settings-select" id="tc-setting-default-view">' +
+              '<option value="month" ' + (s.defaultView === 'month' ? 'selected' : '') + '>月视图</option>' +
+              '<option value="week" ' + (s.defaultView === 'week' ? 'selected' : '') + '>周视图</option>' +
+              '<option value="day" ' + (s.defaultView === 'day' ? 'selected' : '') + '>日视图</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="tc-settings-row">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">一周起始日</div>' +
+              '<div class="tc-settings-sub">月视图与周视图的第一列起始设定</div>' +
+            '</div>' +
+            '<select class="tc-settings-select" id="tc-setting-first-day">' +
+              '<option value="1" ' + (s.firstDayOfWeek === 1 ? 'selected' : '') + '>星期一 (周一为首)</option>' +
+              '<option value="0" ' + (s.firstDayOfWeek === 0 ? 'selected' : '') + '>星期日 (周日为首)</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>' +
+
+        // 2. 跨软件数据联动开关 (严格双向，非覆盖)
+        '<div class="tc-settings-card">' +
+          '<div class="tc-settings-card-header">' +
+            '<i class="fa-solid fa-link"></i><span>跨 App 数据双向联动</span>' +
+          '</div>' +
+          '<div class="tc-settings-row">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">人生游戏现实委托排期</div>' +
+              '<div class="tc-settings-sub">在日历中投影人生游戏委托，支持同步勾选完成</div>' +
+            '</div>' +
+            '<label class="tc-switch">' +
+              '<input type="checkbox" id="tc-setting-lifegame" ' + (s.showLifeGameTasks !== false ? 'checked' : '') + '>' +
+              '<span class="tc-slider"></span>' +
+            '</label>' +
+          '</div>' +
+          '<div class="tc-settings-row">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">陪伴自习室专注与待办</div>' +
+              '<div class="tc-settings-sub">在日历中展示专注打卡脚印、每日时长及备考计划</div>' +
+            '</div>' +
+            '<label class="tc-switch">' +
+              '<input type="checkbox" id="tc-setting-studyroom" ' + (s.showStudyRoomRecords ? 'checked' : '') + '>' +
+              '<span class="tc-slider"></span>' +
+            '</label>' +
+          '</div>' +
+          '<div class="tc-settings-row">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">恋爱记情侣空间纪念日</div>' +
+              '<div class="tc-settings-sub">展示恋爱相守天数、周年提醒及心愿小事履约排期</div>' +
+            '</div>' +
+            '<label class="tc-switch">' +
+              '<input type="checkbox" id="tc-setting-lovediary" ' + (s.showLoveDiaryAnniversaries ? 'checked' : '') + '>' +
+              '<span class="tc-slider"></span>' +
+            '</label>' +
+          '</div>' +
+        '</div>' +
+
+        // 3. 智能提醒与免打扰中心入口
+        '<div class="tc-settings-card">' +
+          '<div class="tc-settings-card-header">' +
+            '<i class="fa-solid fa-bell"></i><span>智能提醒与免打扰</span>' +
+          '</div>' +
+          '<div class="tc-settings-action-row" id="tc-btn-setting-reminders">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">打开智能提醒与免打扰中心</div>' +
+              '<div class="tc-settings-sub">配置夜间免打扰时段、微信消息投递及提前提醒默认偏好</div>' +
+            '</div>' +
+            '<i class="fa fa-angle-right" style="color: var(--c-text-muted);"></i>' +
+          '</div>' +
+        '</div>' +
+
+        // 4. Char 深度陪伴与主动关怀设置入口
+        '<div class="tc-settings-card">' +
+          '<div class="tc-settings-card-header">' +
+            '<i class="fa-solid fa-heart" style="color: #ff477e;"></i><span>Char 深度陪伴关怀</span>' +
+          '</div>' +
+          '<div class="tc-settings-action-row" id="tc-btn-setting-companion">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">多 Char 独立陪伴与节日问候</div>' +
+              '<div class="tc-settings-sub">管理各角色独立授权、晨间问候、纪念日专属贺卡与免打扰规则</div>' +
+            '</div>' +
+            '<i class="fa fa-angle-right" style="color: var(--c-text-muted);"></i>' +
+          '</div>' +
+        '</div>' +
+
+        // 5. 作息与安静时段偏好 (用户可配置午休、夜间休息与排期间隔)
+        '<div class="tc-settings-card">' +
+          '<div class="tc-settings-card-header">' +
+            '<i class="fa-solid fa-bed"></i><span>作息与安静时段偏好</span>' +
+          '</div>' +
+          '<div class="tc-settings-row">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">午休安静时段</div>' +
+              '<div class="tc-settings-sub">AI 自动排期避开午休，避免打扰休息</div>' +
+            '</div>' +
+            '<div style="display: flex; align-items: center; gap: 4px;">' +
+              '<input type="time" class="tc-form-input" id="tc-pref-lunch-start" style="width: 70px; padding: 2px 4px; font-size: 11px;" value="' + (aiPrefs.lunchBreakStart || '12:00') + '">' +
+              '<span>~</span>' +
+              '<input type="time" class="tc-form-input" id="tc-pref-lunch-end" style="width: 70px; padding: 2px 4px; font-size: 11px;" value="' + (aiPrefs.lunchBreakEnd || '13:30') + '">' +
+            '</div>' +
+          '</div>' +
+          '<div class="tc-settings-row">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">夜间睡眠时段</div>' +
+              '<div class="tc-settings-sub">排期与提醒不打扰夜间睡眠</div>' +
+            '</div>' +
+            '<div style="display: flex; align-items: center; gap: 4px;">' +
+              '<input type="time" class="tc-form-input" id="tc-pref-night-start" style="width: 70px; padding: 2px 4px; font-size: 11px;" value="' + (aiPrefs.nightRestStart || '23:00') + '">' +
+              '<span>~</span>' +
+              '<input type="time" class="tc-form-input" id="tc-pref-night-end" style="width: 70px; padding: 2px 4px; font-size: 11px;" value="' + (aiPrefs.nightRestEnd || '07:30') + '">' +
+            '</div>' +
+          '</div>' +
+          '<div class="tc-settings-row">' +
+            '<div class="tc-settings-info">' +
+              '<div class="tc-settings-title">日程最小缓冲间隔</div>' +
+              '<div class="tc-settings-sub">AI 自动排期在相邻日程间预留的休整时间</div>' +
+            '</div>' +
+            '<select class="tc-settings-select" id="tc-pref-buffer-mins">' +
+              '<option value="5" ' + (aiPrefs.minBufferMinutes === 5 ? 'selected' : '') + '>5 分钟</option>' +
+              '<option value="10" ' + (aiPrefs.minBufferMinutes === 10 ? 'selected' : '') + '>10 分钟</option>' +
+              '<option value="15" ' + (aiPrefs.minBufferMinutes === 15 ? 'selected' : '') + '>15 分钟</option>' +
+              '<option value="30" ' + (aiPrefs.minBufferMinutes === 30 ? 'selected' : '') + '>30 分钟</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>' +
+
+        // 6. 数据与存储完整性状态
+        '<div class="tc-settings-card">' +
+          '<div class="tc-settings-card-header">' +
+            '<i class="fa-solid fa-database"></i><span>数据完整性与存储状态</span>' +
+          '</div>' +
+          '<div class="tc-settings-stats-grid">' +
+            '<div class="tc-stat-box"><span class="tc-stat-num">' + totalEvents + '</span><span class="tc-stat-lbl">日程总条数</span></div>' +
+            '<div class="tc-stat-box"><span class="tc-stat-num">' + recurringEvents + '</span><span class="tc-stat-lbl">重复系列</span></div>' +
+            '<div class="tc-stat-box"><span class="tc-stat-num">' + totalAnnivs + '</span><span class="tc-stat-lbl">纪念日总数</span></div>' +
+            '<div class="tc-stat-box"><span class="tc-stat-num">' + totalCds + '</span><span class="tc-stat-lbl">倒计时项</span></div>' +
+          '</div>' +
+          '<div class="tc-settings-note">' +
+            '<i class="fa-solid fa-shield-halved"></i> 架构承诺：遵循单一权威存储与稳定规则驱动引擎，重复日程按规则实时计算，绝无冗余数据膨胀复制。' +
+          '</div>' +
+        '</div>' +
+
+      '</div>';
+
+    container.innerHTML = html;
+    bindSettingsTabEvents(container);
+  }
+
+  function bindSettingsTabEvents(container) {
+    // 默认视图
+    var defaultViewSel = container.querySelector('#tc-setting-default-view');
+    if (defaultViewSel) {
+      defaultViewSel.addEventListener('change', async function() {
+        _state.settings.defaultView = defaultViewSel.value;
+        await saveConfigKey(STORAGE_KEYS.SETTINGS, _state.settings);
+        if (window.toast) window.toast('默认启动视图已更新为「' + (defaultViewSel.value === 'month' ? '月视图' : (defaultViewSel.value === 'week' ? '周视图' : '日视图')) + '」');
+      });
+    }
+
+    // 一周起始日
+    var firstDaySel = container.querySelector('#tc-setting-first-day');
+    if (firstDaySel) {
+      firstDaySel.addEventListener('change', async function() {
+        _state.settings.firstDayOfWeek = parseInt(firstDaySel.value, 10);
+        await saveConfigKey(STORAGE_KEYS.SETTINGS, _state.settings);
+        if (window.toast) window.toast('一周起始日已设置为' + (firstDaySel.value === '1' ? '星期一' : '星期日'));
+      });
+    }
+
+    // 跨 App 联动开关
+    var lifeGameToggle = container.querySelector('#tc-setting-lifegame');
+    if (lifeGameToggle) {
+      lifeGameToggle.addEventListener('change', async function() {
+        _state.settings.showLifeGameTasks = lifeGameToggle.checked;
+        await saveConfigKey(STORAGE_KEYS.SETTINGS, _state.settings);
+        if (window.toast) window.toast(lifeGameToggle.checked ? '已开启人生游戏现实委托日历投影' : '已关闭人生游戏现实委托日历投影');
+      });
+    }
+
+    var studyRoomToggle = container.querySelector('#tc-setting-studyroom');
+    if (studyRoomToggle) {
+      studyRoomToggle.addEventListener('change', async function() {
+        _state.settings.showStudyRoomRecords = studyRoomToggle.checked;
+        await saveConfigKey(STORAGE_KEYS.SETTINGS, _state.settings);
+        if (window.toast) window.toast(studyRoomToggle.checked ? '已开启自习室打卡记录日历投影' : '已关闭自习室打卡记录日历投影');
+      });
+    }
+
+    var loveDiaryToggle = container.querySelector('#tc-setting-lovediary');
+    if (loveDiaryToggle) {
+      loveDiaryToggle.addEventListener('change', async function() {
+        _state.settings.showLoveDiaryAnniversaries = loveDiaryToggle.checked;
+        await saveConfigKey(STORAGE_KEYS.SETTINGS, _state.settings);
+        if (window.toast) window.toast(loveDiaryToggle.checked ? '已开启恋爱记情侣空间纪念日日历投影' : '已关闭恋爱记情侣空间纪念日日历投影');
+      });
+    }
+
+    // 智能提醒与免打扰中心
+    var remindersAction = container.querySelector('#tc-btn-setting-reminders');
+    if (remindersAction) {
+      remindersAction.addEventListener('click', function() {
+        showReminderCenterModal();
+      });
+    }
+
+    // 伴侣陪伴设置
+    var companionAction = container.querySelector('#tc-btn-setting-companion');
+    if (companionAction) {
+      companionAction.addEventListener('click', function() {
+        if (window.TimeCalendarCompanion) {
+          window.TimeCalendarCompanion.showSettingsModal();
+        }
+      });
+    }
+
+    // 5. 作息与安静时段偏好更新监听
+    function updateRestPrefs() {
+      if (!window.TimeCalendarAI || typeof window.TimeCalendarAI.setPreferences !== 'function') return;
+      var cur = window.TimeCalendarAI.getPreferences ? window.TimeCalendarAI.getPreferences() : {};
+      var lStart = container.querySelector('#tc-pref-lunch-start');
+      var lEnd = container.querySelector('#tc-pref-lunch-end');
+      var nStart = container.querySelector('#tc-pref-night-start');
+      var nEnd = container.querySelector('#tc-pref-night-end');
+      var buf = container.querySelector('#tc-pref-buffer-mins');
+
+      var next = Object.assign({}, cur, {
+        lunchBreakStart: lStart ? lStart.value : (cur.lunchBreakStart || '12:00'),
+        lunchBreakEnd: lEnd ? lEnd.value : (cur.lunchBreakEnd || '13:30'),
+        nightRestStart: nStart ? nStart.value : (cur.nightRestStart || '23:00'),
+        nightRestEnd: nEnd ? nEnd.value : (cur.nightRestEnd || '07:30'),
+        minBufferMinutes: buf ? parseInt(buf.value, 10) : (cur.minBufferMinutes || 10)
+      });
+      window.TimeCalendarAI.setPreferences(next);
+      if (window.toast) window.toast('作息与安静时段偏好已更新');
+    }
+
+    ['#tc-pref-lunch-start', '#tc-pref-lunch-end', '#tc-pref-night-start', '#tc-pref-night-end', '#tc-pref-buffer-mins'].forEach(function(sel) {
+      var el = container.querySelector(sel);
+      if (el) el.addEventListener('change', updateRestPrefs);
+    });
   }
 
   async function deleteEvent(id) {
@@ -1666,21 +2775,133 @@
     if (window.toast) window.toast('日程已删除');
   }
 
+  function showCountdownDeleteChoiceModal(options) {
+    var overlay = document.createElement('div');
+    overlay.className = 'tc-modal-overlay';
+    overlay.innerHTML =
+      '<div class="tc-modal-dialog" style="max-width: 350px;">' +
+        '<div class="tc-modal-header">' +
+          '<div class="tc-modal-title">' + esc(options.title || '移除倒计时') + '</div>' +
+          '<button class="tc-modal-close-btn" id="tc-cd-del-close"><i class="fa fa-xmark"></i></button>' +
+        '</div>' +
+        '<div class="tc-modal-body" style="padding: 16px;">' +
+          '<p style="font-size: 13px; color: var(--c-text-muted); line-height: 1.5; margin-bottom: 14px;">' + esc(options.desc) + '</p>' +
+          '<div style="display: flex; flex-direction: column; gap: 8px;">' +
+            '<button type="button" class="tc-btn tc-btn-primary" id="tc-cd-del-primary" style="justify-content: flex-start; padding: 10px 14px;">' +
+              '<span>' + esc(options.primaryLabel) + '</span>' +
+            '</button>' +
+            (options.secondaryLabel ? (
+              '<button type="button" class="tc-btn tc-btn-danger" id="tc-cd-del-secondary" style="justify-content: flex-start; padding: 10px 14px;">' +
+                '<span>' + esc(options.secondaryLabel) + '</span>' +
+              '</button>'
+            ) : '') +
+            '<button type="button" class="tc-btn" id="tc-cd-del-cancel" style="justify-content: center; padding: 9px 14px;">取消</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    overlay.querySelector('#tc-cd-del-close').addEventListener('click', function() { overlay.remove(); });
+    overlay.querySelector('#tc-cd-del-cancel').addEventListener('click', function() { overlay.remove(); });
+    overlay.querySelector('#tc-cd-del-primary').addEventListener('click', async function() {
+      overlay.remove();
+      if (typeof options.onPrimary === 'function') await options.onPrimary();
+    });
+    var secBtn = overlay.querySelector('#tc-cd-del-secondary');
+    if (secBtn) {
+      secBtn.addEventListener('click', async function() {
+        overlay.remove();
+        if (typeof options.onSecondary === 'function') await options.onSecondary();
+      });
+    }
+  }
+
   async function deleteCountdown(id) {
-    var srExam = _state.studyRoomExams && _state.studyRoomExams.find(function(e) { return e.id === id; });
-    if (srExam) {
-      if (!confirm('该倒计时来自陪伴自习室备考计划。确定要在自习室中删除该考试计划吗？')) return;
-      if (window.TimeCalendarIntegrations) {
-        var allExams = await window.TimeCalendarIntegrations.studyRoom.getExams();
-        var nextExams = allExams.filter(function(e) { return String(e.id) !== String(srExam.source.examId); });
-        await window.TimeCalendarIntegrations.studyRoom.saveExams(nextExams);
-      }
-      await loadStudyRoomLinkage();
-      renderCountdownsTab();
-      if (window.toast) window.toast('自习室考试备考计划已删除');
+    // 1. 来自日历日程勾选 showInCountdown 的投影倒计时 (区分仅取消倒计时展示 vs 彻底删除原日程)
+    if (String(id).indexOf('cd_evt_') === 0) {
+      var rawEvtId = String(id).replace(/^cd_evt_/, '');
+      var ev = _state.events.find(function(e) { return e.id === rawEvtId; });
+      if (!ev) return;
+      showCountdownDeleteChoiceModal({
+        title: '移除日程倒计时',
+        desc: '倒计时「' + ev.title + '」关联于日历中的原日程，请选择处理方式：',
+        primaryLabel: '仅从倒计时列表取消展示（保留原日历日程）',
+        secondaryLabel: '彻底删除原日历日程',
+        onPrimary: async function() {
+          ev.showInCountdown = false;
+          ev.updatedAt = Date.now();
+          await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+          renderCountdownsTab();
+          if (window.toast) window.toast('已取消倒计时展示，原日程已保留');
+        },
+        onSecondary: async function() {
+          _state.events = _state.events.filter(function(e) { return e.id !== rawEvtId; });
+          await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+          if (window.TimeCalendarReminders && typeof window.TimeCalendarReminders.onEventDeleted === 'function') {
+            await window.TimeCalendarReminders.onEventDeleted(rawEvtId);
+          }
+          renderCountdownsTab();
+          if (window.toast) window.toast('原日历日程已彻底删除');
+        }
+      });
       return;
     }
 
+    // 2. 来自纪念日的投影倒计时 (禁止误删独立倒计时或静默抹除恋爱记数据源)
+    if (String(id).indexOf('cd_anniv_') === 0) {
+      var rawAnId = String(id).replace(/^cd_anniv_/, '');
+      var an = getEffectiveAnniversaries().find(function(a) { return a.id === rawAnId; });
+      if (!an) return;
+      if (an.source && an.source.app === 'love-diary') {
+        showCountdownDeleteChoiceModal({
+          title: '恋爱记纪念日倒计时',
+          desc: '该倒计时源于「恋爱记」情侣空间纪念日，不能在倒计时列表静默删除源数据。',
+          primaryLabel: '前往恋爱记查看/管理',
+          secondaryLabel: '在恋爱记中清空该纪念日',
+          onPrimary: function() {
+            if (window.TimeCalendarIntegrations) {
+              window.TimeCalendarIntegrations.navigate(an.source, { fromApp: 'time-calendar' });
+            }
+          },
+          onSecondary: async function() {
+            await deleteAnniversary(rawAnId);
+            renderCountdownsTab();
+          }
+        });
+      } else {
+        await deleteAnniversary(rawAnId);
+        renderCountdownsTab();
+      }
+      return;
+    }
+
+    // 3. 来自自习室备考计划的倒计时
+    var srExam = _state.studyRoomExams && _state.studyRoomExams.find(function(e) { return e.id === id; });
+    if (srExam) {
+      showCountdownDeleteChoiceModal({
+        title: '自习室备考倒计时',
+        desc: '「' + srExam.title + '」由「陪伴自习室」备考计划同步。',
+        primaryLabel: '前往自习室查看/调整',
+        secondaryLabel: '确认从自习室删除该备考计划',
+        onPrimary: function() {
+          if (window.TimeCalendarIntegrations) {
+            window.TimeCalendarIntegrations.navigate(srExam.source, { fromApp: 'time-calendar' });
+          }
+        },
+        onSecondary: async function() {
+          if (window.TimeCalendarIntegrations) {
+            var allExams = await window.TimeCalendarIntegrations.studyRoom.getExams();
+            var nextExams = allExams.filter(function(e) { return String(e.id) !== String(srExam.source.examId); });
+            await window.TimeCalendarIntegrations.studyRoom.saveExams(nextExams);
+          }
+          await loadStudyRoomLinkage();
+          renderCountdownsTab();
+          if (window.toast) window.toast('自习室考试备考计划已删除');
+        }
+      });
+      return;
+    }
+
+    // 4. 时光日历独立倒计时
     var cd = _state.countdowns.find(function(c) { return c.id === id; });
     if (!cd) return;
     if (!confirm('确定删除倒计时「' + cd.title + '」吗？')) return;
@@ -1725,6 +2946,10 @@
       endTime: '10:00',
       category: 'work',
       relationType: 'personal',
+      visibility: 'private',
+      allowedCharIds: [],
+      ownerCharId: null,
+      companionEnabled: false,
       charId: null,
       notes: '',
       showInCountdown: false,
@@ -1759,8 +2984,70 @@
     );
   }
 
-  function showEditEventModal(ev) {
+  // 跨 App 写回前 Diff 确认弹窗 (防止静默覆写人生游戏等权威源)
+  function showLifeGameEditConfirmModal(opts) {
+    var before = opts.before || {};
+    var after = opts.after || {};
+    var conflicts = Array.isArray(opts.conflicts) ? opts.conflicts : [];
+    var overlay = document.createElement('div');
+    overlay.className = 'tc-modal-overlay';
+
+    var beforeTime = before.isAllDay ? '全天' : ((before.startTime || '--:--') + (before.endTime ? ' ~ ' + before.endTime : ''));
+    var afterTime = after.isAllDay ? '全天' : ((after.startTime || '--:--') + (after.endTime ? ' ~ ' + after.endTime : ''));
+
+    var conflictHtml = '';
+    if (conflicts.length > 0) {
+      conflictHtml =
+        '<div class="tc-lg-confirm-conflicts">' +
+          conflicts.map(function(c) {
+            return '<div><i class="fa-solid fa-triangle-exclamation"></i> ' + esc(c.message || c.detail || '存在时间排期提醒') + '</div>';
+          }).join('') +
+        '</div>';
+    }
+
+    overlay.innerHTML =
+      '<div class="tc-modal-dialog" style="max-width: 380px;">' +
+        '<div class="tc-modal-header">' +
+          '<div class="tc-modal-title"><i class="fa-solid fa-gamepad" style="margin-right: 6px;"></i>确认修改人生游戏委托</div>' +
+          '<button class="tc-modal-close-btn" id="tc-lg-diff-close"><i class="fa fa-xmark"></i></button>' +
+        '</div>' +
+        '<div class="tc-modal-body" style="padding: 14px 16px;">' +
+          '<div style="font-size: 12px; color: var(--c-text-muted); margin-bottom: 10px;">以下修改将同步回写至「人生游戏」原委托，请确认变更前后内容：</div>' +
+          '<div class="tc-diff-card">' +
+            '<div class="tc-diff-row"><span class="tc-diff-label">修改前</span><span style="font-weight: 500;">' + esc(before.title || '') + '</span></div>' +
+            '<div style="font-size: 11px; color: var(--c-text-muted);">日期：' + esc(before.date || '未排期') + ' · 时段：' + esc(beforeTime) + '</div>' +
+            '<div class="tc-diff-arrow"><i class="fa fa-arrow-down"></i> 变更为</div>' +
+            '<div class="tc-diff-row"><span class="tc-diff-label">修改后</span><span style="font-weight: 600;">' + esc(after.title || '') + '</span></div>' +
+            '<div style="font-size: 11px; color: var(--c-text);">日期：' + esc(after.date || '') + ' · 时段：' + esc(afterTime) + '</div>' +
+          '</div>' +
+          conflictHtml +
+          '<div style="font-size: 11px; color: var(--c-text-muted); margin-top: 8px;"><i class="fa-solid fa-shield-halved"></i> 说明：仅同步排期与标题说明，绝不触发经验或金币奖励结算。</div>' +
+        '</div>' +
+        '<div class="tc-modal-footer">' +
+          '<button class="tc-btn" id="tc-lg-diff-cancel">取消</button>' +
+          '<button class="tc-btn tc-btn-primary" id="tc-lg-diff-confirm">确认回写人生游戏</button>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(overlay);
+    overlay.querySelector('#tc-lg-diff-close').addEventListener('click', function() {
+      overlay.remove();
+      if (typeof opts.onCancel === 'function') opts.onCancel();
+    });
+    overlay.querySelector('#tc-lg-diff-cancel').addEventListener('click', function() {
+      overlay.remove();
+      if (typeof opts.onCancel === 'function') opts.onCancel();
+    });
+    overlay.querySelector('#tc-lg-diff-confirm').addEventListener('click', async function() {
+      overlay.remove();
+      if (typeof opts.onConfirm === 'function') await opts.onConfirm();
+    });
+  }
+
+  function showEditEventModal(ev, editOptions) {
     var isNew = !ev.id;
+    var isSingleInstance = !!(editOptions && editOptions.isSingleInstanceEdit);
+    var isLifeGameLocked = !!(ev && ev.source && ev.source.app === 'life-game' && (ev.readOnly || ev.status === 'claimed' || ev.source.readOnly));
     var overlay = document.createElement('div');
     overlay.className = 'tc-modal-overlay';
 
@@ -1776,10 +3063,25 @@
     }
     var currentRecurrence = ev.recurrence || { type: 'none', interval: 1, endDate: '' };
 
-    var charOptionsHtml = '<option value="personal">个人事件 (不关联特定角色)</option>';
-    _state.allCharacters.forEach(function(c) {
+    var currentVisibility = ev.visibility || (ev.relationType === 'specificChar' && ev.charId ? 'selected-chars' : 'private');
+    var currentAllowedCharIds = Array.isArray(ev.allowedCharIds) ? ev.allowedCharIds.map(String) : (ev.charId ? [String(ev.charId)] : []);
+    var currentCompanionEnabled = ev.companionEnabled !== undefined ? !!ev.companionEnabled : (currentVisibility === 'selected-chars');
+
+    var partnerChars = _state.allCharacters.filter(function(c) { return c && c.type !== 'user'; });
+    var charOptionsHtml = '<option value="personal">个人事件 (默认本人)</option>';
+    partnerChars.forEach(function(c) {
       var sel = (ev.relationType === 'specificChar' && String(ev.charId) === String(c.id)) ? 'selected' : '';
-      charOptionsHtml += '<option value="' + c.id + '" ' + sel + '>指定角色：' + esc(c.name) + '</option>';
+      charOptionsHtml += '<option value="' + c.id + '" ' + sel + '>专属角色：' + esc(c.nick || c.name) + '</option>';
+    });
+
+    var charCheckboxesHtml = '';
+    partnerChars.forEach(function(c) {
+      var isChecked = currentAllowedCharIds.indexOf(String(c.id)) >= 0;
+      charCheckboxesHtml +=
+        '<label style="display: inline-flex; align-items: center; gap: 4px; font-size: 12px; margin-right: 12px; margin-bottom: 6px; cursor: pointer;">' +
+          '<input type="checkbox" class="tc-evt-char-check" value="' + c.id + '" ' + (isChecked ? 'checked' : '') + '> ' +
+          esc(c.nick || c.name) +
+        '</label>';
     });
 
     var rulesHtml = '';
@@ -1800,15 +3102,31 @@
           '<span><i class="fa-solid fa-book-open"></i> 来自「陪伴自习室」待办清单 · 权威源双向联动</span>' +
           '<button type="button" class="tc-btn-jump" id="tc-jump-source-modal">前往自习室 <i class="fa fa-arrow-up-right-from-square"></i></button>' +
         '</div>';
+    } else if (ev.source && ev.source.app === 'life-game') {
+      linkedBannerHtml =
+        '<div class="tc-linked-source-banner">' +
+          '<span><i class="fa-solid fa-gamepad"></i> 来自「人生游戏」现实委托' + (isLifeGameLocked ? ' · 已领奖归档（只读）' : ' · 需确认后回写原委托') + '</span>' +
+          '<button type="button" class="tc-btn-jump" id="tc-jump-source-modal">前往人生游戏 <i class="fa fa-arrow-up-right-from-square"></i></button>' +
+        '</div>';
+    }
+
+    var singleInstanceBannerHtml = '';
+    if (isSingleInstance) {
+      singleInstanceBannerHtml =
+        '<div class="tc-single-instance-banner">' +
+          '<i class="fa-solid fa-calendar-day"></i>' +
+          '<span>您正在单独修改 <strong>' + esc(editOptions.instanceDate) + '</strong> 的日程实例，此修改仅影响该日，不影响系列其他日程。</span>' +
+        '</div>';
     }
 
     overlay.innerHTML =
       '<div class="tc-modal-dialog">' +
         '<div class="tc-modal-header">' +
-          '<div class="tc-modal-title">' + (isNew ? '新建日程' : '编辑日程') + '</div>' +
+          '<div class="tc-modal-title">' + (isNew ? '新建日程' : (isSingleInstance ? '编辑单日日程实例' : '编辑日程')) + '</div>' +
           '<button class="tc-modal-close-btn" id="tc-modal-close"><i class="fa fa-xmark"></i></button>' +
         '</div>' +
         '<div class="tc-modal-body">' +
+          singleInstanceBannerHtml +
           linkedBannerHtml +
           '<div class="tc-form-group">' +
             '<label class="tc-form-label">日程标题 *</label>' +
@@ -1817,7 +3135,7 @@
           '<div class="tc-form-row">' +
             '<div class="tc-form-group">' +
               '<label class="tc-form-label">日期 *</label>' +
-              '<input type="date" class="tc-form-input" id="tc-evt-date" value="' + esc(ev.date) + '">' +
+              '<input type="date" class="tc-form-input" id="tc-evt-date" value="' + esc(ev.date) + '" ' + (isSingleInstance ? 'readonly style="opacity: 0.8;"' : '') + '>' +
             '</div>' +
             '<div class="tc-form-group">' +
               '<label class="tc-form-label">分类</label>' +
@@ -1849,8 +3167,8 @@
             '</div>' +
           '</div>' +
 
-          '<!-- 重复设置 -->' +
-          '<div class="tc-recurrence-panel">' +
+          '<!-- 重复设置 (仅在系列编辑模式展示) -->' +
+          '<div class="tc-recurrence-panel" style="' + (isSingleInstance ? 'display: none;' : '') + '">' +
             '<div class="tc-form-row">' +
               '<div class="tc-form-group">' +
                 '<label class="tc-form-label">重复规则</label>' +
@@ -1889,10 +3207,28 @@
           '</div>' +
 
           '<div class="tc-form-group" style="margin-top: 10px;">' +
-            '<label class="tc-form-label">角色关联</label>' +
+            '<label class="tc-form-label">日程可见性与角色授权</label>' +
+            '<select class="tc-form-select" id="tc-evt-visibility">' +
+              '<option value="private" ' + (currentVisibility === 'private' ? 'selected' : '') + '>私密日程 (仅本人可见，任何 Char 绝不可见)</option>' +
+              '<option value="selected-chars" ' + (currentVisibility === 'selected-chars' ? 'selected' : '') + '>开放给特定角色感知授权</option>' +
+            '</select>' +
+          '</div>' +
+          '<div id="tc-evt-chars-selector-group" style="display: ' + (currentVisibility === 'selected-chars' ? 'block' : 'none') + '; margin-top: 6px; margin-bottom: 8px; padding: 10px 12px; background: var(--c-surface-2); border-radius: var(--r-sm); border: 1px solid var(--c-border);">' +
+            '<div style="font-size: 11px; color: var(--c-text-muted); margin-bottom: 6px;">勾选被授权感知此日程的 Char：</div>' +
+            '<div style="display: flex; flex-wrap: wrap;">' + (charCheckboxesHtml || '<span style="font-size: 11px; color: var(--c-text-muted);">暂无伴侣角色</span>') + '</div>' +
+          '</div>' +
+          '<div class="tc-form-group" id="tc-evt-char-main-row" style="display: ' + (currentVisibility === 'selected-chars' ? 'block' : 'none') + '; margin-top: 6px;">' +
+            '<label class="tc-form-label">专属归属角色 (选填)</label>' +
             '<select class="tc-form-select" id="tc-evt-char">' +
               charOptionsHtml +
             '</select>' +
+          '</div>' +
+          '<div class="tc-toggle-row">' +
+            '<span class="tc-toggle-desc">允许 Char 伴侣在此日程前后主动关怀</span>' +
+            '<label class="tc-switch">' +
+              '<input type="checkbox" id="tc-evt-companion-toggle" ' + (currentCompanionEnabled ? 'checked' : '') + '>' +
+              '<span class="tc-slider"></span>' +
+            '</label>' +
           '</div>' +
           '<div class="tc-toggle-row">' +
             '<span class="tc-toggle-desc">同步在「倒计时」中展示</span>' +
@@ -1919,6 +3255,17 @@
     allDayToggle.addEventListener('change', function() {
       timeRow.style.display = allDayToggle.checked ? 'none' : 'flex';
     });
+
+    var visibilitySel = overlay.querySelector('#tc-evt-visibility');
+    var charGroup = overlay.querySelector('#tc-evt-chars-selector-group');
+    var charMainRow = overlay.querySelector('#tc-evt-char-main-row');
+    if (visibilitySel) {
+      visibilitySel.addEventListener('change', function() {
+        var isSelected = visibilitySel.value === 'selected-chars';
+        if (charGroup) charGroup.style.display = isSelected ? 'block' : 'none';
+        if (charMainRow) charMainRow.style.display = isSelected ? 'block' : 'none';
+      });
+    }
 
     // 重复类型联动
     var recTypeSelect = overlay.querySelector('#tc-evt-rec-type');
@@ -1961,7 +3308,7 @@
       jumpSourceBtn.addEventListener('click', function() {
         overlay.remove();
         if (window.TimeCalendarIntegrations) {
-          window.TimeCalendarIntegrations.navigate(ev.source);
+          window.TimeCalendarIntegrations.navigate(ev.source, { fromApp: 'time-calendar' });
         }
       });
     }
@@ -1989,19 +3336,83 @@
       var showCd = overlay.querySelector('#tc-evt-countdown').checked;
       var notes = overlay.querySelector('#tc-evt-notes').value.trim();
 
-      var relType = charVal === 'personal' ? 'personal' : 'specificChar';
-      var charId = charVal === 'personal' ? null : charVal;
-      var charObj = charId ? _state.allCharacters.find(function(c) { return String(c.id) === String(charId); }) : null;
-      var charName = charObj ? charObj.name : '';
+      // 阶段 2: 智能冲突检测与动态调整建议拦截
+      if (!isAllDay && startTime && window.TimeCalendarAI && !overlay._conflictBypassed) {
+        var tempCheckEvent = {
+          id: isNew ? 'temp_new' : ev.id,
+          title: title,
+          date: date,
+          isAllDay: isAllDay,
+          startTime: startTime,
+          endTime: endTime
+        };
+        var crossApp = [].concat(_state.lifeGameTasks || [], _state.studyRoomExams || []);
+        var conflictRes = window.TimeCalendarAI.detectConflicts([tempCheckEvent], _state.events, crossApp);
+        if (conflictRes && conflictRes[0] && conflictRes[0].report && conflictRes[0].report.severity === 'hard') {
+          window.TimeCalendarAI.showConflictAdjustmentModal(tempCheckEvent, {
+            onKeep: function() {
+              overlay._conflictBypassed = true;
+              overlay.querySelector('#tc-modal-save').click();
+            },
+            onApply: function(slot) {
+              overlay._conflictBypassed = true;
+              overlay.querySelector('#tc-evt-date').value = slot.date;
+              overlay.querySelector('#tc-evt-start').value = slot.startTime;
+              overlay.querySelector('#tc-evt-end').value = slot.endTime;
+              overlay.querySelector('#tc-modal-save').click();
+            }
+          });
+          return;
+        }
+      }
 
-      // 提取重复规则
+      var visibilityVal = overlay.querySelector('#tc-evt-visibility') ? overlay.querySelector('#tc-evt-visibility').value : 'private';
+      var allowedCharIds = [];
+      if (visibilityVal === 'selected-chars') {
+        overlay.querySelectorAll('.tc-evt-char-check:checked').forEach(function(chk) {
+          allowedCharIds.push(String(chk.value));
+        });
+      }
+      var companionEnabled = overlay.querySelector('#tc-evt-companion-toggle') ? overlay.querySelector('#tc-evt-companion-toggle').checked : false;
+
+      // 保持用户个人日程归属 (仅当明确选择了专属角色时才记为 specificChar)
+      var relType = (charVal !== 'personal') ? 'specificChar' : 'personal';
+      var charId = charVal === 'personal' ? null : charVal;
+      var ownerCharId = charId || null;
+      var charObj = charId ? _state.allCharacters.find(function(c) { return String(c.id) === String(charId); }) : null;
+      var charName = charObj ? (charObj.nick || charObj.name) : '';
+
+      // 单个日程实例修改安全写回 (写入 master.recurrence.overrides[instanceDate])
+      if (isSingleInstance && editOptions.masterEvent) {
+        var master = editOptions.masterEvent;
+        master.recurrence = master.recurrence || {};
+        master.recurrence.overrides = master.recurrence.overrides || {};
+        master.recurrence.overrides[editOptions.instanceDate] = {
+          title: title,
+          isAllDay: isAllDay,
+          startTime: startTime,
+          endTime: endTime,
+          category: cat,
+          notes: notes
+        };
+        master.updatedAt = Date.now();
+        await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+        overlay.remove();
+        renderActiveTabContent();
+        if (window.toast) window.toast('单个日程实例已修改保存');
+        return;
+      }
+
+      // 提取重复规则 (保留原有的 excludedDates 与 overrides)
       var rType = recTypeSelect.value;
       var rInterval = parseInt(overlay.querySelector('#tc-evt-rec-interval').value, 10) || 1;
       var rEndDate = overlay.querySelector('#tc-evt-rec-end').value || '';
       var recurrence = {
         type: rType,
         interval: rInterval,
-        endDate: rEndDate
+        endDate: rEndDate,
+        excludedDates: (ev.recurrence && ev.recurrence.excludedDates) || [],
+        overrides: (ev.recurrence && ev.recurrence.overrides) || {}
       };
 
       // 提取提醒规则
@@ -2023,7 +3434,7 @@
         });
       });
 
-      // 阶段 3: 权威数据源联动写回拦截 (不污染本地 events 造成双份拷贝)
+      // 阶段 3/4: 权威数据源联动写回拦截 (不污染本地 events 造成双份拷贝)
       if (ev && ev.source && ev.source.app === 'love-diary') {
         if (window.TimeCalendarIntegrations) {
           await window.TimeCalendarIntegrations.saveLinkedItem({
@@ -2060,19 +3471,62 @@
       }
 
       if (ev && ev.source && ev.source.app === 'life-game') {
-        if (window.TimeCalendarIntegrations) {
-          await window.TimeCalendarIntegrations.saveLinkedItem({
-            source: ev.source,
+        if (isLifeGameLocked) {
+          if (window.toast) window.toast('已领奖入账的任务不可通过日历改期或修改');
+          return;
+        }
+        var conflictReport = (window.TimeCalendarAI && typeof window.TimeCalendarAI.checkEventConflict === 'function')
+          ? window.TimeCalendarAI.checkEventConflict({
+              id: ev.id,
+              title: title,
+              date: date,
+              isAllDay: isAllDay,
+              startTime: startTime,
+              endTime: endTime
+            }, getEffectiveEvents(), [])
+          : { conflicts: [] };
+
+        showLifeGameEditConfirmModal({
+          before: {
+            title: ev.title,
+            date: ev.date,
+            isAllDay: ev.isAllDay,
+            startTime: ev.startTime,
+            endTime: ev.endTime,
+            notes: ev.notes
+          },
+          after: {
             title: title,
             date: date,
-            notes: notes,
-            completed: ev.completed
-          });
-        }
-        await loadLifeGameLinkage();
-        overlay.remove();
-        renderActiveTabContent();
-        if (window.toast) window.toast('现实委托已同步更新至人生游戏');
+            isAllDay: isAllDay,
+            startTime: startTime,
+            endTime: endTime,
+            notes: notes
+          },
+          conflicts: conflictReport.conflicts || [],
+          onConfirm: async function() {
+            var saveRes = window.TimeCalendarIntegrations
+              ? await window.TimeCalendarIntegrations.saveLinkedItem({
+                  source: ev.source,
+                  title: title,
+                  date: date,
+                  isAllDay: isAllDay,
+                  startTime: startTime,
+                  endTime: endTime,
+                  notes: notes,
+                  completed: ev.completed
+                })
+              : false;
+            if (!saveRes || (typeof saveRes === 'object' && saveRes.success === false)) {
+              if (window.toast) window.toast((saveRes && saveRes.message) || '同步失败：该委托当前不允许修改');
+              return;
+            }
+            await loadLifeGameLinkage();
+            overlay.remove();
+            renderActiveTabContent();
+            if (window.toast) window.toast('现实委托已确认同步更新至人生游戏');
+          }
+        });
         return;
       }
 
@@ -2087,6 +3541,10 @@
           endTime: endTime,
           category: cat,
           relationType: relType,
+          visibility: visibilityVal,
+          allowedCharIds: allowedCharIds,
+          ownerCharId: ownerCharId,
+          companionEnabled: companionEnabled,
           charId: charId,
           charName: charName,
           notes: notes,
@@ -2114,6 +3572,10 @@
         ev.endTime = endTime;
         ev.category = cat;
         ev.relationType = relType;
+        ev.visibility = visibilityVal;
+        ev.allowedCharIds = allowedCharIds;
+        ev.ownerCharId = ownerCharId;
+        ev.companionEnabled = companionEnabled;
         ev.charId = charId;
         ev.charName = charName;
         ev.notes = notes;
@@ -2129,6 +3591,20 @@
       }
 
       await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+      if (isNew && window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+        try {
+          await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+            eventId: 'tc_create_' + newEvent.id,
+            eventType: 'event_created',
+            sourceApp: 'time-calendar',
+            sourceRecordId: newEvent.id,
+            occurrenceKey: newEvent.id,
+            charId: newEvent.charId ? String(newEvent.charId) : null,
+            occurredAt: newEvent.createdAt || Date.now(),
+            payload: { source: newEvent.source }
+          });
+        } catch (_) {}
+      }
       if (window.TimeCalendarReminders) {
         if (typeof window.TimeCalendarReminders.onEventUpdated === 'function') {
           await window.TimeCalendarReminders.onEventUpdated(isNew ? newEvent.id : ev.id, date, reminderRules);
@@ -2432,6 +3908,34 @@
         '</div>';
     }
 
+    var linkableEvents = (_state.events || []).filter(function(e) {
+      return e && e.date && e.status !== 'cancelled' && !e.showInCountdown;
+    });
+    var linkableEventsOptionsHtml = linkableEvents.length === 0
+      ? '<option value="">暂无尚未开启倒计时的已有日程</option>'
+      : ('<option value="">-- 请选择一条已有日程 --</option>' + linkableEvents.map(function(e) {
+          return '<option value="' + esc(e.id) + '">' + esc(e.title) + ' (' + esc(e.date) + ')</option>';
+        }).join(''));
+
+    var linkModeSectionHtml = '';
+    if (isNew) {
+      linkModeSectionHtml =
+        '<div class="tc-form-group tc-cd-link-mode-box">' +
+          '<label class="tc-form-label">与日历日程的关系（单一权威源，绝不重复建档）</label>' +
+          '<select class="tc-form-select" id="tc-cd-link-mode">' +
+            '<option value="standalone">仅创建独立倒计时</option>' +
+            '<option value="create_linked_event">同时生成日历日程并开启倒计时</option>' +
+            '<option value="link_existing_event">关联已有日历日程到倒计时列表</option>' +
+          '</select>' +
+        '</div>' +
+        '<div class="tc-form-group" id="tc-cd-existing-event-row" style="display: none;">' +
+          '<label class="tc-form-label">选择要关联的已有日历日程 *</label>' +
+          '<select class="tc-form-select" id="tc-cd-existing-event-sel">' +
+            linkableEventsOptionsHtml +
+          '</select>' +
+        '</div>';
+    }
+
     overlay.innerHTML =
       '<div class="tc-modal-dialog">' +
         '<div class="tc-modal-header">' +
@@ -2440,6 +3944,7 @@
         '</div>' +
         '<div class="tc-modal-body">' +
           linkedBannerHtml +
+          linkModeSectionHtml +
           '<div class="tc-form-group">' +
             '<label class="tc-form-label">事件名称 *</label>' +
             '<input class="tc-form-input" id="tc-cd-title" placeholder="如：期末考试、考研倒计时、元旦假期..." value="' + esc(cd.title) + '">' +
@@ -2486,12 +3991,31 @@
 
     document.body.appendChild(overlay);
 
+    var linkModeSel = overlay.querySelector('#tc-cd-link-mode');
+    var existingRow = overlay.querySelector('#tc-cd-existing-event-row');
+    var existingSel = overlay.querySelector('#tc-cd-existing-event-sel');
+    if (linkModeSel && existingRow) {
+      linkModeSel.addEventListener('change', function() {
+        existingRow.style.display = linkModeSel.value === 'link_existing_event' ? 'block' : 'none';
+      });
+    }
+    if (existingSel) {
+      existingSel.addEventListener('change', function() {
+        var chosenEv = _state.events.find(function(e) { return e.id === existingSel.value; });
+        if (chosenEv) {
+          overlay.querySelector('#tc-cd-title').value = chosenEv.title || '';
+          overlay.querySelector('#tc-cd-date').value = chosenEv.date || '';
+          overlay.querySelector('#tc-cd-notes').value = chosenEv.notes || '';
+        }
+      });
+    }
+
     var jumpCdBtn = overlay.querySelector('#tc-jump-source-cd-modal');
     if (jumpCdBtn) {
       jumpCdBtn.addEventListener('click', function() {
         overlay.remove();
         if (window.TimeCalendarIntegrations) {
-          window.TimeCalendarIntegrations.navigate(cd.source);
+          window.TimeCalendarIntegrations.navigate(cd.source, { fromApp: 'time-calendar' });
         }
       });
     }
@@ -2500,6 +4024,26 @@
     overlay.querySelector('#tc-modal-cancel').addEventListener('click', function() { overlay.remove(); });
 
     overlay.querySelector('#tc-modal-save').addEventListener('click', async function() {
+      var mode = linkModeSel ? linkModeSel.value : 'standalone';
+      if (isNew && mode === 'link_existing_event') {
+        var targetEvId = existingSel ? existingSel.value : '';
+        if (!targetEvId) {
+          alert('请选择要关联的已有日历日程');
+          return;
+        }
+        var targetEv = _state.events.find(function(e) { return e.id === targetEvId; });
+        if (targetEv) {
+          targetEv.showInCountdown = true;
+          targetEv.isPinned = overlay.querySelector('#tc-cd-pin').checked;
+          targetEv.updatedAt = Date.now();
+          await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+          overlay.remove();
+          renderCountdownsTab();
+          if (window.toast) window.toast('已关联原日程到倒计时，未重复创建');
+        }
+        return;
+      }
+
       var title = overlay.querySelector('#tc-cd-title').value.trim();
       var targetDate = overlay.querySelector('#tc-cd-date').value;
       if (!title) {
@@ -2521,7 +4065,7 @@
       var charObj = charId ? _state.allCharacters.find(function(c) { return String(c.id) === String(charId); }) : null;
       var charName = charObj ? charObj.name : '';
 
-      // 阶段 3: 自习室备考计划权威源联动保存
+      // 阶段 3/4: 自习室备考计划权威源联动保存
       if (cd && cd.source && cd.source.app === 'study-room') {
         if (window.TimeCalendarIntegrations) {
           await window.TimeCalendarIntegrations.studyRoom.saveExam({
@@ -2542,6 +4086,41 @@
       }
 
       var now = Date.now();
+      if (isNew && mode === 'create_linked_event') {
+        var linkedEvent = {
+          id: uid('tc_evt'),
+          title: title,
+          date: targetDate,
+          isAllDay: true,
+          startTime: '',
+          endTime: '',
+          category: (cat === 'exam' || cat === 'target') ? 'study' : (cat === 'anniversary' ? 'anniversary' : 'life'),
+          relationType: relType,
+          visibility: relType === 'specificChar' ? 'selected-chars' : 'private',
+          allowedCharIds: charId ? [String(charId)] : [],
+          ownerCharId: charId,
+          companionEnabled: relType === 'specificChar',
+          charId: charId,
+          charName: charName,
+          notes: notes,
+          showInCountdown: true,
+          completed: false,
+          isPinned: isPinned,
+          createdAt: now,
+          updatedAt: now,
+          reminders: [],
+          recurrence: { type: 'none', interval: 1, endDate: '', excludedDates: [], overrides: {} },
+          source: { app: 'timeCalendar', recordId: '', readOnly: false },
+          care: { lastCheckedAt: 0, note: '' }
+        };
+        _state.events.push(linkedEvent);
+        await saveConfigKey(STORAGE_KEYS.EVENTS, _state.events);
+        overlay.remove();
+        renderCountdownsTab();
+        if (window.toast) window.toast('已创建日历日程并同步显示在倒计时中');
+        return;
+      }
+
       if (isNew) {
         var newCd = {
           id: uid('tc_cd'),
@@ -2670,7 +4249,7 @@
       jumpAnBtn.addEventListener('click', function() {
         overlay.remove();
         if (window.TimeCalendarIntegrations) {
-          window.TimeCalendarIntegrations.navigate(an.source);
+          window.TimeCalendarIntegrations.navigate(an.source, { fromApp: 'time-calendar' });
         }
       });
     }
@@ -2746,6 +4325,20 @@
       }
 
       await saveConfigKey(STORAGE_KEYS.ANNIVERSARIES, _state.anniversaries);
+      if (isNew && window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+        try {
+          await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+            eventId: 'tc_ann_' + newAn.id,
+            eventType: 'anniversary_created',
+            sourceApp: 'time-calendar',
+            sourceRecordId: newAn.id,
+            occurrenceKey: newAn.id,
+            charId: newAn.charId ? String(newAn.charId) : null,
+            occurredAt: newAn.createdAt || Date.now(),
+            payload: { source: newAn.source }
+          });
+        } catch (_) {}
+      }
       overlay.remove();
       renderAnniversariesTab();
       if (window.toast) window.toast(isNew ? '纪念日已创建' : '纪念日已更新');
@@ -2799,7 +4392,7 @@
     overlay.querySelector('#tc-modal-close').addEventListener('click', function() { overlay.remove(); });
 
     overlay.querySelectorAll('[data-select-char]').forEach(function(item) {
-      item.addEventListener('click', function() {
+      item.addEventListener('click', async function() {
         var charId = item.dataset.selectChar;
         _state.filterCharId = charId;
 
@@ -2815,6 +4408,9 @@
           }
         }
 
+        await loadLoveDiaryLinkage();
+        await loadStudyRoomLinkage();
+        await loadLifeGameLinkage();
         updateHeaderCharPill();
         overlay.remove();
         renderActiveTabContent();
@@ -2862,9 +4458,18 @@
     if (window.waitForDB) {
       try { await window.waitForDB(); } catch (_) {}
     }
-    // 1. 读取基础角色、持久化配置与联动数据
+    // 1. 读取基础角色与持久化配置 (支持恢复视图与筛选视角)
     await loadAllCharacters();
     await loadTimeCalendarData();
+
+    if (options) {
+      if (options.filterCharId !== undefined) _state.filterCharId = options.filterCharId;
+      else if (options.charId !== undefined && options.charId !== null) _state.filterCharId = String(options.charId);
+      if (options.tab) _state.activeTab = options.tab;
+      if (options.calendarView) _state.calendarView = options.calendarView;
+      if (options.anniversarySubTab) _state.anniversarySubTab = options.anniversarySubTab;
+    }
+
     await loadLoveDiaryLinkage();
     await loadStudyRoomLinkage();
     await loadLifeGameLinkage();
@@ -2873,7 +4478,7 @@
     var targetDate = options && options.date;
 
     if (targetEventId) {
-      var found = _state.events.find(function(e) { return e.id === targetEventId; });
+      var found = getEffectiveEvents().find(function(e) { return e.id === targetEventId; }) || _state.events.find(function(e) { return e.id === targetEventId; });
       if (found) {
         targetDate = targetDate || found.date;
       }
@@ -2926,10 +4531,24 @@
     open: openTimeCalendar,
     close: closeTimeCalendar,
     getState: function() { return _state; },
+    state: _state,
+    refreshActiveTab: renderActiveTabContent,
     reload: openTimeCalendar,
     openReminderCenter: showReminderCenterModal,
-    openCompanionSettings: function() { if (window.TimeCalendarCompanion) window.TimeCalendarCompanion.showSettingsModal(); }
+    openCompanionSettings: function() { if (window.TimeCalendarCompanion) window.TimeCalendarCompanion.showSettingsModal(); },
+    recurrence: TimeCalendarRecurrence,
+    getEffectiveEvents: getEffectiveEvents,
+    getEffectiveCountdowns: getEffectiveCountdowns,
+    getEffectiveAnniversaries: getEffectiveAnniversaries,
+    computeAnniversaryMilestone: computeAnniversaryMilestone,
+    matchesCharFilter: matchesCharFilterLocal,
+    toggleEventCompletion: toggleEventCompletion,
+    deleteEvent: deleteEvent,
+    deleteCountdown: deleteCountdown,
+    showEventDetail: showEventDetailModal
   };
+
+  window.TimeCalendarRecurrence = TimeCalendarRecurrence;
 
   window.showTimeCalendarPage = openTimeCalendar;
   window.showTimeCalendarApp = openTimeCalendar;

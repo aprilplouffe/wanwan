@@ -133,6 +133,18 @@
     return 'sr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
   }
 
+  function formatLocalDate(d) {
+    if (!d) return '';
+    if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+    var dateObj = d instanceof Date ? d : new Date(d);
+    if (isNaN(dateObj.getTime())) return '';
+    return dateObj.getFullYear() + '-' + String(dateObj.getMonth() + 1).padStart(2, '0') + '-' + String(dateObj.getDate()).padStart(2, '0');
+  }
+
+  function getTodayLocalDateStr() {
+    return formatLocalDate(new Date());
+  }
+
   function formatTimeDisplay(totalSeconds) {
     var s = Math.max(0, Math.floor(totalSeconds));
     var m = Math.floor(s / 60);
@@ -235,7 +247,8 @@
   }
 
   // 初始化持久化数据
-  async function initStudyState() {
+  async function initStudyState(initOptions) {
+    var preserveLiveTimer = !!(initOptions && initOptions.preserveTimer && (_state.timerStatus === 'running' || _state.timerStatus === 'paused' || _timerInterval !== null));
     var savedSettings = await loadStorage(STORAGE_KEYS.SETTINGS, null);
     var savedCharId = savedSettings ? savedSettings.companionCharId : null;
     await loadCompanionChar(savedCharId);
@@ -244,8 +257,10 @@
       if (savedSettings.modePreferences) _state.modePreferences = Object.assign(_state.modePreferences, savedSettings.modePreferences);
       if (savedSettings.currentSceneId) _state.currentSceneId = savedSettings.currentSceneId;
       if (savedSettings.customBgUrl) _state.customBgUrl = savedSettings.customBgUrl;
-      if (savedSettings.taskType) _state.taskType = savedSettings.taskType;
-      if (savedSettings.taskName) _state.taskName = savedSettings.taskName;
+      if (!preserveLiveTimer) {
+        if (savedSettings.taskType) _state.taskType = savedSettings.taskType;
+        if (savedSettings.taskName) _state.taskName = savedSettings.taskName;
+      }
     }
 
     var savedStandees = await loadStorage(STORAGE_KEYS.STANDEES, {});
@@ -296,9 +311,11 @@
     _state.records = Array.isArray(savedRecords) ? savedRecords : [];
 
     // 动态计算真实的今日专注分钟数与完成番茄数
-    var todayStr = new Date().toISOString().slice(0, 10);
+    var todayStr = getTodayLocalDateStr();
     var todayRecords = _state.records.filter(function(r) {
-      return r && r.date && r.date.slice(0, 10) === todayStr;
+      if (!r) return false;
+      var recDate = r.startTime ? formatLocalDate(new Date(r.startTime)) : (r.date ? formatLocalDate(r.date) : '');
+      return recDate === todayStr;
     });
 
     _state.pomodorosToday = todayRecords.length;
@@ -309,19 +326,21 @@
     // 动态计算真实连续打卡天数
     var daySet = new Set();
     _state.records.forEach(function(r) {
-      if (r && r.date) daySet.add(r.date.slice(0, 10));
+      if (!r) return;
+      var recDate = r.startTime ? formatLocalDate(new Date(r.startTime)) : (r.date ? formatLocalDate(r.date) : '');
+      if (recDate) daySet.add(recDate);
     });
     var streak = 0;
     var checkDate = new Date();
-    var checkDateStr = checkDate.toISOString().slice(0, 10);
+    var checkDateStr = formatLocalDate(checkDate);
     if (!daySet.has(checkDateStr)) {
       checkDate.setDate(checkDate.getDate() - 1);
-      checkDateStr = checkDate.toISOString().slice(0, 10);
+      checkDateStr = formatLocalDate(checkDate);
     }
     while (daySet.has(checkDateStr)) {
       streak++;
       checkDate.setDate(checkDate.getDate() - 1);
-      checkDateStr = checkDate.toISOString().slice(0, 10);
+      checkDateStr = formatLocalDate(checkDate);
     }
     _state.streakDays = streak;
 
@@ -338,33 +357,35 @@
       ];
     }
 
-    // 恢复计时器状态，杜绝后台错乱
-    var savedTimer = await loadStorage(STORAGE_KEYS.STATE, null);
-    if (savedTimer && typeof savedTimer === 'object') {
-      _state.timerType = savedTimer.timerType || 'pomodoro';
-      _state.timerStatus = savedTimer.timerStatus || 'idle';
-      _state.timerPhase = savedTimer.timerPhase || 'focus';
-      _state.targetDurationSec = savedTimer.targetDurationSec || (25 * 60);
-      _state.remainingSec = savedTimer.remainingSec !== undefined ? savedTimer.remainingSec : (25 * 60);
-      _state.elapsedSec = savedTimer.elapsedSec || 0;
-      _state.accumulatedSecBeforeResume = savedTimer.accumulatedSecBeforeResume || 0;
-      _state.startTimestamp = savedTimer.startTimestamp || 0;
-      _state.lastActiveTimestamp = savedTimer.lastActiveTimestamp || Date.now();
+    // 恢复计时器状态，若内存中有正在运行/暂停的专注会话则严格保留不被覆盖
+    if (!preserveLiveTimer) {
+      var savedTimer = await loadStorage(STORAGE_KEYS.STATE, null);
+      if (savedTimer && typeof savedTimer === 'object') {
+        _state.timerType = savedTimer.timerType || 'pomodoro';
+        _state.timerStatus = savedTimer.timerStatus || 'idle';
+        _state.timerPhase = savedTimer.timerPhase || 'focus';
+        _state.targetDurationSec = savedTimer.targetDurationSec || (25 * 60);
+        _state.remainingSec = savedTimer.remainingSec !== undefined ? savedTimer.remainingSec : (25 * 60);
+        _state.elapsedSec = savedTimer.elapsedSec || 0;
+        _state.accumulatedSecBeforeResume = savedTimer.accumulatedSecBeforeResume || 0;
+        _state.startTimestamp = savedTimer.startTimestamp || 0;
+        _state.lastActiveTimestamp = savedTimer.lastActiveTimestamp || Date.now();
 
-      // 如果之前是运行状态，用真实经过的时间戳进行平滑补偿
-      if (_state.timerStatus === 'running' && _state.startTimestamp > 0) {
-        var elapsedSinceStart = Math.floor((Date.now() - _state.startTimestamp) / 1000) + _state.accumulatedSecBeforeResume;
-        if (_state.timerType === 'pomodoro' || _state.timerType === 'countdown') {
-          if (elapsedSinceStart >= _state.targetDurationSec) {
-            // 在后台已经完成了一个番茄钟
-            _state.remainingSec = 0;
-            _state.timerStatus = 'idle';
-            completeFocusSession(true);
-          } else {
-            _state.remainingSec = Math.max(0, _state.targetDurationSec - elapsedSinceStart);
+        // 如果之前是运行状态，用真实经过的时间戳进行平滑补偿
+        if (_state.timerStatus === 'running' && _state.startTimestamp > 0) {
+          var elapsedSinceStart = Math.floor((Date.now() - _state.startTimestamp) / 1000) + _state.accumulatedSecBeforeResume;
+          if (_state.timerType === 'pomodoro' || _state.timerType === 'countdown') {
+            if (elapsedSinceStart >= _state.targetDurationSec) {
+              // 在后台已经完成了一个番茄钟
+              _state.remainingSec = 0;
+              _state.timerStatus = 'idle';
+              completeFocusSession(true);
+            } else {
+              _state.remainingSec = Math.max(0, _state.targetDurationSec - elapsedSinceStart);
+            }
+          } else if (_state.timerType === 'stopwatch') {
+            _state.elapsedSec = elapsedSinceStart;
           }
-        } else if (_state.timerType === 'stopwatch') {
-          _state.elapsedSec = elapsedSinceStart;
         }
       }
     }
@@ -476,7 +497,7 @@
   }
 
   // ====================================================
-  // 计时器核心业务（杜绝后台切回错乱）
+  // 计时器核心业务（杜绝后台切回错乱，阶段 3 加固：专注上下文快照隔离与用户资产归属）
   // ====================================================
   function startOrResumeTimer(container) {
     if (_state.timerStatus === 'running') return;
@@ -485,6 +506,17 @@
     _state.startTimestamp = Date.now();
     _state.lastActiveTimestamp = Date.now();
     _state.currentStandeeState = 'focus';
+
+    // 阶段 3 加固：专注开始时固定明确的任务关联与伴学角色信息，防止中途切换导致记录归属错乱
+    _state.activeSessionSnapshot = {
+      taskType: _state.taskType,
+      taskName: _state.taskName,
+      taskId: _state.activeTaskId || null,
+      todoId: _state.activeTodoId || null,
+      companionCharId: _state.companionChar ? String(_state.companionChar.id) : null,
+      companionCharName: _state.companionChar ? _state.companionChar.name : '',
+      startedAt: Date.now()
+    };
 
     saveCurrentTimerState();
     triggerCharReaction('focus_start');
@@ -520,6 +552,7 @@
     _state.elapsedSec = 0;
     _state.remainingSec = _state.targetDurationSec;
     _state.currentStandeeState = 'focus';
+    _state.activeSessionSnapshot = null;
 
     saveCurrentTimerState();
     updateDuoControls(container);
@@ -563,36 +596,59 @@
     _state.totalMinutesToday += durationMinutes;
     _state.currentStandeeState = 'rest';
 
-    // 记入专注记录池
-    _state.records.unshift({
-      id: uid(),
+    // 阶段 3 加固：取用专注开始时锁定的上下文快照，确保任务归属与伴学 Char 忠实还原
+    var snap = _state.activeSessionSnapshot || {
+      taskType: _state.taskType,
+      taskName: _state.taskName,
+      taskId: _state.activeTaskId || null,
+      todoId: _state.activeTodoId || null,
+      companionCharId: _state.companionChar ? String(_state.companionChar.id) : null,
+      companionCharName: _state.companionChar ? _state.companionChar.name : ''
+    };
+    _state.activeSessionSnapshot = null;
+
+    var newRecId = uid();
+    // 记入专注记录池（作为用户个人学习记录，不被单一 Char 独占）
+    var newRecord = {
+      id: newRecId,
       date: new Date().toISOString(),
-      type: _state.taskType,
-      name: _state.taskName,
+      type: snap.taskType,
+      name: snap.taskName,
       durationMinutes: durationMinutes,
-      mode: _state.studyMode
-    });
+      mode: _state.studyMode,
+      companionCharId: snap.companionCharId,
+      companionCharName: snap.companionCharName,
+      taskId: snap.taskId,
+      todoId: snap.todoId,
+      isUserPersonalRecord: true // 用户个人资产标记
+    };
+    _state.records.unshift(newRecord);
     saveStorage(STORAGE_KEYS.RECORDS, _state.records);
     if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
       window.TimeCalendarIntegrations.emit('record_added', {
         durationMinutes: durationMinutes,
-        taskType: _state.taskType,
-        taskName: _state.taskName,
-        date: new Date().toISOString().slice(0, 10)
+        taskType: snap.taskType,
+        taskName: snap.taskName,
+        date: getTodayLocalDateStr(),
+        companionCharId: snap.companionCharId
       });
     }
 
-    // 阶段 6｜全域数据联动：专注完成写入事件总线，人生游戏更新任务/经验，成就馆判断徽章，Char生成符合模式的反馈
+    // 阶段 3 加固：全域事件总线广播专注完成，携带固定任务 ID、固定伴学 Char 信息与用户资产标识
     if (window.WanwanSharedHub) {
-      var latestRecId = _state.records && _state.records[0] ? _state.records[0].id : ('rec_' + Date.now());
       window.WanwanSharedHub.emit('FOCUS_SESSION_COMPLETED', {
-        recordId: latestRecId,
-        eventId: 'study_record_' + latestRecId,
+        recordId: newRecId,
+        eventId: 'study_record_' + newRecId,
         durationMinutes: durationMinutes,
-        taskType: _state.taskType,
-        taskName: _state.taskName,
+        taskType: snap.taskType,
+        taskName: snap.taskName,
+        taskId: snap.taskId,
+        todoId: snap.todoId,
         studyMode: _state.studyMode,
-        companionChar: _state.companionChar,
+        companionCharId: snap.companionCharId,
+        companionCharName: snap.companionCharName,
+        companionChar: { id: snap.companionCharId, name: snap.companionCharName },
+        isUserPersonalRecord: true,
         timestamp: Date.now()
       });
     }
@@ -685,7 +741,8 @@
     var existing = document.getElementById('study-room-page');
     if (existing) existing.remove();
 
-    await initStudyState();
+    var shouldPreserveTimer = !!(options && options.preserveTimer) || _state.timerStatus === 'running' || _state.timerStatus === 'paused' || _timerInterval !== null;
+    await initStudyState({ preserveTimer: shouldPreserveTimer });
 
     if (options && options.tab) {
       _state.activeTab = options.tab;
@@ -705,9 +762,25 @@
 
     renderActiveTabPage(page);
 
+    // 若计时器处于运行中，重新挂载 DOM 刷新循环而不打断真实计时基准
+    if (_state.timerStatus === 'running') {
+      runTimerLoop(page);
+    }
+
     if (options && options.targetTodoId) {
       setTimeout(function() {
         var el = page.querySelector('.sr-todo-item[data-id="' + options.targetTodoId + '"]');
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.style.outline = '2px solid var(--pl-primary, #6366f1)';
+          setTimeout(function() { el.style.outline = ''; }, 2500);
+        }
+      }, 350);
+    }
+
+    if (options && options.targetExamId) {
+      setTimeout(function() {
+        var el = page.querySelector('[data-exam-id="' + options.targetExamId + '"], #sr-exam-plan-card');
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           el.style.outline = '2px solid var(--pl-primary, #6366f1)';
@@ -720,12 +793,23 @@
   window.showStudyRoomApp = window.showStudyRoomPage;
 
   function renderStudyRoomShell(container) {
+    var retCtx = (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function')
+      ? window.TimeCalendarIntegrations.peekReturnContext()
+      : null;
+    var backLabel = '桌面';
+    if (retCtx && retCtx.fromApp && retCtx.fromApp !== 'study-room') {
+      if (retCtx.fromApp === 'time-calendar') backLabel = '返回日历';
+      else if (retCtx.fromApp === 'life-game') backLabel = '返回人生游戏';
+      else if (retCtx.fromApp === 'love-diary') backLabel = '返回恋爱记';
+      else backLabel = '返回原应用';
+    }
+
     container.innerHTML =
       // 顶部应用条
       '<div class="sr-header">' +
         '<div class="sr-header-left">' +
           '<button type="button" class="sr-back-btn" id="sr-btn-back">' +
-            '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+            '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
           '</button>' +
           '<div class="sr-title-group">' +
             '<div class="sr-icon-mini"><i class="fa-solid fa-hourglass-half"></i></div>' +
@@ -757,8 +841,15 @@
       // 弹窗挂载点
       '<div id="sr-modal-root"></div>';
 
-    // 绑定返回桌面
-    container.querySelector('#sr-btn-back').onclick = function() {
+    // 绑定返回来源应用或桌面 (绝不停止运行中的专注计时器)
+    container.querySelector('#sr-btn-back').onclick = async function() {
+      if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function') {
+        var curRet = window.TimeCalendarIntegrations.peekReturnContext();
+        if (curRet && curRet.fromApp && curRet.fromApp !== 'study-room') {
+          var handled = await window.TimeCalendarIntegrations.returnToCaller('study-room');
+          if (handled) return;
+        }
+      }
       if (window.closePage) {
         window.closePage('study-room-page');
       } else {
@@ -986,21 +1077,31 @@
     var openCalBtn = hallEl.querySelector('#sr-hall-open-cal-btn');
     if (openCalBtn) {
       openCalBtn.onclick = function() {
-        if (window.showTimeCalendarPage) window.showTimeCalendarPage();
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.navigate === 'function') {
+          window.TimeCalendarIntegrations.navigate({ app: 'time-calendar', tab: 'calendar', date: getTodayLocalDateStr() }, { fromApp: 'study-room' });
+        } else if (window.showTimeCalendarPage) {
+          window.showTimeCalendarPage();
+        }
       };
     }
     var openCalTodoBtn = hallEl.querySelector('#sr-hall-open-cal-todo-btn');
     if (openCalTodoBtn) {
       openCalTodoBtn.onclick = function() {
-        if (window.showTimeCalendarApp) {
-          window.showTimeCalendarApp({ date: new Date().toISOString().slice(0, 10) });
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.navigate === 'function') {
+          window.TimeCalendarIntegrations.navigate({ app: 'time-calendar', tab: 'calendar', date: getTodayLocalDateStr() }, { fromApp: 'study-room' });
+        } else if (window.showTimeCalendarApp) {
+          window.showTimeCalendarApp({ date: getTodayLocalDateStr() });
         }
       };
     }
     var openGameBtn = hallEl.querySelector('#sr-hall-open-game-btn');
     if (openGameBtn) {
       openGameBtn.onclick = function() {
-        if (window.showLifeGamePage) window.showLifeGamePage();
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.navigate === 'function') {
+          window.TimeCalendarIntegrations.navigate({ app: 'life-game', type: 'task' }, { fromApp: 'study-room' });
+        } else if (window.showLifeGamePage) {
+          window.showLifeGamePage();
+        }
       };
     }
     var openAchBtn = hallEl.querySelector('#sr-hall-open-ach-btn');
@@ -1017,7 +1118,7 @@
         var newTodo = {
           id: uid(),
           text: text.trim(),
-          date: new Date().toISOString().slice(0, 10),
+          date: getTodayLocalDateStr(),
           done: false,
           createdAt: Date.now()
         };
@@ -1073,12 +1174,37 @@
         };
       }
 
+      var textEl = row.querySelector('.sr-todo-text');
+      if (textEl) {
+        textEl.style.cursor = 'pointer';
+        textEl.title = '点击选定为当前专注目标';
+        textEl.onclick = function() {
+          _state.taskName = todo.text;
+          _state.activeTodoId = todo.id;
+          _state.activeTaskId = (todo.source && todo.source.taskId) || (String(todo.id).indexOf('sr_todo_lg_') === 0 ? String(todo.id).replace(/^sr_todo_lg_/, '') : null);
+          saveAllSettings();
+          window.toast && window.toast('已选定专注目标：「' + todo.text + '」');
+        };
+      }
+
       row.querySelector('.sr-todo-checkbox').onclick = function() {
         todo.done = !todo.done;
+        if (todo.done) todo.completedAt = Date.now();
         saveStorage(STORAGE_KEYS.TODOS, _state.todos);
         renderTodoList(parentEl);
         if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.emit === 'function') {
           window.TimeCalendarIntegrations.emit('todo_toggled', { todoId: todo.id, done: todo.done });
+        }
+        if (todo.done && window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+          window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+            eventId: 'sr_todo_' + (todo.id || idx),
+            eventType: 'todo_completed',
+            sourceApp: 'study-room',
+            sourceRecordId: todo.id || ('td_' + idx),
+            occurrenceKey: todo.id || ('td_' + idx),
+            occurredAt: todo.completedAt || Date.now(),
+            payload: { done: true }
+          });
         }
       };
 
@@ -2526,8 +2652,20 @@
 
       card.querySelector('.sr-m-toggle-btn').onclick = function() {
         m.mastered = !m.mastered;
+        if (m.mastered) m.masteredAt = Date.now();
         saveStorage(STORAGE_KEYS.MISTAKES, _state.mistakes);
         renderEnhancedMistakeCards(parentEl, container);
+        if (m.mastered && window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+          window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+            eventId: 'sr_mistake_' + (m.id || idx),
+            eventType: 'mistake_mastered',
+            sourceApp: 'study-room',
+            sourceRecordId: m.id || ('mk_' + idx),
+            occurrenceKey: m.id || ('mk_' + idx),
+            occurredAt: m.masteredAt || Date.now(),
+            payload: { mastered: true }
+          });
+        }
       };
 
       card.querySelector('.sr-m-retest-btn').onclick = function() {
@@ -2633,9 +2771,11 @@
     for (var i = 0; i < 7; i++) {
       var d = new Date(now);
       d.setDate(d.getDate() - (6 - i));
-      var dStr = d.toISOString().slice(0, 10);
+      var dStr = formatLocalDate(d);
       dayMinutes[i] = (_state.records || []).filter(function(r) {
-        return r && r.date && r.date.slice(0, 10) === dStr;
+        if (!r) return false;
+        var recDate = r.startTime ? formatLocalDate(new Date(r.startTime)) : (r.date ? formatLocalDate(r.date) : '');
+        return recDate === dStr;
       }).reduce(function(sum, r) {
         return sum + (Number(r.durationMinutes) || 0);
       }, 0);

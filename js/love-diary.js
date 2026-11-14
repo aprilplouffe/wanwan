@@ -7,9 +7,17 @@
   var _currentCoupleData = null
   var _playingSongId = null
 
+  function formatLocalDate(d) {
+    if (!d) return ''
+    if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d
+    var obj = d instanceof Date ? d : new Date(d)
+    if (isNaN(obj.getTime())) return ''
+    return obj.getFullYear() + '-' + String(obj.getMonth() + 1).padStart(2, '0') + '-' + String(obj.getDate()).padStart(2, '0')
+  }
+
   // ===== 默认情侣空间初始数据生成器 =====
   function createInitialCoupleData(charId, charName) {
-    var todayStr = new Date().toISOString().slice(0, 10)
+    var todayStr = formatLocalDate(new Date())
     return {
       charId: charId,
       status: 'accepted',
@@ -167,9 +175,19 @@
 
   function getDaysBetween(dateStr) {
     if (!dateStr) return 1
-    var start = new Date(dateStr).getTime()
-    var now = Date.now()
-    var diff = Math.floor((now - start) / (1000 * 60 * 60 * 24))
+    var clean = String(dateStr).trim().slice(0, 10)
+    var p = clean.split('-')
+    var startMs
+    if (p.length >= 3) {
+      startMs = Date.UTC(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10))
+    } else {
+      var parsed = new Date(dateStr)
+      if (isNaN(parsed.getTime())) return 1
+      startMs = Date.UTC(parsed.getFullYear(), parsed.getMonth(), parsed.getDate())
+    }
+    var now = new Date()
+    var nowMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())
+    var diff = Math.floor((nowMs - startMs) / (1000 * 60 * 60 * 24))
     return Math.max(1, diff + 1)
   }
 
@@ -189,12 +207,28 @@
 
     if (config.activeCharId && config.spaces && config.spaces[config.activeCharId] && config.spaces[config.activeCharId].status === 'accepted') {
       _currentCoupleData = config.spaces[config.activeCharId]
-      renderMainLoveDiary(page, config)
+      await renderMainLoveDiary(page, config)
     } else {
-      renderPartnerSelect(page, config)
+      await renderPartnerSelect(page, config)
     }
 
-    window.openPage(page)
+    if (window.openPage) {
+      window.openPage(page)
+    } else {
+      (document.getElementById('app') || document.body).appendChild(page)
+    }
+
+    if (options && options.targetWishId && _activeTab === 'wishes') {
+      setTimeout(function() {
+        var el = page.querySelector('.ld-wish-item[data-wish-id="' + options.targetWishId + '"]')
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          el.style.outline = '2px solid #ff477e'
+          el.style.borderRadius = '10px'
+          setTimeout(function() { el.style.outline = '' }, 2500)
+        }
+      }, 300)
+    }
   }
 
   // ===== 渲染角色选择与开通界面 =====
@@ -336,6 +370,19 @@
     config.activeCharId = char.id
     await saveAllCoupleSpaces(config)
     _currentCoupleData = newSpaceData
+    if (window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+      try {
+        await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+          eventId: 'ld_space_open_' + char.id,
+          eventType: 'space_accepted',
+          sourceApp: 'love-diary',
+          sourceRecordId: 'space_' + char.id,
+          occurrenceKey: 'space_' + char.id,
+          charId: String(char.id),
+          occurredAt: Date.now()
+        })
+      } catch (_) {}
+    }
 
     window.toast && window.toast('【' + char.name + '】已接受邀请，情侣空间开通成功！')
 
@@ -407,6 +454,19 @@
       config.activeCharId = char.id
       await saveAllCoupleSpaces(config)
       _currentCoupleData = newSpaceData
+      if (window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+        try {
+          await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+            eventId: 'ld_space_open_' + char.id,
+            eventType: 'space_accepted',
+            sourceApp: 'love-diary',
+            sourceRecordId: 'space_' + char.id,
+            occurrenceKey: 'space_' + char.id,
+            charId: String(char.id),
+            occurredAt: Date.now()
+          })
+        } catch (_) {}
+      }
 
       if (window.refreshChat) {
         await window.refreshChat(chatPage, { scrollToBottom: true })
@@ -445,10 +505,15 @@
     var userChar = chars.find(function(c) { return c.type === 'user' }) || { name: '我', avatar: 'img/ava-00.jpg' }
     var days = getDaysBetween(_currentCoupleData.anniversaryDate)
 
+    var retCtx = (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function')
+      ? window.TimeCalendarIntegrations.peekReturnContext()
+      : null
+    var hasCaller = !!(retCtx && retCtx.fromApp && retCtx.fromApp !== 'love-diary')
+
     page.innerHTML =
       '<div class="ld-banner" style="' + (_currentCoupleData.bannerBg ? 'background-image:url(' + _currentCoupleData.bannerBg + ');' : '') + '">' +
         '<div class="ld-banner-nav">' +
-          '<button class="ld-nav-btn" id="ld-back-btn"><i class="fa fa-angle-left"></i></button>' +
+          '<button class="ld-nav-btn" id="ld-back-btn" title="' + (hasCaller ? '返回来源应用' : '返回桌面') + '"><i class="fa fa-angle-left"></i>' + (hasCaller ? '<span style="font-size:11px;margin-left:3px;">返回</span>' : '') + '</button>' +
           '<div style="font-weight:700;font-size:15px;color:#5a3e47;">恋爱记 · 情侣空间</div>' +
           '<button class="ld-nav-btn" id="ld-switch-partner-btn" title="切换角色"><i class="fa fa-users"></i></button>' +
         '</div>' +
@@ -487,8 +552,19 @@
       '<button class="ld-fab" id="ld-fab-btn"><i class="fa fa-plus"></i></button>'
 
     // 绑定基础事件
-    page.querySelector('#ld-back-btn').addEventListener('click', function() {
-      window.closePage('love-diary-page')
+    page.querySelector('#ld-back-btn').addEventListener('click', async function() {
+      if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function') {
+        var curRet = window.TimeCalendarIntegrations.peekReturnContext()
+        if (curRet && curRet.fromApp && curRet.fromApp !== 'love-diary') {
+          var handled = await window.TimeCalendarIntegrations.returnToCaller('love-diary')
+          if (handled) return
+        }
+      }
+      if (window.closePage) {
+        window.closePage('love-diary-page')
+      } else {
+        page.remove()
+      }
     })
     page.querySelector('#ld-switch-partner-btn').addEventListener('click', function() {
       renderPartnerSelect(page, config)
@@ -497,7 +573,14 @@
     if (calJumpBtn) {
       calJumpBtn.addEventListener('click', function(e) {
         e.stopPropagation()
-        if (window.showTimeCalendarApp) {
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.navigate === 'function') {
+          window.TimeCalendarIntegrations.navigate({
+            app: 'time-calendar',
+            tab: 'anniversaries',
+            date: _currentCoupleData.anniversaryDate,
+            charId: _currentCoupleData.charId
+          }, { fromApp: 'love-diary' })
+        } else if (window.showTimeCalendarApp) {
           window.showTimeCalendarApp({
             date: _currentCoupleData.anniversaryDate,
             charId: _currentCoupleData.charId
@@ -689,8 +772,9 @@
       var dateBadge = wish.targetDate ?
         '<span style="font-size:10px;background:#ffeef1;color:#ff477e;padding:1px 6px;border-radius:10px;margin-left:6px;display:inline-flex;align-items:center;gap:3px;"><i class="fa fa-calendar-heart"></i> ' + wish.targetDate + '</span>' : '';
 
+      var wishId = wish.id || String(index)
       html +=
-        '<div class="ld-wish-item' + (wish.done ? ' done' : '') + '" style="display:flex;align-items:center;justify-content:space-between;">' +
+        '<div class="ld-wish-item' + (wish.done ? ' done' : '') + '" data-wish-id="' + wishId + '" style="display:flex;align-items:center;justify-content:space-between;">' +
           '<div style="display:flex;align-items:center;flex:1;min-width:0;cursor:pointer;" onclick="window.toggleCoupleWish && window.toggleCoupleWish(' + index + ')">' +
             '<div class="ld-wish-check"><i class="fa fa-check" style="font-size:11px;"></i></div>' +
             '<div class="ld-wish-text">' + (index + 1) + '. ' + wish.text + dateBadge + '</div>' +
@@ -700,7 +784,7 @@
               '<i class="fa-regular fa-calendar-plus"></i>' +
             '</button>' +
             (wish.targetDate ?
-              '<button type="button" title="在时光日历中定位" onclick="window.showTimeCalendarApp && window.showTimeCalendarApp({ date: \'' + wish.targetDate + '\' })" style="border:none;background:none;color:#ff477e;cursor:pointer;padding:4px 6px;font-size:12px;"><i class="fa fa-arrow-up-right-from-square"></i></button>' : '') +
+              '<button type="button" title="在时光日历中定位" onclick="window.jumpCoupleWishToCalendar && window.jumpCoupleWishToCalendar(\'' + wish.targetDate + '\', \'' + wishId + '\')" style="border:none;background:none;color:#ff477e;cursor:pointer;padding:4px 6px;font-size:12px;"><i class="fa fa-arrow-up-right-from-square"></i></button>' : '') +
           '</div>' +
         '</div>'
     })
@@ -767,7 +851,7 @@
 
   // ===== 悬浮按钮响应各 Tab 新增 =====
   function handleFabAction(page, config, partner, userChar) {
-    var todayStr = new Date().toISOString().slice(0, 10)
+    var todayStr = formatLocalDate(new Date())
 
     if (_activeTab === 'album') {
       if (window.showImagePicker) {
@@ -806,15 +890,29 @@
       if (!title) return
       var content = prompt('写下你想对TA说的话：')
       if (!content) return
-      _currentCoupleData.letters.unshift({
+      var newLetter = {
         id: 'l_' + Date.now(),
         title: title,
         sender: 'user',
         date: todayStr,
+        createdAt: Date.now(),
         content: content
-      })
+      }
+      _currentCoupleData.letters.unshift(newLetter)
       config.spaces[_currentCoupleData.charId] = _currentCoupleData
-      saveAllCoupleSpaces(config)
+      Promise.resolve(saveAllCoupleSpaces(config)).then(function() {
+        if (window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+          window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+            eventId: 'ld_letter_' + _currentCoupleData.charId + '_' + newLetter.id,
+            eventType: 'letter_created',
+            sourceApp: 'love-diary',
+            sourceRecordId: newLetter.id,
+            occurrenceKey: _currentCoupleData.charId + ':' + newLetter.id,
+            charId: String(_currentCoupleData.charId),
+            occurredAt: newLetter.createdAt
+          })
+        }
+      })
       renderLettersTab(page.querySelector('#ld-content-area'), config, partner)
       window.toast && window.toast('情书已放入信箱 💌')
     } else if (_activeTab === 'diaries') {
@@ -822,17 +920,31 @@
       if (!dTitle) return
       var dContent = prompt('记录今天的恋爱点滴：')
       if (!dContent) return
-      _currentCoupleData.diaries.unshift({
+      var newDiary = {
         id: 'd_' + Date.now(),
         title: dTitle,
         author: 'user',
         mood: '甜度爆表 💕',
         weather: '晴 ☀️',
         date: todayStr,
+        createdAt: Date.now(),
         content: dContent
-      })
+      }
+      _currentCoupleData.diaries.unshift(newDiary)
       config.spaces[_currentCoupleData.charId] = _currentCoupleData
-      saveAllCoupleSpaces(config)
+      Promise.resolve(saveAllCoupleSpaces(config)).then(function() {
+        if (window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+          window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+            eventId: 'ld_diary_' + _currentCoupleData.charId + '_' + newDiary.id,
+            eventType: 'diary_created',
+            sourceApp: 'love-diary',
+            sourceRecordId: newDiary.id,
+            occurrenceKey: _currentCoupleData.charId + ':' + newDiary.id,
+            charId: String(_currentCoupleData.charId),
+            occurredAt: newDiary.createdAt
+          })
+        }
+      })
       renderDiariesTab(page.querySelector('#ld-content-area'), config, partner)
       window.toast && window.toast('日记已保存')
     } else if (_activeTab === 'whispers') {
@@ -902,6 +1014,7 @@
     if (!_currentCoupleData || !_currentCoupleData.wishes[index]) return
     var item = _currentCoupleData.wishes[index]
     item.done = !item.done
+    if (item.done) item.completedAt = Date.now()
     var config = await loadAllCoupleSpaces()
     config.spaces[_currentCoupleData.charId] = _currentCoupleData
     await saveAllCoupleSpaces(config)
@@ -914,13 +1027,26 @@
         done: item.done
       })
     }
+    if (item.done && window.WanwanSharedHub && typeof window.WanwanSharedHub.emit === 'function') {
+      try {
+        await window.WanwanSharedHub.emit('ACHIEVEMENT_SOURCE_EVENT', {
+          eventId: 'ld_wish_' + _currentCoupleData.charId + '_' + (item.id || index),
+          eventType: 'wish_completed',
+          sourceApp: 'love-diary',
+          sourceRecordId: item.id || String(index),
+          occurrenceKey: _currentCoupleData.charId + ':' + (item.id || index),
+          charId: String(_currentCoupleData.charId),
+          occurredAt: item.completedAt || Date.now()
+        })
+      } catch (_) {}
+    }
     window.toast && window.toast(item.done ? '太棒啦！又共同完成了一件心愿 🎉' : '心愿状态已重置')
   }
 
   window.setCoupleWishDate = async function(index) {
     if (!_currentCoupleData || !_currentCoupleData.wishes[index]) return
     var item = _currentCoupleData.wishes[index]
-    var cur = item.targetDate || new Date().toISOString().slice(0, 10)
+    var cur = item.targetDate || formatLocalDate(new Date())
     var nextDate = prompt('设置心愿预计实现日期（格式：YYYY-MM-DD，留空则取消日历关联）：', cur)
     if (nextDate === null) return
     nextDate = nextDate.trim()
@@ -993,11 +1119,37 @@
     })
   }
 
+  window.jumpCoupleWishToCalendar = function(dateStr, wishId) {
+    if (!_currentCoupleData) return
+    var evtId = wishId ? ('ld_wish_' + _currentCoupleData.charId + '_' + wishId) : null
+    if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.navigate === 'function') {
+      window.TimeCalendarIntegrations.navigate({
+        app: 'time-calendar',
+        tab: 'calendar',
+        date: dateStr,
+        eventId: evtId,
+        charId: _currentCoupleData.charId
+      }, { fromApp: 'love-diary' })
+    } else if (window.showTimeCalendarApp) {
+      window.showTimeCalendarApp({ date: dateStr, eventId: evtId })
+    }
+  }
+
   window.previewCouplePhoto = function(url) {
     var modal = document.createElement('div')
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;'
     modal.innerHTML = '<img src="' + url + '" style="max-width:100%;max-height:90vh;border-radius:8px;object-fit:contain;">'
     modal.addEventListener('click', function() { modal.remove() })
     document.body.appendChild(modal)
+  }
+
+  window.LoveDiaryApp = {
+    open: window.showLoveDiaryPage,
+    getViewState: function() {
+      return {
+        activeTab: _activeTab,
+        charId: _currentCoupleData ? _currentCoupleData.charId : null
+      }
+    }
   }
 })()
