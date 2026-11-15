@@ -63,7 +63,7 @@ var DESKTOP_PAGE3_ICONS = [
   { id: 'achievement',   fa: 'fa-solid fa-award',               label: '成就馆',     action: function() { window.showAchievementPage && window.showAchievementPage() } },
   { id: 'timeCalendar',  fa: 'fa-solid fa-calendar-days',       label: '时光日历',   action: function() { window.showTimeCalendarPage && window.showTimeCalendarPage() } },
   { id: 'lifeGame',      fa: 'fa-solid fa-gamepad',             label: '人生游戏',   action: function() { window.showLifeGamePage && window.showLifeGamePage() } },
-  { id: 'heartbeatMall', fa: 'fa-solid fa-store',               label: '心动商城',   action: function() { window.showHeartbeatMallPage && window.showHeartbeatMallPage() } },
+  { id: 'heartbeatMall', fa: 'fa-solid fa-store',               label: '万象镜',     action: function() { if (window.showWanxiangMirrorPage) window.showWanxiangMirrorPage(); else if (window.showHeartbeatMallPage) window.showHeartbeatMallPage(); } },
   { id: 'fanCommunity',  fa: 'fa-solid fa-comments',            label: '同好社区',   action: function() { window.showFanCommunityPage && window.showFanCommunityPage() } },
   { id: 'heartbeatLive', fa: 'fa-solid fa-video',               label: '心动直播',   action: function() { window.showHeartbeatLivePage && window.showHeartbeatLivePage() } }
 ]

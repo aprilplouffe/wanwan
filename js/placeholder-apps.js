@@ -1,5 +1,5 @@
 // placeholder-apps.js — 9个新增App原生质感与专属功能预告（100%适配原版极简风）
-// 弯弯浏览器、陪伴自习室、我们的家、成就馆、时光日历、人生游戏、心动商城、同好社区、心动直播
+// 弯弯浏览器、陪伴自习室、我们的家、成就馆、时光日历、人生游戏、万象镜、同好社区、心动直播
 
 (function() {
   'use strict';
@@ -436,8 +436,8 @@
           '<div class="pl-app-dev-banner" style="margin-top:14px;">' +
             '<i class="fa-solid fa-store"></i>' +
             '<div class="pl-app-dev-banner-main">' +
-              '<div class="pl-app-dev-banner-title">种子不足？前往心动商城</div>' +
-              '<div>可使用自习室与人生游戏赚取的金币在心动商城选购草莓、向日葵等种子。</div>' +
+              '<div class="pl-app-dev-banner-title">种子不足？前往万象镜·心动商店街</div>' +
+              '<div>可使用自习室与人生游戏赚取的金币在万象镜「心动商店街」选购草莓、向日葵等种子。</div>' +
             '</div>' +
           '</div>';
 
@@ -448,7 +448,7 @@
           '<div class="pl-app-hero-card">' +
             '<div class="pl-app-hero-pill"><i class="fa-solid fa-box-open"></i> 共享经济服务 · 统一背包</div>' +
             '<div class="pl-app-hero-title">全域道具与资产统一管理</div>' +
-            '<div class="pl-app-hero-desc">农场收获的作物、商城兑换的家具与自习文具，全部在此唯一存档，各 App 不重复记账。</div>' +
+            '<div class="pl-app-hero-desc">农场收获的作物、万象镜兑换的家具与自习文具，全部在此唯一存档，各 App 不重复记账。</div>' +
             '<div class="pl-app-hero-stats">' +
               '<div class="pl-app-stat-item"><i class="fa-solid fa-coins"></i> 金币 ' + (ecoState.coins || 0) + '</div>' +
               '<div class="pl-app-stat-item"><i class="fa-solid fa-gem"></i> 星愿石 ' + (ecoState.diamonds || 0) + '</div>' +
@@ -459,7 +459,7 @@
           '<div class="pl-app-section-title"><i class="fa-solid fa-boxes-stacked"></i> 背包物品清单</div>' +
           '<div style="display:flex;flex-direction:column;gap:8px;">' +
             (items.length === 0 ?
-              '<div style="text-align:center;padding:30px;color:var(--c-sub);font-size:12px;">背包空空如也，快去商城或农场看看吧~</div>' :
+              '<div style="text-align:center;padding:30px;color:var(--c-sub);font-size:12px;">背包空空如也，快去万象镜或农场看看吧~</div>' :
               items.map(function(item) {
                 return (
                   '<div class="cal-event-card">' +
@@ -1323,10 +1323,13 @@
   }
 
   // ====================================================
-  // 7. 心动商城 (联动共享经济账户与背包)
+  // 7. 万象镜 (联动共享经济账户与背包)
   // 唯一来源：SharedEconomyService
   // ====================================================
-  async function showHeartbeatMallPage() {
+  async function showHeartbeatMallPage(opts) {
+    if (window.WanxiangMirror && typeof window.WanxiangMirror.open === 'function') {
+      return window.WanxiangMirror.open(opts);
+    }
     var existing = document.getElementById('heartbeat-mall-page');
     if (existing) existing.remove();
 
@@ -1355,7 +1358,7 @@
               '</button>' +
               '<div class="pl-app-title-group">' +
                 '<div class="pl-app-icon-mini"><i class="fa-solid fa-store"></i></div>' +
-                '<div class="pl-app-header-title">心动商城</div>' +
+                '<div class="pl-app-header-title">万象镜</div>' +
               '</div>' +
             '</div>' +
             '<div class="pl-app-header-right">' +
@@ -1421,7 +1424,7 @@
               window.toast && window.toast('今日签到奖励已领取过，明日再来吧~');
               return;
             }
-            await window.SharedEconomyService.addCoins(guard.coinsGranted, '每日商城签到', 'mall');
+            await window.SharedEconomyService.addCoins(guard.coinsGranted, '万象镜每日签到', 'mall');
             ecoState = await window.SharedEconomyService.getState();
             window.toast && window.toast('🎉 签到成功！获得 +' + guard.coinsGranted + ' 金币！');
             renderMall();

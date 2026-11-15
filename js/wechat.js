@@ -3402,7 +3402,7 @@ function renderStickerBubble(data, isSelf, msg, stickerMap) {
 
 
 // ===== 私聊窗口 =====
-async function openPrivateChat(wechatPage, charId, chatId) {
+async function openPrivateChat(wechatPage, charId, chatId, options = {}) {
   let char = null
   let chat = null
   const stageMeta = { chatId: chatId || null, charId: charId || null }
@@ -3445,8 +3445,12 @@ async function openPrivateChat(wechatPage, charId, chatId) {
   ;(async () => {
     await waitNextFrame()
     if (!isPrivateChatPageCurrent(chatPage, chat.id)) return
+    const hasCustomScroll = Number.isFinite(Number(options?.restoreScrollTop))
     try {
-      await loadChatMessages(chatPage, chat.id, { initialScrollToBottom: true })
+      await loadChatMessages(chatPage, chat.id, {
+        initialScrollToBottom: !hasCustomScroll,
+        restoreScrollTop: hasCustomScroll ? Number(options.restoreScrollTop) : undefined
+      })
     } catch (error) {
       logWechatChatOpenIssue('loadChatMessages', error, stageMeta)
       const container = chatPage?.querySelector('#chat-messages')
@@ -3455,6 +3459,9 @@ async function openPrivateChat(wechatPage, charId, chatId) {
     }
     await waitNextFrame()
     if (!isPrivateChatPageCurrent(chatPage, chat.id)) return
+    if (typeof chatPage._syncWanxiangDraftUI === 'function') {
+      await chatPage._syncWanxiangDraftUI(options?.restoreDraftText)
+    }
     await enhanceVisibleChat(chatPage, chat.id, char.id)
   })().catch(error => {
     logWechatChatOpenIssue('postOpenPrivateChat', error, stageMeta)
@@ -4216,6 +4223,23 @@ const ICON_PLUS_SVG = `<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/200
 function buildChatInputBarHTML() {
   return `
     <div class="chat-input-area">
+      <div class="wx-chat-share-banner" id="wx-chat-share-banner" style="display:none">
+        <div class="wx-chat-share-banner-info">
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+          <span class="wx-chat-share-banner-text" id="wx-chat-share-banner-text">万象镜分享草稿</span>
+        </div>
+        <button class="wx-chat-share-cancel" id="wx-chat-share-cancel" type="button">取消分享</button>
+      </div>
+      <div class="wx-chat-loc-suggest" id="wx-chat-loc-suggest" style="display:none">
+        <div class="wx-chat-loc-suggest-main">
+          <i class="fa-solid fa-map-pin"></i>
+          <span class="wx-chat-loc-suggest-label" id="wx-chat-loc-suggest-label">一起去小镇看看</span>
+        </div>
+        <div class="wx-chat-loc-suggest-actions">
+          <button class="wx-chat-loc-go" id="wx-chat-loc-go" type="button">去看看</button>
+          <button class="wx-chat-loc-close" id="wx-chat-loc-close" type="button" aria-label="忽略地点建议"><i class="fa fa-times"></i></button>
+        </div>
+      </div>
       ${buildQuoteComposerHTML()}
       <div class="chat-input-bar">
         <button class="chat-reply-btn chat-action-reply" id="btn-chat-reply" type="button" aria-label="回复">
@@ -4679,7 +4703,166 @@ function bindChatWindowEvents(page) {
     input.style.height = 'auto'
     input.style.height = Math.min(input.scrollHeight, 120) + 'px'
     updatePlusBtnUI()
+    if (!page.dataset.groupId && _wechatUid && window.WanxiangExperienceBridge?.savePendingChatDraft) {
+      const chatId = parseInt(page.dataset.chatId, 10)
+      const charId = String(page.dataset.charId || '')
+      clearTimeout(page._wxDraftSaveTimer)
+      page._wxDraftSaveTimer = setTimeout(() => {
+        window.WanxiangExperienceBridge?.savePendingChatDraft?.({
+          ownerUid: _wechatUid,
+          chatId,
+          charId,
+          draftText: input.value
+        }).catch(() => {})
+      }, 120)
+    }
   })
+
+  // 万象镜 V3.1 分享草稿条 & 地点建议条绑定
+  const shareBanner = page.querySelector('#wx-chat-share-banner')
+  const shareBannerText = page.querySelector('#wx-chat-share-banner-text')
+  const shareCancelBtn = page.querySelector('#wx-chat-share-cancel')
+  const locSuggestEl = page.querySelector('#wx-chat-loc-suggest')
+  const locSuggestLabel = page.querySelector('#wx-chat-loc-suggest-label')
+  const locGoBtn = page.querySelector('#wx-chat-loc-go')
+  const locCloseBtn = page.querySelector('#wx-chat-loc-close')
+
+  page._syncWanxiangDraftUI = async (explicitDraftText = undefined) => {
+    if (page.dataset.groupId || isWechatRolePhoneMode(page) || page.classList.contains('online-chat-window')) {
+      if (shareBanner) shareBanner.style.display = 'none'
+      return
+    }
+    const chatId = parseInt(page.dataset.chatId, 10)
+    let pending = null
+    if (_wechatUid && window.WanxiangExperienceBridge?.getPendingChatDraft) {
+      try {
+        pending = await window.WanxiangExperienceBridge.getPendingChatDraft({ ownerUid: _wechatUid, chatId })
+      } catch (_) {}
+    }
+    const targetDraft = explicitDraftText !== undefined
+      ? String(explicitDraftText || '')
+      : (pending?.draftText || '')
+    if (explicitDraftText !== undefined || (targetDraft && !input.value.trim())) {
+      input.value = targetDraft
+      input.style.height = 'auto'
+      input.style.height = Math.min(input.scrollHeight || 40, 120) + 'px'
+      updatePlusBtnUI()
+    }
+    if (pending && pending.activeShareRequestId && shareBanner) {
+      page.dataset.wxShareRequestId = pending.activeShareRequestId
+      if (shareBannerText) {
+        shareBannerText.textContent = `准备分享${pending.shareLocationName ? '「' + pending.shareLocationName + '」的回忆' : '万象镜回忆'}（可自由修改后手动发送）`
+      }
+      shareBanner.style.display = 'flex'
+    } else if (shareBanner) {
+      delete page.dataset.wxShareRequestId
+      shareBanner.style.display = 'none'
+    }
+  }
+
+  page._refreshWanxiangSuggestUI = (msgs) => {
+    if (!locSuggestEl || page.dataset.groupId || isWechatRolePhoneMode(page) || page.classList.contains('online-chat-window')) {
+      if (locSuggestEl) locSuggestEl.style.display = 'none'
+      return
+    }
+    if (!window.WanxiangExperienceBridge?.detectChatLocationSuggestion) return
+    const list = Array.isArray(msgs) ? msgs : []
+    let latestUser = null
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i] && list[i].role === 'user') {
+        latestUser = list[i]
+        break
+      }
+    }
+    if (!latestUser || !latestUser.content) {
+      locSuggestEl.style.display = 'none'
+      return
+    }
+    const msgKey = String(latestUser.id || latestUser.createdAt || '')
+    if (page._wxDismissedSuggestMsgKey && page._wxDismissedSuggestMsgKey === msgKey) {
+      locSuggestEl.style.display = 'none'
+      return
+    }
+    const suggestion = window.WanxiangExperienceBridge.detectChatLocationSuggestion(latestUser.content)
+    if (!suggestion) {
+      locSuggestEl.style.display = 'none'
+      delete locSuggestEl.dataset.locId
+      return
+    }
+    locSuggestEl.dataset.locId = suggestion.locationId
+    locSuggestEl.dataset.locName = suggestion.locationName
+    locSuggestEl.dataset.msgKey = msgKey
+    if (locSuggestLabel) locSuggestLabel.textContent = suggestion.promptLabel || `一起去${suggestion.locationName}`
+    locSuggestEl.style.display = 'flex'
+  }
+
+  if (shareCancelBtn) {
+    shareCancelBtn.addEventListener('click', async () => {
+      const chatId = parseInt(page.dataset.chatId, 10)
+      if (_wechatUid && window.WanxiangExperienceBridge?.cancelPendingShareDraft) {
+        await window.WanxiangExperienceBridge.cancelPendingShareDraft({ ownerUid: _wechatUid, chatId, clearDraftText: false })
+      }
+      delete page.dataset.wxShareRequestId
+      if (shareBanner) shareBanner.style.display = 'none'
+      window.toast?.('已取消万象镜分享标记，当前草稿文字仍保留')
+    })
+  }
+
+  if (locCloseBtn && locSuggestEl) {
+    locCloseBtn.addEventListener('click', () => {
+      page._wxDismissedSuggestMsgKey = locSuggestEl.dataset.msgKey || 'dismissed'
+      locSuggestEl.style.display = 'none'
+    })
+  }
+
+  if (locGoBtn && locSuggestEl) {
+    locGoBtn.addEventListener('click', async () => {
+      const locId = locSuggestEl.dataset.locId
+      const locName = locSuggestEl.dataset.locName || ''
+      const chatId = parseInt(page.dataset.chatId, 10)
+      const charId = String(page.dataset.charId || '')
+      if (!locId || !charId || !chatId) return
+      const messagesEl = page.querySelector('#chat-messages')
+      const scrollTop = messagesEl ? Number(messagesEl.scrollTop || 0) : 0
+      const draftText = input.value || ''
+      if (_wechatUid && window.WanxiangExperienceBridge?.savePendingChatDraft) {
+        await window.WanxiangExperienceBridge.savePendingChatDraft({
+          ownerUid: _wechatUid,
+          chatId,
+          charId,
+          draftText
+        }).catch(() => {})
+      }
+      let navId = ''
+      if (window.WanxiangExperienceBridge?.saveChatNavigationContext) {
+        const navRes = await window.WanxiangExperienceBridge.saveChatNavigationContext({
+          ownerUid: _wechatUid,
+          charId,
+          sourceChatId: chatId,
+          targetLocationId: locId,
+          targetLocationName: locName,
+          draftText,
+          scrollTop
+        })
+        if (navRes?.ok) navId = navRes.navId
+      }
+      if (typeof window.showWanxiangMirrorPage === 'function') {
+        await window.showWanxiangMirrorPage({
+          charId,
+          openLocationId: locId,
+          fromChatNavId: navId
+        })
+      } else if (window.WanxiangMirror?.open) {
+        await window.WanxiangMirror.open({
+          charId,
+          openLocationId: locId,
+          fromChatNavId: navId
+        })
+      } else {
+        window.toast?.('万象镜模块未就绪')
+      }
+    })
+  }
 
   // 工具面板 / 表情包面板互斥切换
   const plusPanel = page.querySelector('#chat-plus-panel')
@@ -4908,6 +5091,12 @@ async function loadChatMessages(page, chatId, options = {}) {
     scrollToBottom: !!options.scrollToBottom,
     initialScrollToBottom: !!options.initialScrollToBottom
   })
+  if (Number.isFinite(Number(options?.restoreScrollTop)) && container) {
+    container.scrollTop = Math.max(0, Number(options.restoreScrollTop))
+  }
+  if (typeof page._refreshWanxiangSuggestUI === 'function') {
+    page._refreshWanxiangSuggestUI(msgs)
+  }
   if (isAIReplyPending('chat', chatId)) applyTypingUI('chat', chatId, true)
 }
 
@@ -5529,19 +5718,58 @@ async function sendTextMessage(chatPage) {
   const charId = parseInt(chatPage.dataset.charId)
   if (window.isCallActiveWith?.(charId)) {
     window.toast?.('通话中，无法发送消息')
-    return
+    return false
   }
   const input = chatPage.querySelector('#chat-input')
   const draft = input.value
   const lines = splitMessageLines(draft)
   if (!lines.length) return false
+  const isPrivate = !chatPage.dataset.groupId
+  const chatId = parseInt(chatPage.dataset.chatId, 10)
+  let shareCheck = { hasShare: false }
+  if (isPrivate && _wechatUid && window.WanxiangExperienceBridge?.consumeShareOnSend) {
+    try {
+      shareCheck = await window.WanxiangExperienceBridge.consumeShareOnSend({
+        ownerUid: _wechatUid,
+        chatId,
+        charId,
+        shareRequestId: chatPage.dataset.wxShareRequestId || '',
+        sentText: draft
+      })
+    } catch (_) {}
+    if (shareCheck?.duplicate) {
+      delete chatPage.dataset.wxShareRequestId
+      const shareBanner = chatPage.querySelector('#wx-chat-share-banner')
+      if (shareBanner) shareBanner.style.display = 'none'
+      window.toast?.('该条分享已经发出，未重复发送')
+      return false
+    }
+  }
   const quoteState = chatPage._quoteState || null
   const base = Date.now()
+  let firstMessageId = null
   for (let i = 0; i < lines.length; i++) {
     if (i > 0) await _sleep(SEND_BUBBLE_GAP_MS)
     const content = i === 0 && quoteState ? buildQuotedReplyContent(chatPage, quoteState, lines[i]) : lines[i]
-    await addUserMsg(chatPage, content, base + i)
+    const extra = (i === 0 && shareCheck?.hasShare && shareCheck.shareMeta)
+      ? { wxExperienceShare: shareCheck.shareMeta }
+      : null
+    const msgId = await addUserMsg(chatPage, content, base + i, extra)
+    if (i === 0) firstMessageId = msgId
     await refreshChat(chatPage, { scrollToBottom: true })
+  }
+  if (isPrivate && _wechatUid && window.WanxiangExperienceBridge?.markShareSent) {
+    try {
+      await window.WanxiangExperienceBridge.markShareSent({
+        ownerUid: _wechatUid,
+        chatId,
+        shareRequestId: shareCheck?.hasShare ? shareCheck.shareRequestId : '',
+        messageId: firstMessageId
+      })
+    } catch (_) {}
+    delete chatPage.dataset.wxShareRequestId
+    const shareBanner = chatPage.querySelector('#wx-chat-share-banner')
+    if (shareBanner) shareBanner.style.display = 'none'
   }
   if (input.value === draft) input.value = ''
   input.style.height = 'auto'
@@ -6620,10 +6848,23 @@ async function estimateWechatPromptContext(chatId, charId, ownerUid = _wechatUid
   const memoryCtx = window.WanWanMemory?.getMemoryContext
     ? await window.WanWanMemory.getMemoryContext(chatId, charId, ownerUid, context.loreMessages)
     : ''
-  summary.memoryChars = countPromptTextChars(memoryCtx)
+  const char = await window.getCharacter(charId)
+  let wanxiangExpText = ''
+  if (!isWechatRolePhoneMode() && char?.type !== 'online_friend' && window.WanxiangExperienceBridge?.buildChatExperienceContext) {
+    try {
+      const wxRes = await window.WanxiangExperienceBridge.buildChatExperienceContext({
+        ownerUid,
+        charId,
+        chatId,
+        recentMessages: context.loreMessages,
+        memoryCtx
+      })
+      wanxiangExpText = wxRes?.text || ''
+    } catch (_) {}
+  }
+  summary.memoryChars = countPromptTextChars(memoryCtx) + countPromptTextChars(wanxiangExpText)
   const loreCtx = await getChatLorebookContext(chatId, charId, context.loreMessages)
   summary.loreChars = countPromptTextChars(loreCtx)
-  const char = await window.getCharacter(charId)
   const charName = char?.nick || char?.name || ''
   const userName = _wechatUser?.name || '用户'
   const userNick = _wechatUser?.nick || ''
@@ -7596,11 +7837,26 @@ async function generateAIReply(chatId, charId, options = {}) {
   const memoryCtx = window.WanWanMemory?.getMemoryContext
     ? await window.WanWanMemory.getMemoryContext(chatId, charId, _wechatUid, context.loreMessages)
     : ''
+  let wanxiangExpCtx = ''
+  if (!isWechatRolePhoneMode() && char?.type !== 'online_friend' && window.WanxiangExperienceBridge?.buildChatExperienceContext) {
+    try {
+      const wxRes = await window.WanxiangExperienceBridge.buildChatExperienceContext({
+        ownerUid: _wechatUid,
+        charId,
+        chatId,
+        recentMessages: context.loreMessages,
+        memoryCtx
+      })
+      wanxiangExpCtx = wxRes?.text || ''
+    } catch (_) {
+      wanxiangExpCtx = ''
+    }
+  }
   const mcp = await runWechatMcpPrefetch(options.allowMcp === true, {
     scope: 'chat',
     conversationId: chatId
   }, context.textHistory || history)
-  const system = await buildChatSystem(char, loreSegments, charName, userName, userNick, stickerNames, tzConfig, timeSettings, thoughtTemplate, memoryCtx, bilingualSettings, imageGenEnabled, options.replyRequirement, idleContext)
+  const system = await buildChatSystem(char, loreSegments, charName, userName, userNick, stickerNames, tzConfig, timeSettings, thoughtTemplate, memoryCtx, bilingualSettings, imageGenEnabled, options.replyRequirement, idleContext, wanxiangExpCtx)
   const avatarCtx = await buildWechatAvatarContext(charId)
   const nowTimestamp = Date.now()
   const gapContext = calculateWechatReplyGap(context.gapTimeline || context.timeline, options, nowTimestamp)
@@ -7730,7 +7986,7 @@ async function getPrivateReplyIdleContext(chatId, options = {}) {
 
 
 // 构建聊天系统提示词（loreCtx 可为字符串或 { before, middle, after } 分段对象）
-async function buildChatSystem(char, loreCtx, charName, userName, userNick, stickerNames, tzConfig, timeSettings, thoughtTemplate, memoryCtx, bilingualSettings, imageGenEnabled, replyRequirement = '', idleContext = null) {
+async function buildChatSystem(char, loreCtx, charName, userName, userNick, stickerNames, tzConfig, timeSettings, thoughtTemplate, memoryCtx, bilingualSettings, imageGenEnabled, replyRequirement = '', idleContext = null, wanxiangExpCtx = '') {
   const loreSeg = (loreCtx && typeof loreCtx === 'object')
     ? loreCtx
     : { before: '', middle: loreCtx || '', after: '' }
@@ -7775,6 +8031,7 @@ async function buildChatSystem(char, loreCtx, charName, userName, userNick, stic
     buildSystemBilingualPart(bilingualSettings) +
     buildSystemPart1(char, charName, loreSeg.middle, loreSeg.before) +
     buildSystemMemoryPart(memoryCtx) +
+    buildSystemWanxiangPart(wanxiangExpCtx) +
     part2 +
     loreAfterBlock +
     buildSystemPart3(charName, userName, stickerNames, imageGenEnabled) +
@@ -7873,6 +8130,18 @@ function buildSystemMemoryPart(memoryCtx) {
 以下记忆只属于当前微信账号与当前角色之间的关系。请自然参考这些事实，不要机械复述，也不要提到“记忆系统”。
 
 ${memoryCtx}
+
+---
+
+`
+}
+
+function buildSystemWanxiangPart(wanxiangExpCtx) {
+  if (!wanxiangExpCtx) return ''
+  return `# 【万象镜共同经历参考】
+以下为你与当前用户在万象镜小镇中真实发生过的同行/赠礼/游玩经历（按相关性筛选）。请在自然回应时参考这些已发生的事实，不要硬背列表，也不要编造未列出的细节。
+
+${wanxiangExpCtx}
 
 ---
 
@@ -10223,6 +10492,33 @@ async function ensurePrivateChatRecord(charId) {
       _privateChatCreationLocks.delete(lockKey)
     }
   }
+}
+
+window.getWechatOwnerUidForBridge = function() {
+  return _wechatRolePhoneSession?.ownerUid || _wechatUid || null
+}
+
+window.ensureWechatPrivateChatForBridge = async function(charId, explicitOwnerUid = null) {
+  if (!_wechatUid) await checkWechatSession()
+  if (explicitOwnerUid && _wechatUid && Number(explicitOwnerUid) !== Number(_wechatUid)) return null
+  if (!_wechatUid) return null
+  return await ensurePrivateChatRecord(parseInt(charId, 10))
+}
+
+window.openWechatPrivateChatForBridge = async function(opts = {}) {
+  const targetCharId = parseInt(opts.charId, 10)
+  if (!targetCharId) return { ok: false, msg: '缺少目标角色ID' }
+  if (!_wechatUid) await checkWechatSession()
+  if (!_wechatUid) return { ok: false, msg: '请先登录微信后再进入私聊' }
+  if (opts.ownerUid && Number(opts.ownerUid) !== Number(_wechatUid)) {
+    return { ok: false, msg: '当前微信登录账号与原会话不一致' }
+  }
+  const wechatPage = ensureWechatPageForPopup()
+  await openPrivateChat(wechatPage, targetCharId, opts.chatId ? parseInt(opts.chatId, 10) : null, {
+    restoreScrollTop: opts.restoreScrollTop,
+    restoreDraftText: opts.restoreDraftText
+  })
+  return { ok: true }
 }
 
 async function getPrivateChatGroupName(charId) {

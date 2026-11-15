@@ -4,7 +4,7 @@
 // - 角色身份、人设、关系：原角色系统 / 世界书
 // - 日程、日期、倒计时：时光日历 (双向编辑同步，区分删除事件 vs 取消倒计时展示)
 // - 任务、打卡、经验、等级：人生游戏 (每日上限、去重、防刷)
-// - 金币账户、背包与交易：共享经济服务 (人生游戏、商城、家园、农场统一记账)
+// - 金币账户、背包与交易：共享经济服务 (人生游戏、万象镜、家园、农场统一记账)
 // - 徽章、碎片、图鉴：成就馆 (全域事件自动判定，解锁弹窗与头衔佩戴)
 // - 学习资料、索引、错题：陪伴自习室 (Char 答疑、学习助手直接使用)
 // - 浏览器标签、收藏、历史：弯弯浏览器 (独立浏览器与自习室共享)
@@ -736,10 +736,20 @@
 
   // ====================================================
   // 7. 共享经济服务 (SharedEconomyService)
-  // 唯一来源：统一资产与背包仓库；供人生游戏、心动商城、我们的家、弯弯农场统一记账
+  // 唯一来源：统一资产与背包仓库；供人生游戏、万象镜、我们的家、弯弯农场统一记账
   // 各 App 绝不重复发奖或割裂记账
   // ====================================================
   var STORAGE_ECONOMY_STATE = 'shared_economy_state_v2';
+  var _ecoQueue = Promise.resolve();
+
+  function runEcoTx(fn) {
+    var run = function() {
+      return runConfigTransaction(fn);
+    };
+    var p = _ecoQueue.then(run, run);
+    _ecoQueue = p.catch(function() {});
+    return p;
+  }
 
   var SharedEconomyService = {
     async getState() {
@@ -791,81 +801,93 @@
 
     async addCoins(amount, reason, sourceApp) {
       if (amount <= 0) return 0;
-      var state = await this.getState();
-      state.coins += amount;
-      state.logs.unshift({
-        id: uid('eco'),
-        time: Date.now(),
-        type: 'income',
-        amount: amount,
-        reason: reason || '日常收益',
-        sourceApp: sourceApp || 'system'
-      });
-      if (state.logs.length > 50) state.logs = state.logs.slice(0, 50);
-      await saveStorage(STORAGE_ECONOMY_STATE, state);
+      var self = this;
+      return await runEcoTx(async function() {
+        var state = await self.getState();
+        state.coins += amount;
+        state.logs.unshift({
+          id: uid('eco'),
+          time: Date.now(),
+          type: 'income',
+          amount: amount,
+          reason: reason || '日常收益',
+          sourceApp: sourceApp || 'system'
+        });
+        if (state.logs.length > 50) state.logs = state.logs.slice(0, 50);
+        await saveStorage(STORAGE_ECONOMY_STATE, state);
 
-      WanwanSharedHub.emit('ECONOMY_CHANGED', { state: state, change: amount, type: 'income' });
-      return state.coins;
+        WanwanSharedHub.emit('ECONOMY_CHANGED', { state: state, change: amount, type: 'income' });
+        return state.coins;
+      });
     },
 
     async spendCoins(amount, reason, sourceApp) {
-      var state = await this.getState();
-      if (state.coins < amount) {
-        return { success: false, msg: '金币余额不足 (当前: ' + state.coins + ')' };
-      }
-      state.coins -= amount;
-      state.logs.unshift({
-        id: uid('eco'),
-        time: Date.now(),
-        type: 'expense',
-        amount: amount,
-        reason: reason || '商城消费',
-        sourceApp: sourceApp || 'mall'
-      });
-      if (state.logs.length > 50) state.logs = state.logs.slice(0, 50);
-      await saveStorage(STORAGE_ECONOMY_STATE, state);
+      var self = this;
+      return await runEcoTx(async function() {
+        var state = await self.getState();
+        if (state.coins < amount) {
+          return { success: false, msg: '金币余额不足 (当前: ' + state.coins + ')' };
+        }
+        state.coins -= amount;
+        state.logs.unshift({
+          id: uid('eco'),
+          time: Date.now(),
+          type: 'expense',
+          amount: amount,
+          reason: reason || '万象镜消费',
+          sourceApp: sourceApp || 'mall'
+        });
+        if (state.logs.length > 50) state.logs = state.logs.slice(0, 50);
+        await saveStorage(STORAGE_ECONOMY_STATE, state);
 
-      WanwanSharedHub.emit('ECONOMY_CHANGED', { state: state, change: -amount, type: 'expense' });
-      return { success: true, remaining: state.coins };
+        WanwanSharedHub.emit('ECONOMY_CHANGED', { state: state, change: -amount, type: 'expense' });
+        return { success: true, remaining: state.coins };
+      });
     },
 
     async addItem(itemData, count, sourceApp) {
-      var state = await this.getState();
-      var addCount = count || 1;
-      var existing = state.inventory.find(function(it) { return it.itemId === itemData.itemId; });
-      if (existing) {
-        existing.count += addCount;
-      } else {
-        state.inventory.push(Object.assign({
-          id: uid('inv'),
-          itemId: itemData.itemId,
-          name: itemData.name,
-          icon: itemData.icon || 'fa-solid fa-box',
-          category: itemData.category || 'misc',
-          count: addCount,
-          sourceApp: sourceApp || 'system',
-          desc: itemData.desc || ''
-        }, itemData));
-      }
-      await saveStorage(STORAGE_ECONOMY_STATE, state);
-      WanwanSharedHub.emit('INVENTORY_CHANGED', { state: state, item: itemData, count: addCount });
-      return state.inventory;
+      var self = this;
+      return await runEcoTx(async function() {
+        var state = await self.getState();
+        var addCount = count || 1;
+        var existing = state.inventory.find(function(it) { return it.itemId === itemData.itemId; });
+        if (existing) {
+          existing.count += addCount;
+        } else {
+          state.inventory.push(Object.assign({
+            id: uid('inv'),
+            itemId: itemData.itemId,
+            name: itemData.name,
+            icon: itemData.icon || 'fa-solid fa-box',
+            category: itemData.category || 'misc',
+            count: addCount,
+            sourceApp: sourceApp || 'system',
+            desc: itemData.desc || ''
+          }, itemData));
+        }
+        await saveStorage(STORAGE_ECONOMY_STATE, state);
+        WanwanSharedHub.emit('INVENTORY_CHANGED', { state: state, item: itemData, count: addCount });
+        return state.inventory;
+      });
     },
 
     async consumeItem(itemId, count) {
-      var state = await this.getState();
-      var need = count || 1;
-      var idx = state.inventory.findIndex(function(it) { return it.itemId === itemId; });
-      if (idx === -1 || state.inventory[idx].count < need) {
-        return { success: false, msg: '背包内道具不足' };
-      }
-      state.inventory[idx].count -= need;
-      if (state.inventory[idx].count <= 0) {
-        state.inventory.splice(idx, 1);
-      }
-      await saveStorage(STORAGE_ECONOMY_STATE, state);
-      WanwanSharedHub.emit('INVENTORY_CHANGED', { state: state });
-      return { success: true };
+      var self = this;
+      return await runEcoTx(async function() {
+        var state = await self.getState();
+        var need = count || 1;
+        var idx = state.inventory.findIndex(function(it) { return it.itemId === itemId; });
+        if (idx === -1 || state.inventory[idx].count < need) {
+          return { success: false, msg: '背包内道具不足' };
+        }
+        state.inventory[idx].count -= need;
+        if (state.inventory[idx].count <= 0) {
+          state.inventory.splice(idx, 1);
+        }
+        await saveStorage(STORAGE_ECONOMY_STATE, state);
+        WanwanSharedHub.emit('INVENTORY_CHANGED', { state: state });
+        return { success: true };
+      });
     }
   };
 

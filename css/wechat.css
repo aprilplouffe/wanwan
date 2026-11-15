@@ -6720,3 +6720,127 @@ html.has-android-bottom-inset .chat-input-bar {
   background: rgba(87, 107, 149, 0.1);
   white-space: nowrap;
 }
+
+/* ===== V3.1 万象镜联动：分享草稿提醒条 & 地点建议条 ===== */
+.wx-chat-share-banner,
+.wx-chat-loc-suggest {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--c-border);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.wx-chat-share-banner {
+  background: color-mix(in srgb, var(--c-accent-light, #eef1f7) 72%, var(--c-bg));
+  color: var(--c-text);
+}
+
+.wx-chat-share-banner-info,
+.wx-chat-loc-suggest-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wx-chat-share-banner-info i {
+  color: var(--c-accent);
+  flex-shrink: 0;
+}
+
+.wx-chat-share-banner-text,
+.wx-chat-loc-suggest-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wx-chat-share-cancel {
+  flex-shrink: 0;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--c-border);
+  background: var(--c-bg);
+  color: var(--c-sub);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.wx-chat-share-cancel:active {
+  background: var(--c-surface);
+}
+
+.wx-chat-loc-suggest {
+  background: var(--c-surface);
+  color: var(--c-text);
+}
+
+.wx-chat-loc-suggest-main i {
+  color: #b88a3b;
+  flex-shrink: 0;
+}
+
+.wx-chat-loc-suggest-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wx-chat-loc-go {
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: 8px;
+  background: var(--c-accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wx-chat-loc-go:active {
+  opacity: 0.88;
+}
+
+.wx-chat-loc-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-hint);
+  background: transparent;
+}
+
+.wx-chat-loc-close:active {
+  background: var(--c-surface-2);
+}
+
+:root.theme-dark .wx-chat-share-banner {
+  background: rgba(111, 78, 142, 0.24);
+}
+
+:root.theme-dark .wx-chat-share-cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--c-text);
+}
+
+:root.theme-dark .wx-chat-loc-suggest {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wx-chat-share-cancel,
+  .wx-chat-loc-go,
+  .wx-chat-loc-close {
+    transition: none !important;
+  }
+}
+

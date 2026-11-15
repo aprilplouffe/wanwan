@@ -354,7 +354,8 @@ var APP_DATA_DEFS = [
   { id: 'gamehall', name: '游戏大厅', icon: 'fa-solid fa-dice', configPrefixes: ['gameApi'], localKeys: ['wanwanWerewolfState', 'wanwanWerewolfHistory'] },
   { id: 'terminal', name: '终端', icon: 'fa-solid fa-terminal', tables: ['mcpServers'], configPrefixes: ['mcpApi'], localPrefixes: ['wanwan_mcp_oauth_', 'wanwan_mcp_secret_'] },
   { id: 'iscreens', name: 'iScreens', icon: 'fa-solid fa-wand-magic-sparkles', configKeys: ['desktopIconCustomizations', 'desktopLabelColor', 'desktopWidgets', 'wallpaperData', 'topWidgetText'] },
-  { id: 'message', name: '信息', icon: 'fa-solid fa-message', tables: ['smsConversations', 'smsMessages'] }
+  { id: 'message', name: '信息', icon: 'fa-solid fa-message', tables: ['smsConversations', 'smsMessages'] },
+  { id: 'wanxiang', name: '万象镜', icon: 'fa-solid fa-store', configPrefixes: ['wanxiang_mirror_'], localPrefixes: ['wanxiang_mirror_'] }
 ]
 
 function keyMatchesApp(key, def, type) {

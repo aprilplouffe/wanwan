@@ -703,10 +703,13 @@ ${lines}`
     return orderedForInjection.map(function(x, i) {
       var m = x.memory
       var isMeet = m.sourceType ? m.sourceType === 'offlineMeet' : !!m.sourceSessionId
+      var isWanxiang = m.sourceType === 'wanxiang_mirror'
       var memoryTime = getMemoryInjectionSourceAt(m)
-      var sourceTime = isMeet
-        ? `【线下见面｜发生时间：${memoryTime ? formatMemoryDateTime(memoryTime) : '未知'}】`
-        : `【微信聊天｜发生时间：${memoryTime ? formatMemoryDateTime(memoryTime) : '未知'}】`
+      var sourceTime = isWanxiang
+        ? `【万象镜精选回忆｜发生时间：${memoryTime ? formatMemoryDateTime(memoryTime) : '未知'}】`
+        : (isMeet
+            ? `【线下见面｜发生时间：${memoryTime ? formatMemoryDateTime(memoryTime) : '未知'}】`
+            : `【微信聊天｜发生时间：${memoryTime ? formatMemoryDateTime(memoryTime) : '未知'}】`)
       return `${i + 1}. ${sourceTime}${m.title}：${m.content}`
     }).join('\n')
   }
@@ -763,8 +766,9 @@ ${lines}`
         <div class="memory-edit-select-grid">
           <label class="memory-edit-label">来源
             <select class="input-field" id="mem-edit-source-type">
-              <option value="wechat" ${m.sourceType !== 'offlineMeet' ? 'selected' : ''}>微信</option>
+              <option value="wechat" ${m.sourceType !== 'offlineMeet' && m.sourceType !== 'wanxiang_mirror' ? 'selected' : ''}>微信</option>
               <option value="offlineMeet" ${m.sourceType === 'offlineMeet' ? 'selected' : ''}>线下见面</option>
+              ${m.sourceType === 'wanxiang_mirror' ? '<option value="wanxiang_mirror" selected>万象镜</option>' : ''}
             </select>
           </label>
           <label class="memory-edit-label">状态
@@ -795,6 +799,10 @@ ${lines}`
     modal.querySelector('#mem-edit-save').addEventListener('click', async function() {
       var sourceAtInput = modal.querySelector('#mem-edit-source-at').value
       var sourceAt = sourceAtInput ? new Date(sourceAtInput).getTime() : null
+      var selectedSourceType = modal.querySelector('#mem-edit-source-type').value
+      var safeSourceType = selectedSourceType === 'offlineMeet'
+        ? 'offlineMeet'
+        : (selectedSourceType === 'wanxiang_mirror' ? 'wanxiang_mirror' : 'wechat')
       var patch = {
         title: modal.querySelector('#mem-edit-title').value.trim().slice(0, 30) || '未命名记忆',
         content: modal.querySelector('#mem-edit-content').value.trim().slice(0, 150),
@@ -803,7 +811,7 @@ ${lines}`
         arousal: clamp(modal.querySelector('#mem-edit-arousal').value, 0, 1, 0.3),
         importance: clamp(modal.querySelector('#mem-edit-importance').value, 1, 10, 5),
         sourceAt: sourceAt,
-        sourceType: modal.querySelector('#mem-edit-source-type').value === 'offlineMeet' ? 'offlineMeet' : 'wechat',
+        sourceType: safeSourceType,
         status: STATUS_LABEL[modal.querySelector('#mem-edit-status').value] ? modal.querySelector('#mem-edit-status').value : 'active',
         updatedAt: Date.now()
       }
@@ -1094,8 +1102,9 @@ ${lines}`
     var role = chars[m.charId]
     var decay = getDecayScore(m, DEFAULT_SETTINGS).toFixed(2)
     var isMeet = m.sourceType ? m.sourceType === 'offlineMeet' : !!m.sourceSessionId
-    var sourceLabel = isMeet ? '见面' : '微信'
-    var sourceClass = sourceLabel === '见面' ? 'is-meet' : 'is-wechat'
+    var isWanxiang = m.sourceType === 'wanxiang_mirror'
+    var sourceLabel = isWanxiang ? '万象镜' : (isMeet ? '见面' : '微信')
+    var sourceClass = isWanxiang ? 'is-wanxiang' : (sourceLabel === '见面' ? 'is-meet' : 'is-wechat')
     return `
       <div class="memory-card" data-id="${m.id}">
         <div class="memory-card-top">
@@ -1184,11 +1193,112 @@ ${lines}`
           var action = btn.dataset.action
           if (action === 'edit') return openEditor(m, page)
           if (action === 'toggle') await db.memories.update(id, { status: m.status === 'archived' ? 'active' : 'archived', updatedAt: Date.now() })
-          if (action === 'delete') await db.memories.delete(id)
+          if (action === 'delete') {
+            await db.memories.delete(id)
+            try { window.WanxiangExperienceBridge?.onMemoryDeleted?.(id) } catch (_) {}
+          }
           await renderMemoryPage(page)
         })
       })
     })
+  }
+
+  async function findBridgeMemory(filter) {
+    filter = filter || {}
+    if (!window.db || !db.memories) return null
+    var ownerUid = filter.ownerUid ? parseInt(filter.ownerUid, 10) : 0
+    var charId = filter.charId ? parseInt(filter.charId, 10) : 0
+    var sourceEventId = String(filter.sourceEventId || '').trim()
+    var experienceId = String(filter.experienceId || '').trim()
+    var memoryId = filter.memoryId ? parseInt(filter.memoryId, 10) : 0
+    if (memoryId) {
+      var direct = await db.memories.get(memoryId)
+      if (direct) {
+        if (charId && parseInt(direct.charId, 10) !== charId) return null
+        if (ownerUid && parseInt(direct.ownerUid, 10) !== ownerUid) return null
+        return direct
+      }
+      if (!sourceEventId && !experienceId) return null
+    }
+    if (!charId || (!sourceEventId && !experienceId)) return null
+    var rows = await db.memories.toArray()
+    return rows.find(function(m) {
+      if (!m || m.sourceType !== 'wanxiang_mirror') return false
+      if (ownerUid && parseInt(m.ownerUid, 10) !== ownerUid) return false
+      if (parseInt(m.charId, 10) !== charId) return false
+      if (sourceEventId && String(m.sourceEventId || '') === sourceEventId) return true
+      if (experienceId && String(m.experienceId || '') === experienceId) return true
+      return false
+    }) || null
+  }
+
+  async function saveBridgeMemory(payload) {
+    payload = payload || {}
+    if (!window.db || !db.memories) {
+      return { ok: false, reason: 'memory_unavailable', error: '长期记忆数据库未就绪' }
+    }
+    var ownerUid = parseInt(payload.ownerUid, 10)
+    var charId = parseInt(payload.charId, 10)
+    var chatId = parseInt(payload.chatId, 10)
+    var sourceEventId = String(payload.sourceEventId || '').trim()
+    var experienceId = String(payload.experienceId || '').trim()
+    if (!ownerUid || !charId || !chatId || !sourceEventId || !experienceId) {
+      return { ok: false, reason: 'invalid_params', error: '缺少必要角色或来源标识' }
+    }
+    var title = String(payload.title || '').trim().slice(0, 30) || '万象镜回忆'
+    var content = String(payload.content || '').trim().slice(0, 150)
+    if (!content) {
+      return { ok: false, reason: 'empty_content', error: '记忆内容不能为空' }
+    }
+    try {
+      var existing = await findBridgeMemory({
+        ownerUid: ownerUid,
+        charId: charId,
+        sourceEventId: sourceEventId,
+        experienceId: experienceId
+      })
+      if (existing) {
+        return { ok: true, duplicate: true, memoryId: existing.id, memory: existing }
+      }
+      var now = Date.now()
+      var settings = await getSettings(chatId)
+      var keywords = Array.isArray(payload.keywords)
+        ? payload.keywords.map(function(k) { return String(k || '').trim() }).filter(Boolean).slice(0, 8)
+        : []
+      var row = {
+        ownerUid: ownerUid,
+        charId: charId,
+        chatId: chatId,
+        title: title,
+        content: content,
+        keywords: keywords,
+        valence: clamp(payload.valence, -1, 1, 0.2),
+        arousal: clamp(payload.arousal, 0, 1, 0.3),
+        importance: clamp(payload.importance, 1, 10, 6),
+        embedding: null,
+        status: 'active',
+        sourceMsgStartId: null,
+        sourceMsgEndId: null,
+        sourceType: 'wanxiang_mirror',
+        sourceEventId: sourceEventId,
+        experienceId: experienceId,
+        sourceLocationId: String(payload.locationId || ''),
+        sourceAt: isValidTimestamp(payload.sourceAt) ? Number(payload.sourceAt) : null,
+        createdAt: now,
+        updatedAt: now,
+        lastAccessedAt: null,
+        accessCount: 0
+      }
+      if (settings.embeddingEnabled) {
+        try { row.embedding = await createEmbedding(row.title + '\n' + row.content) }
+        catch (e) { console.warn('[memory] 万象镜精选记忆生成向量失败，降级保存：', e) }
+      }
+      var newId = await db.memories.add(row)
+      row.id = newId
+      return { ok: true, duplicate: false, memoryId: newId, memory: row }
+    } catch (e) {
+      return { ok: false, reason: 'storage_failed', error: (e && e.message) || String(e || '保存失败') }
+    }
   }
 
   window.showMemoryPage = function(filter) {
@@ -1217,6 +1327,8 @@ ${lines}`
     summarizeMeeting: summarizeMeeting,
     getMemoryContext: getMemoryContext,
     listMemories: listMemories,
+    findBridgeMemory: findBridgeMemory,
+    saveBridgeMemory: saveBridgeMemory,
     testEmbedding: testEmbedding,
     getDecayScore: getDecayScore
   }
