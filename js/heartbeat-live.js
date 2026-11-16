@@ -19,6 +19,7 @@
     invitees: [], // Char + NPC 完整可邀请列表
     user: { id: 0, name: '我', avatar: '', description: '' },
     selectedCharId: '',
+    selectedHostId: '',
     selectedCharManageId: '',
     settings: null,
     portraitOptions: {},
@@ -49,13 +50,16 @@
     replayOffset: 0,
     replayLoaded: [],
     replayMeta: null,
-    // 多人邀请与送礼筛选状态
+    // 角色开播选择器与多人邀请/送礼筛选状态
+    rolePickerFilter: 'all', // 'all' | 'char' | 'npc'
+    rolePickerSearch: '',
     inviteFilterType: 'all', // 'all' | 'char' | 'npc'
     inviteSearchQuery: '',
     selectedGiftRecipientId: '',
     // 抽屉与弹窗
-    openModal: '', // '' | 'planner' | 'connect' | 'gift' | 'interact' | 'memory' | 'userHost' | 'summary'
+    openModal: '', // '' | 'planner' | 'rolePicker' | 'connect' | 'gift' | 'interact' | 'memory' | 'userHost' | 'summary'
     plannerPendingMode: 'char',
+    plannerHostObj: null,
     plannerEditing: false,
     plannerProgram: 'chat',
     pendingConnectAfterInvite: false,
@@ -171,6 +175,22 @@
   function syncRoomDerivedFields(r) {
     if (!r) return;
     if (!Array.isArray(r.invitedViewers)) r.invitedViewers = [];
+    if (r.hostMode !== 'user' && r.hostMode !== 'private' && r.hostMode !== 'npc') {
+      r.hostMode = (r.hostCharObj && r.hostCharObj.roleType === 'npc') ? 'npc' : 'char';
+    }
+    if (!r.hostType || (r.hostType !== 'user' && r.hostType !== 'char' && r.hostType !== 'npc')) {
+      r.hostType = r.hostMode === 'user' ? 'user' : r.hostMode === 'npc' ? 'npc' : 'char';
+    }
+    if (!r.hostId) {
+      r.hostId = r.hostType === 'user'
+        ? String((_state.user && _state.user.id) || 'user')
+        : String((r.hostCharObj && r.hostCharObj.id) || '');
+    }
+    if (!r.hostName) {
+      r.hostName = r.hostType === 'user'
+        ? ((_state.user && _state.user.name) || '我')
+        : ((r.hostCharObj && r.hostCharObj.name) || (r.hostType === 'npc' ? 'NPC' : 'Char'));
+    }
     if (r.hostMode === 'user') {
       r.charObj = r.cohostCharObj ||
         r.invitedViewers.find(function(v) { return v && v.roleType === 'char'; }) ||
@@ -184,34 +204,56 @@
   function getConnectionPartner(r) {
     if (!r) return null;
     if (r.hostMode === 'user') return r.cohostCharObj || null;
-    return r.hostCharObj || r.charObj || null;
+    return r.cohostCharObj || r.hostCharObj || r.charObj || null;
   }
 
   function getAllRoomActors(r) {
     if (!r) return [];
-    if (r.hostMode === 'user') return r.invitedViewers ? r.invitedViewers.slice() : [];
-    return r.hostCharObj ? [r.hostCharObj] : (r.charObj ? [r.charObj] : []);
+    var seen = {};
+    var list = [];
+    var pushUnique = function(item) {
+      if (!item || item.id == null || item.id === '') return;
+      var k = String(item.id);
+      if (seen[k]) return;
+      seen[k] = true;
+      list.push(item);
+    };
+    if (r.hostMode !== 'user') {
+      pushUnique(r.hostCharObj || r.charObj);
+    }
+    if (Array.isArray(r.invitedViewers)) {
+      for (var i = 0; i < r.invitedViewers.length; i++) {
+        pushUnique(r.invitedViewers[i]);
+      }
+    }
+    return list;
   }
 
   function isActorActiveInRoom(r, actorId) {
     if (!r || !actorId) return false;
     var aid = String(actorId);
-    if (r.hostMode === 'user') {
-      return (Array.isArray(r.invitedViewers) && r.invitedViewers.some(function(v) { return v && String(v.id) === aid; })) ||
-        Boolean(r.cohostCharObj && String(r.cohostCharObj.id) === aid);
+    if (Array.isArray(r.invitedViewers) && r.invitedViewers.some(function(v) { return v && String(v.id) === aid; })) {
+      return true;
     }
-    var host = r.hostCharObj || r.charObj;
-    return Boolean(host && String(host.id) === aid);
+    if (r.cohostCharObj && String(r.cohostCharObj.id) === aid) {
+      return true;
+    }
+    if (r.hostMode !== 'user') {
+      var host = r.hostCharObj || r.charObj;
+      if (host && String(host.id) === aid) return true;
+    }
+    return false;
   }
 
   function getDefaultGiftRecipient(r) {
     if (!r) return null;
-    if (r.hostMode !== 'user') return r.hostCharObj || r.charObj || null;
+    var actors = getAllRoomActors(r);
     if (_state.selectedGiftRecipientId) {
-      var picked = (r.invitedViewers || []).find(function(v) { return String(v.id) === String(_state.selectedGiftRecipientId); });
+      var picked = actors.find(function(v) { return v && String(v.id) === String(_state.selectedGiftRecipientId); });
       if (picked) return picked;
     }
-    return r.cohostCharObj || (r.invitedViewers && r.invitedViewers[0]) || null;
+    if (r.hostMode !== 'user') return r.hostCharObj || r.charObj || null;
+    return r.cohostCharObj || actors[0] || null;
   }
 
   // ===== 音频与流式媒体清理 (硬要求：绝不残留轨道或内存泄漏) =====
@@ -366,36 +408,47 @@
   async function renderLobbyView() {
     var picker = $('#hl-char-picker');
     var grid = $('#hl-broadcasts');
-    if (!picker || !grid) return;
+    if (!grid) return;
 
     var chars = _state.chars;
+    var invitees = (_state.invitees && _state.invitees.length) ? _state.invitees : chars;
     var active = getActiveChar();
 
-    if (!chars.length) {
-      picker.innerHTML =
-        '<div class="hl-note" style="width:100%">当前角色档案中尚未创建 Char（type=char），正在以本地示例展示。' +
-        '<button type="button" class="hl-ghost" id="hl-goto-chars" style="margin-left:8px;padding:4px 9px;font-size:11px">前往新建角色</button></div>';
-      var goBtn = $('#hl-goto-chars');
-      if (goBtn) {
-        goBtn.onclick = function() {
-          close();
-          if (typeof global.showCharacterPage === 'function') global.showCharacterPage();
-        };
+    if (picker) {
+      if (!invitees.length) {
+        picker.innerHTML =
+          '<div class="hl-note" style="width:100%">当前角色档案中尚未创建 Char 或 NPC，正在以本地示例展示。' +
+          '<button type="button" class="hl-ghost" id="hl-goto-chars" style="margin-left:8px;padding:4px 9px;font-size:11px">前往新建角色</button></div>';
+        var goBtn = $('#hl-goto-chars');
+        if (goBtn) {
+          goBtn.onclick = function() {
+            close();
+            if (typeof global.showCharacterPage === 'function') global.showCharacterPage();
+          };
+        }
+      } else {
+        var curHighlightId = _state.selectedHostId || active.id;
+        picker.innerHTML = invitees.map(function(c) {
+          var sel = String(c.id) === String(curHighlightId);
+          var pill = c.roleType === 'npc' ? 'NPC' : 'Char';
+          return '<button type="button" class="hl-char-chip' + (sel ? ' selected' : '') + '" data-pick-char="' + esc(c.id) + '" data-role-type="' + esc(c.roleType || 'char') + '">' +
+            '<span class="hl-chip-avatar">' + renderCharAvatarHtml(c) + '</span>' +
+            '<span>' + esc(c.name) + '</span>' +
+            '<em class="hl-role-pill ' + esc(c.roleType === 'npc' ? 'npc' : 'char') + '">' + pill + '</em>' +
+          '</button>';
+        }).join('');
+        $$('[data-pick-char]').forEach(function(btn) {
+          btn.onclick = function() {
+            var picked = invitees.find(function(x) { return String(x.id) === String(btn.dataset.pickChar); });
+            if (!picked) return;
+            _state.selectedHostId = String(picked.id);
+            if (picked.roleType !== 'npc') {
+              _state.selectedCharId = String(picked.id);
+            }
+            openPlannerModal(picked.roleType === 'npc' ? 'npc' : 'char', false, picked);
+          };
+        });
       }
-    } else {
-      picker.innerHTML = chars.map(function(c) {
-        var sel = String(c.id) === String(active.id);
-        return '<button type="button" class="hl-char-chip' + (sel ? ' selected' : '') + '" data-pick-char="' + esc(c.id) + '">' +
-          '<span class="hl-chip-avatar">' + renderCharAvatarHtml(c) + '</span>' +
-          '<span>' + esc(c.name) + '</span>' +
-        '</button>';
-      }).join('');
-      $$('[data-pick-char]').forEach(function(btn) {
-        btn.onclick = function() {
-          _state.selectedCharId = btn.dataset.pickChar;
-          renderLobbyView();
-        };
-      });
     }
 
     var displayChars = chars.length ? chars.slice(0, 5) : [active];
@@ -443,13 +496,124 @@
     $$('[data-start-char]').forEach(function(btn) {
       btn.onclick = function() {
         _state.selectedCharId = btn.dataset.startChar;
-        openPlannerModal('char', false);
+        _state.selectedHostId = btn.dataset.startChar;
+        var foundChar = _state.chars.find(function(x) { return String(x.id) === String(btn.dataset.startChar); }) || getActiveChar();
+        openPlannerModal('char', false, foundChar);
       };
     });
     var uCard = $('#hl-card-user-live');
     if (uCard) {
       uCard.onclick = function() { startUserSoloLive(); };
     }
+  }
+
+  function getFilteredRolePickerList() {
+    var list = Array.isArray(_state.invitees) ? _state.invitees : [];
+    var fType = _state.rolePickerFilter || 'all';
+    var q = String(_state.rolePickerSearch || '').trim().toLowerCase();
+    return list.filter(function(item) {
+      if (!item || !item.id || !item.name) return false;
+      var roleType = item.roleType === 'npc' ? 'npc' : 'char';
+      if (fType !== 'all' && roleType !== fType) return false;
+      if (q) {
+        var hay = (item.name + ' ' + (item.role || '') + ' ' + (item.group || '')).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderRolePickerBody() {
+    var listEl = $('#hl-rolepicker-list');
+    var countEl = $('#hl-rolepicker-summary');
+    if (!listEl) return;
+
+    var allRoles = Array.isArray(_state.invitees) ? _state.invitees : [];
+    var charCount = allRoles.filter(function(c) { return c && c.roleType !== 'npc'; }).length;
+    var npcCount = allRoles.filter(function(c) { return c && c.roleType === 'npc'; }).length;
+    if (countEl) {
+      countEl.textContent = '共发现 ' + charCount + ' 位 Char、' + npcCount + ' 位 NPC（真实角色库数据，NPC 无需微信聊天也可独立开播）';
+    }
+
+    var filter = _state.rolePickerFilter || 'all';
+    var filtered = getFilteredRolePickerList();
+    if (!filtered.length) {
+      var emptyMsg = filter === 'npc'
+        ? (npcCount === 0
+            ? '当前角色档案中还没有已创建的 NPC（type=npc），不会编造或伪造虚构 NPC；可先前往新建角色，或切换「Char」/「全部」查看已有角色。'
+            : '没有搜索到匹配的 NPC，请清空搜索关键词试试。')
+        : filter === 'char'
+          ? (charCount === 0
+              ? '当前角色档案中尚未创建 Char（type=char），请先前往新建角色。'
+              : '没有搜索到匹配的 Char，请清空搜索关键词试试。')
+          : (allRoles.length === 0
+              ? '当前角色档案中尚未创建 Char 或 NPC，请先前往新建角色后再开播。'
+              : '没有匹配的角色，请更换关键词或切换筛选页签。');
+      listEl.innerHTML =
+        '<div class="hl-empty-roles">' +
+          '<p>' + esc(emptyMsg) + '</p>' +
+          '<button type="button" class="hl-ghost" id="hl-rolepicker-goto-chars" style="padding:6px 11px;font-size:11px">前往角色管理</button>' +
+        '</div>';
+      var gotoBtn = $('#hl-rolepicker-goto-chars');
+      if (gotoBtn) {
+        gotoBtn.onclick = function() {
+          closeModal();
+          close(false);
+          if (typeof global.showCharacterPage === 'function') global.showCharacterPage();
+        };
+      }
+      return;
+    }
+
+    listEl.innerHTML = filtered.map(function(c) {
+      var isNpc = c.roleType === 'npc';
+      var typeBadge = isNpc ? 'NPC' : 'Char';
+      var descLine = [c.role || c.group || '', isNpc ? '独立开播 · 不读 Char 私聊与记忆' : '真实档案 · 可连麦与手账'].filter(Boolean).join(' · ');
+      return '<div class="hl-role-card" data-role-card="' + esc(c.id) + '" data-role-type="' + esc(c.roleType) + '">' +
+        '<div class="hl-role-card-avatar">' + renderCharAvatarHtml(c) + '</div>' +
+        '<div class="hl-role-card-info">' +
+          '<div class="hl-role-card-head"><b>' + esc(c.name) + '</b><em class="hl-role-pill ' + esc(c.roleType) + '">' + typeBadge + '</em></div>' +
+          '<small>' + esc(descLine) + '</small>' +
+        '</div>' +
+        '<button type="button" class="hl-pinkbtn hl-role-start-btn" data-role-start="' + esc(c.id) + '">开播</button>' +
+      '</div>';
+    }).join('');
+
+    $$('[data-role-start]').forEach(function(btn) {
+      btn.onclick = function() {
+        var rid = btn.dataset.roleStart;
+        var found = allRoles.find(function(c) { return String(c.id) === String(rid); });
+        if (!found) {
+          showToast('未找到该角色档案，请刷新角色列表');
+          return;
+        }
+        _state.selectedHostId = String(found.id);
+        if (found.roleType !== 'npc') {
+          _state.selectedCharId = String(found.id);
+        }
+        closeModal();
+        openPlannerModal(found.roleType === 'npc' ? 'npc' : 'char', false, found);
+      };
+    });
+  }
+
+  async function openRolePickerModal(presetFilter) {
+    if (aiMod()) {
+      _state.chars = await aiMod().loadAvailableChars();
+      _state.invitees = typeof aiMod().loadAvailableInvitees === 'function'
+        ? await aiMod().loadAvailableInvitees()
+        : _state.chars.slice();
+    }
+    if (presetFilter && ['all', 'char', 'npc'].indexOf(presetFilter) >= 0) {
+      _state.rolePickerFilter = presetFilter;
+    }
+    var searchEl = $('#hl-rolepicker-search');
+    if (searchEl) searchEl.value = _state.rolePickerSearch || '';
+    $$('[data-role-filter]').forEach(function(tab) {
+      tab.classList.toggle('active', tab.dataset.roleFilter === (_state.rolePickerFilter || 'all'));
+    });
+    renderRolePickerBody();
+    openModal('rolePicker');
   }
 
   function startUserSoloLive() {
@@ -464,10 +628,13 @@
 
   function getFilteredInvitees() {
     var list = (_state.invitees && _state.invitees.length) ? _state.invitees : (_state.chars || []);
+    var r = _state.room;
+    var activeHostId = (r && r.hostMode !== 'user' && r.hostId) ? String(r.hostId) : '';
     var fType = _state.inviteFilterType || 'all';
     var q = String(_state.inviteSearchQuery || '').trim().toLowerCase();
     return list.filter(function(item) {
       if (!item) return false;
+      if (activeHostId && String(item.id) === activeHostId) return false;
       var roleType = item.roleType === 'npc' ? 'npc' : 'char';
       if (fType !== 'all' && roleType !== fType) return false;
       if (q) {
@@ -480,7 +647,7 @@
 
   async function removeViewerFromUserRoom(actorId) {
     var r = _state.room;
-    if (!r || r.hostMode !== 'user') return;
+    if (!r || r.hostMode === 'private') return;
     var aid = String(actorId || '');
     var idx = (r.invitedViewers || []).findIndex(function(v) { return String(v.id) === aid; });
     if (idx < 0) return;
@@ -492,7 +659,7 @@
       return !task || !task.actor || String(task.actor.id) !== aid;
     });
 
-    // 若该嘉宾正在连麦席位中，优雅断开连麦回到单人主播舞台
+    // 若该嘉宾正在连麦席位中，优雅断开连麦回到原主播单人舞台
     if (r.cohostCharObj && String(r.cohostCharObj.id) === aid) {
       r.cohostCharObj = null;
       if (_state.connectionType) {
@@ -524,36 +691,51 @@
     if (_state.openModal === 'userHost') renderUserHostModalBody();
   }
 
-  async function inviteCharToUserRoom(actorObj) {
+  async function inviteCharToUserRoom(actorOrId) {
     var r = _state.room;
-    if (!r || r.hostMode !== 'user' || !actorObj || !actorObj.id) return;
+    if (!r || r.hostMode === 'private' || !actorOrId) return;
+    var actorObj = (typeof actorOrId === 'object')
+      ? actorOrId
+      : (_state.invitees || []).concat(_state.chars || []).find(function(x) {
+          return x && String(x.id) === String(actorOrId);
+        });
+    if (!actorObj || !actorObj.id) return;
     var aid = String(actorObj.id);
+    if (r.hostMode !== 'user' && String(r.hostId) === aid) {
+      showToast(actorObj.name + ' 已经是本场主播啦');
+      return;
+    }
     if (!Array.isArray(r.invitedViewers)) r.invitedViewers = [];
     var already = r.invitedViewers.some(function(v) { return String(v.id) === aid; });
-    if (actorObj.roleType !== 'npc') _state.selectedCharId = aid;
+    if (r.hostMode === 'user' && actorObj.roleType !== 'npc') {
+      _state.selectedCharId = aid;
+    }
 
     if (!already) {
       var normalized = Object.assign({ joinedAt: Date.now(), roleType: 'char' }, actorObj);
       r.invitedViewers.push(normalized);
-      // 重要：受邀观看不等于上麦！绝不设置 r.cohostCharObj 或改变主播舞台！
+      // 重要：受邀观看不等于上麦，也不替换原有主播！
       syncRoomDerivedFields(r);
       renderRoomIdentityChrome();
       updateRoomProgramChrome();
       updateMiniWindowChrome();
 
       var badgeText = normalized.roleType === 'npc' ? 'NPC' : 'Char';
+      var hostTitle = r.hostMode === 'user'
+        ? (_state.user.name + ' 正在开个人直播')
+        : (r.hostName + '（' + (r.hostType === 'npc' ? 'NPC 主播' : 'Char 主播') + '）正在开播');
       appendRoomMessage({
         senderRole: 'system',
         sender: '嘉宾进场',
         messageType: 'invite_event',
         source: 'invite',
-        text: '💌 已邀请 ' + normalized.name + '（' + badgeText + '）进入观众席观看直播！（受邀观看暂不上麦，如需同台请点击「连麦」）'
+        text: '💌 已邀请 ' + normalized.name + '（' + badgeText + '）进入观众席观看直播！（受邀观看不改变主播身份）'
       });
       showToast('已邀请 ' + normalized.name + ' ♡');
       var progInfo = (aiMod().PROGRAMS[r.program] || aiMod().PROGRAMS.chat);
       enqueueAiTurn(normalized, {
         triggerType: 'opening',
-        userPrompt: _state.user.name + ' 正在开个人直播（节目：「' + progInfo.label + '」，标题：「' + r.title + '」），刚刚邀请你进入直播间前排观众席观看，请以观众视角自然打声招呼（此时你还在观众席，未上麦）。'
+        userPrompt: hostTitle + '（节目：「' + progInfo.label + '」，标题：「' + r.title + '」），刚刚邀请你进入直播间前排观众席观看，请以受邀观众嘉宾视角自然打声招呼（请坚守观众身份，不要自称本场主播）。'
       });
     } else {
       showToast(actorObj.name + ' 已经在直播间观众席里啦 ♡');
@@ -573,16 +755,20 @@
     var list = $('#hl-userhost-list');
     if (!list) return;
 
-    var invited = (_state.room && _state.room.hostMode === 'user' && Array.isArray(_state.room.invitedViewers))
-      ? _state.room.invitedViewers
+    var r = _state.room;
+    var invited = (r && r.hostMode !== 'private' && Array.isArray(r.invitedViewers))
+      ? r.invitedViewers
       : [];
 
     if (selectedBar) {
+      var hostTip = (r && r.hostMode !== 'user')
+        ? ('当前主播：' + (r.hostName || '主播') + '（' + (r.hostType === 'npc' ? 'NPC 主播' : 'Char 主播') + '） · ')
+        : '';
       if (!invited.length) {
-        selectedBar.innerHTML = '<div class="hl-help" style="margin:0">当前还没有受邀嘉宾（个人独自开播中）；可多选下方 Char 或 NPC。</div>';
+        selectedBar.innerHTML = '<div class="hl-help" style="margin:0">' + esc(hostTip) + '当前还没有受邀观众嘉宾；可多选下方 Char 或 NPC 进入观众席。</div>';
       } else {
         selectedBar.innerHTML =
-          '<div class="hl-invite-sel-title"><b>已受邀在本场（' + invited.length + ' 人 · 观众席）</b><button type="button" class="hl-smallbtn" id="hl-invite-clear-all">全部移出</button></div>' +
+          '<div class="hl-invite-sel-title"><b>' + esc(hostTip) + '已受邀在本场（' + invited.length + ' 人 · 观众席）</b><button type="button" class="hl-smallbtn" id="hl-invite-clear-all">全部移出</button></div>' +
           '<div class="hl-invite-sel-chips">' +
             invited.map(function(v) {
               return '<span class="hl-invited-chip">' +
@@ -612,7 +798,7 @@
     var allRoles = (_state.invitees && _state.invitees.length) ? _state.invitees : (_state.chars || []);
     if (!allRoles.length) {
       list.innerHTML =
-        '<div class="hl-note" style="width:100%">当前角色档案中尚未创建 Char 或 NPC，暂无法邀请角色互动；你可以继续独自使用个人直播间，或前往新建角色。' +
+        '<div class="hl-note" style="width:100%">当前角色档案中尚未创建 Char 或 NPC，暂无法邀请角色互动；你可以继续使用当前直播间，或前往新建角色。' +
         '<div style="margin-top:8px"><button type="button" class="hl-ghost" id="hl-invite-create-char" style="padding:6px 10px;font-size:11px">前往新建角色</button></div></div>';
       var goBtn = $('#hl-invite-create-char');
       if (goBtn) {
@@ -628,7 +814,7 @@
 
     var filtered = getFilteredInvitees();
     if (!filtered.length) {
-      list.innerHTML = '<div class="hl-help" style="width:100%;padding:8px 0">没有匹配的 Char 或 NPC，请换个关键词或切换筛选标签。</div>';
+      list.innerHTML = '<div class="hl-help" style="width:100%;padding:8px 0">没有可邀请的其他 Char 或 NPC，请换个关键词或切换筛选标签。</div>';
       return;
     }
 
@@ -648,7 +834,7 @@
         var cid = btn.dataset.inviteChar;
         var found = allRoles.find(function(c) { return String(c.id) === String(cid); });
         if (!found) return;
-        if (_state.room && _state.room.hostMode === 'user') {
+        if (_state.room && _state.room.hostMode !== 'private') {
           var already = (_state.room.invitedViewers || []).some(function(v) { return String(v.id) === String(found.id); });
           if (already) {
             removeViewerFromUserRoom(found.id);
@@ -747,10 +933,29 @@
     }
   }
 
-  function openPlannerModal(hostMode, editing) {
+  function openPlannerModal(hostMode, editing, explicitHostObj) {
     var r = _state.room;
-    var c = (r && editing) ? r.charObj : (hostMode === 'user' ? null : getActiveChar());
-    _state.plannerPendingMode = hostMode || 'char';
+    var c = null;
+    if (editing && r) {
+      c = r.hostMode === 'user' ? null : (r.hostCharObj || r.charObj || null);
+    } else if (hostMode === 'user') {
+      c = null;
+    } else if (explicitHostObj && explicitHostObj.id) {
+      c = explicitHostObj;
+    } else if (hostMode === 'npc') {
+      c = (_state.invitees || []).find(function(x) {
+        return x && x.roleType === 'npc' && String(x.id) === String(_state.selectedHostId);
+      }) || (_state.invitees || []).find(function(x) { return x && x.roleType === 'npc'; }) || null;
+    } else {
+      c = getActiveChar();
+    }
+
+    var resolvedMode = hostMode || 'char';
+    if (resolvedMode !== 'user' && resolvedMode !== 'private' && c && c.roleType === 'npc') {
+      resolvedMode = 'npc';
+    }
+    _state.plannerPendingMode = resolvedMode;
+    _state.plannerHostObj = c || null;
     _state.plannerEditing = Boolean(editing);
 
     if (editing && r) {
@@ -771,12 +976,22 @@
     var nameEl = $('#hl-plan-name');
     if (nameEl) {
       if (_state.plannerPendingMode === 'user') {
-        nameEl.textContent = c ? ('我开播 · 已邀 ' + c.name) : (_state.user.name + ' · 个人直播中');
+        nameEl.textContent = (_state.user.name + ' · 个人直播间');
       } else if (_state.plannerPendingMode === 'private') {
         nameEl.textContent = (c ? c.name : 'Char') + ' · 私人双人连线';
+      } else if (_state.plannerPendingMode === 'npc') {
+        nameEl.textContent = (c ? c.name : 'NPC') + ' 的独立直播（NPC 主播）';
       } else {
         nameEl.textContent = (c ? c.name : 'Char') + ' 的直播';
       }
+    }
+    var styleLabel = $('#hl-plan-style-label');
+    if (styleLabel) {
+      styleLabel.textContent = _state.plannerPendingMode === 'npc'
+        ? 'NPC 互动节奏'
+        : _state.plannerPendingMode === 'user'
+          ? '受邀嘉宾互动节奏'
+          : 'Char 互动节奏';
     }
     var headEl = $('#hl-planner-heading');
     if (headEl) headEl.textContent = editing ? '切换当前节目（不断开直播）' : '📺 本场直播企划';
@@ -1086,6 +1301,22 @@
   // ===== 直播间创建与热切换 =====
   async function startLiveRoom(opts) {
     opts = opts || {};
+    var requestedMode = opts.hostMode || 'char';
+    var rawHostChar = opts.charObj !== undefined ? opts.charObj : (requestedMode === 'user' || requestedMode === 'npc' ? null : getActiveChar());
+    if (requestedMode === 'npc') {
+      if (!rawHostChar || !rawHostChar.id || rawHostChar.roleType !== 'npc') {
+        showToast('未找到有效的 NPC 角色，无法以 NPC 身份开播');
+        return null;
+      }
+    } else if (requestedMode === 'private') {
+      if (!rawHostChar || !rawHostChar.id || rawHostChar.roleType === 'npc') {
+        showToast('私人双人连线仅支持已创建的 Char 角色');
+        return null;
+      }
+    } else if (requestedMode !== 'user' && rawHostChar && rawHostChar.roleType === 'npc') {
+      requestedMode = 'npc';
+    }
+
     cleanupAllMedia();
     removeMiniWindow();
     closeModal();
@@ -1093,25 +1324,43 @@
     _state.pendingConnectAfterInvite = false;
     var sid = _state.sessionSeq;
     var startedAt = Date.now();
-    var hostMode = opts.hostMode || 'char';
+    var hostMode = requestedMode;
     var progId = opts.program || 'chat';
     var progInfo = aiMod().PROGRAMS[progId] || aiMod().PROGRAMS.chat;
     var defaultTitle = (hostMode === 'user' && progId === 'chat') ? '我的个人直播间' : progInfo.defaultTitle;
     var title = (opts.title || '').trim() || defaultTitle;
     var style = opts.style || (_state.settings && _state.settings.initiative) || 'natural';
 
-    var hostCharObj = hostMode === 'user'
-      ? null
-      : (opts.charObj !== undefined ? opts.charObj : getActiveChar());
+    var hostCharObj = hostMode === 'user' ? null : rawHostChar;
+    var hostType = hostMode === 'user' ? 'user' : hostMode === 'npc' ? 'npc' : 'char';
+    var hostId = hostType === 'user'
+      ? String((_state.user && _state.user.id) || 'user')
+      : String((hostCharObj && hostCharObj.id) || '');
+    var hostName = hostType === 'user'
+      ? ((_state.user && _state.user.name) || '我')
+      : ((hostCharObj && hostCharObj.name) || (hostType === 'npc' ? 'NPC' : 'Char'));
+
+    if (hostType === 'npc' && hostId) {
+      _state.selectedHostId = hostId;
+    } else if (hostType === 'char' && hostId && (!hostCharObj || !hostCharObj.isDemo)) {
+      _state.selectedHostId = hostId;
+      _state.selectedCharId = hostId;
+    }
+
     var initialInvited = [];
-    if (hostMode === 'user') {
-      if (Array.isArray(opts.invitedViewers) && opts.invitedViewers.length) {
-        initialInvited = opts.invitedViewers.filter(Boolean).map(function(v) {
-          return Object.assign({ joinedAt: startedAt, roleType: 'char' }, v);
-        });
-      } else if (opts.charObj && opts.charObj.id) {
-        initialInvited = [Object.assign({ joinedAt: startedAt, roleType: 'char' }, opts.charObj)];
+    if (hostMode !== 'private' && Array.isArray(opts.invitedViewers) && opts.invitedViewers.length) {
+      var seenInit = {};
+      for (var iv = 0; iv < opts.invitedViewers.length; iv++) {
+        var v = opts.invitedViewers[iv];
+        if (!v || !v.id) continue;
+        var vid = String(v.id);
+        if (hostType !== 'user' && vid === hostId) continue;
+        if (seenInit[vid]) continue;
+        seenInit[vid] = true;
+        initialInvited.push(Object.assign({ joinedAt: startedAt, roleType: v.roleType === 'npc' ? 'npc' : 'char' }, v));
       }
+    } else if (hostMode === 'user' && opts.charObj && opts.charObj.id) {
+      initialInvited = [Object.assign({ joinedAt: startedAt, roleType: opts.charObj.roleType === 'npc' ? 'npc' : 'char' }, opts.charObj)];
     }
 
     _state.room = {
@@ -1119,6 +1368,9 @@
       logSessionId: 'hl_' + startedAt + '_' + sid + '_' + Math.random().toString(36).slice(2, 6),
       startedAt: startedAt,
       hostMode: hostMode,
+      hostType: hostType,
+      hostId: hostId,
+      hostName: hostName,
       hostCharObj: hostCharObj,
       invitedViewers: initialInvited,
       cohostCharObj: null,
@@ -1162,23 +1414,29 @@
         source: 'system',
         text: '个人直播已开启 ♡ 可自由发消息、使用底部节目切换按钮更换节目或播放 ASMR；如需与 Char / NPC 互动或连麦，可随时点击顶部「+ 邀请」。'
       });
-      return;
+      return _state.room;
     }
 
-    // 真实开场问候
+    // 真实开场问候（区分 User 主播 / 私人连线 / Char 主播 / NPC 主播）
     var actors = getAllRoomActors(_state.room);
     for (var ai = 0; ai < actors.length; ai++) {
       var act = actors[ai];
+      var isHostActor = hostMode !== 'user' && String(act.id) === hostId;
       var openingUserPrompt = hostMode === 'user'
         ? ('我刚刚开启了我的直播间（节目：「' + progInfo.label + '」，标题：「' + title + '」），邀请你进来前排观众席陪伴，请以观众视角自然打声招呼。')
         : hostMode === 'private'
           ? ('我刚刚进入我们的私人连线直播间（节目：「' + progInfo.label + '」，标题：「' + title + '」），请用贴合人设的语气跟我开场打个招呼。')
-          : ('你刚刚开启了直播（节目：「' + progInfo.label + '」，标题：「' + title + '」），请向刚进来的 ' + _state.user.name + ' 自然开场白。');
+          : isHostActor
+            ? (hostType === 'npc'
+                ? ('你（NPC 主播 ' + act.name + '）刚刚独立开启了自己的直播间（节目：「' + progInfo.label + '」，标题：「' + title + '」），请贴合你的 NPC 身份向刚进来的 ' + _state.user.name + ' 自然开场打个招呼。')
+                : ('你刚刚开启了直播（节目：「' + progInfo.label + '」，标题：「' + title + '」），请向刚进来的 ' + _state.user.name + ' 自然开场白。'))
+            : (hostName + '（' + (hostType === 'npc' ? 'NPC 主播' : 'Char 主播') + '）正在开播（节目：「' + progInfo.label + '」，标题：「' + title + '」），你作为受邀观众嘉宾刚进入直播间，请以观众视角礼貌打声招呼。');
       enqueueAiTurn(act, {
         triggerType: 'opening',
         userPrompt: openingUserPrompt
       });
     }
+    return _state.room;
   }
 
   function renderRoomIdentityChrome() {
@@ -1198,7 +1456,11 @@
     var inviteBtn = $('#hl-invite-btn');
     var inputEl = $('#hl-message-input');
 
-    if (hostName) hostName.textContent = r.hostMode === 'user' ? (_state.user.name + '（我）') : (c ? c.name : 'Char');
+    if (hostName) {
+      hostName.textContent = r.hostMode === 'user'
+        ? (_state.user.name + '（我）')
+        : (c ? (c.name + (r.hostType === 'npc' ? ' [NPC]' : '')) : (r.hostType === 'npc' ? 'NPC' : 'Char'));
+    }
     if (hostStatus) {
       if (r.hostMode === 'private') {
         hostStatus.textContent = '私人双人连线';
@@ -1212,20 +1474,28 @@
         } else {
           hostStatus.textContent = '个人直播中';
         }
+      } else if (r.hostType === 'npc') {
+        hostStatus.textContent = _state.connectionType
+          ? ('NPC 主播 · 连麦互动中')
+          : (invited.length > 0 ? ('NPC 主播 · 在席 ' + invited.length + ' 位嘉宾') : 'NPC 独立开播中');
       } else {
-        hostStatus.textContent = '正在直播';
+        hostStatus.textContent = invited.length > 0
+          ? ('Char 主播 · 在席 ' + invited.length + ' 位嘉宾')
+          : '正在直播';
       }
     }
     if (audience) {
       if (r.hostMode === 'user') {
         var realCountText = invited.length > 0 ? ('受邀 ' + invited.length + ' 人') : '个人直播间';
         audience.textContent = '👁 ' + realCountText + (_state.settings && _state.settings.sim && invited.length ? ' · 含AI观众' : '');
+      } else if (invited.length > 0) {
+        audience.textContent = '👁 含 ' + invited.length + ' 位受邀嘉宾';
       } else {
         audience.textContent = _state.settings && _state.settings.sim ? '👁 模拟热度 1.2k' : '👁 仅你观看';
       }
     }
     if (followBtn) {
-      followBtn.style.display = (r.hostMode === 'char' && c) ? '' : 'none';
+      followBtn.style.display = ((r.hostMode === 'char' || r.hostMode === 'npc') && c) ? '' : 'none';
       if (c) {
         var followed = Boolean(_state.followedChars[String(c.id)]);
         followBtn.textContent = followed ? '✓ 已关注' : '+ 关注';
@@ -1233,7 +1503,7 @@
       }
     }
     if (inviteBtn) {
-      inviteBtn.style.display = r.hostMode === 'user' ? '' : 'none';
+      inviteBtn.style.display = r.hostMode !== 'private' ? '' : 'none';
       inviteBtn.textContent = invited.length > 0 ? ('嘉宾 · ' + invited.length + '人') : '+ 邀请';
       inviteBtn.classList.toggle('invited', invited.length > 0);
     }
@@ -1242,7 +1512,9 @@
         ? ('和 ' + c.name + ' 说点什么…')
         : r.hostMode === 'user'
           ? (invited.length > 0 ? ('对 ' + (invited.length === 1 ? invited[0].name : (invited.length + ' 位嘉宾')) + ' 和直播间说点什么…') : '记录此刻或对观众说点什么…')
-          : '发一条弹幕…';
+          : (r.hostType === 'npc' && c)
+            ? ('给 NPC 主播 ' + c.name + ' 发一条弹幕…')
+            : '发一条弹幕…';
     }
     var likeEl = $('#hl-like-count');
     if (likeEl) likeEl.textContent = r.likes ? String(r.likes) : '点赞';
@@ -1270,7 +1542,9 @@
             : ('🎤 ' + _state.user.name + ' 的个人直播间'))
         : r.hostMode === 'private'
           ? ('♡ 与 ' + (c ? c.name : 'Char') + ' 私人连线')
-          : ((c ? c.name : 'Char') + ' 的直播间');
+          : r.hostType === 'npc'
+            ? ('🎭 ' + (c ? c.name : 'NPC') + ' [NPC] 的直播间')
+            : ((c ? c.name : 'Char') + ' 的直播间');
       roomTitleEl.textContent = prefix + ' · ' + r.title;
     }
     if (signEl) {
@@ -1279,6 +1553,9 @@
     if (noticeEl) {
       if (r.hostMode === 'user' && invited.length === 0) {
         noticeEl.textContent = prog.label + ' · 个人开播中（可点击顶部「+ 邀请」邀 Char / NPC 陪伴）';
+      } else if (r.hostType === 'npc') {
+        var npcSimNote = (_state.settings && _state.settings.sim) ? '含 [AI观众] 气氛弹幕' : '仅真实受邀互动';
+        noticeEl.textContent = prog.label + ' · NPC 独立开播（严格隔离，不读 Char 私聊与长期记忆 · ' + npcSimNote + '）';
       } else {
         var simNote = (_state.settings && _state.settings.sim && r.hostMode !== 'private') ? '含 [AI观众] 气氛弹幕' : '仅真实受邀互动';
         noticeEl.textContent = prog.label + ' · 真实角色隔离互动（' + simNote + '）';
@@ -1354,7 +1631,9 @@
     var customSrc = await storage().loadPortraitSrc(targetKey);
     if (!_state.room || _state.room.sessionId !== r.sessionId) return;
 
-    var fallbackAvatar = r.hostMode === 'user' ? (_state.user.avatar || '') : (r.charObj.avatar || '');
+    var hostActor = r.hostCharObj || r.charObj;
+    var fallbackAvatar = r.hostMode === 'user' ? (_state.user.avatar || '') : ((hostActor && hostActor.avatar) || '');
+    var defaultGlyph = r.hostMode === 'user' ? '🎀' : ((hostActor && hostActor.emojiFallback) || (r.hostType === 'npc' ? '🎭' : '🌸'));
     var src = customSrc || fallbackAvatar;
     var isCallVisual = opt.mode === 'call';
 
@@ -1382,12 +1661,12 @@
       var showPortrait = Boolean(src && isCallVisual);
       stageAvatar.classList.toggle('portrait', showPortrait);
       stageAvatar.style.backgroundImage = showPortrait ? 'url("' + safeCssUrl(src) + '")' : '';
-      stageAvatar.textContent = showPortrait ? '' : (r.hostMode === 'user' ? '🎀' : (r.charObj.emojiFallback || '🌸'));
+      stageAvatar.textContent = showPortrait ? '' : defaultGlyph;
     }
     if (faceEl) {
       faceEl.classList.toggle('portrait', Boolean(src));
       faceEl.style.backgroundImage = src ? 'url("' + safeCssUrl(src) + '")' : '';
-      faceEl.textContent = src ? '' : (r.hostMode === 'user' ? '🎀' : (r.charObj.emojiFallback || '🌸'));
+      faceEl.textContent = src ? '' : defaultGlyph;
     }
 
     await updateConnectionVisuals();
@@ -1428,7 +1707,9 @@
 
     var hostKey = hostIsUser ? 'user' : String(c.id);
     var guestKey = hostIsUser ? String(c.id) : 'user';
-    var hostLabel = hostIsUser ? (_state.user.name + ' · 主播') : (c.name + ' · 主播');
+    var hostLabel = hostIsUser
+      ? (_state.user.name + ' · 主播')
+      : (c.name + (c.roleType === 'npc' ? ' · NPC 主播' : ' · 主播'));
     var typeTag = { text: '文字连麦', voice: '语音连麦', video: '虚拟形象同框', camera: '本地摄像头预览' }[_state.connectionType] || '连麦中';
     var guestLabel = (hostIsUser ? c.name : _state.user.name) + ' · ' + typeTag;
 
@@ -1445,13 +1726,13 @@
     if (mainArt) {
       mainArt.classList.toggle('has-img', Boolean(hostSrc));
       mainArt.style.backgroundImage = hostSrc ? 'url("' + safeCssUrl(hostSrc) + '")' : '';
-      mainArt.textContent = hostSrc ? '' : (hostIsUser ? '🎀' : (c.emojiFallback || '🌸'));
+      mainArt.textContent = hostSrc ? '' : (hostIsUser ? '🎀' : (c.emojiFallback || (c.roleType === 'npc' ? '🎭' : '🌸')));
     }
     var guestArt = $('#hl-conn-art');
     if (guestArt) {
       guestArt.classList.toggle('has-img', Boolean(guestSrc));
       guestArt.style.backgroundImage = guestSrc ? 'url("' + safeCssUrl(guestSrc) + '")' : '';
-      guestArt.textContent = guestSrc ? '' : (hostIsUser ? (c.emojiFallback || '🌸') : '🎀');
+      guestArt.textContent = guestSrc ? '' : (hostIsUser ? (c.emojiFallback || (c.roleType === 'npc' ? '🎭' : '🌸')) : '🎀');
     }
   }
 
@@ -2026,6 +2307,9 @@
     _state.aiQueue.push({
       epoch: _state.aiEpoch,
       sessionId: r.sessionId,
+      logSessionId: r.logSessionId,
+      hostType: r.hostType || 'char',
+      hostId: String(r.hostId || ''),
       actor: actorObj,
       opts: opts
     });
@@ -2040,6 +2324,9 @@
     var actor = task.actor;
     var opts = task.opts || {};
     var mySession = task.sessionId;
+    var myLogSession = task.logSessionId || '';
+    var myHostType = task.hostType || 'char';
+    var myHostId = String(task.hostId || '');
     var myEpoch = task.epoch;
     var myActorId = String(actor.id);
     var myReqSeq = ++_state.aiRequestSeq;
@@ -2049,6 +2336,9 @@
         return !_state.room ||
           _state.aiEpoch !== myEpoch ||
           _state.room.sessionId !== mySession ||
+          (_state.room.logSessionId || '') !== myLogSession ||
+          (_state.room.hostType || 'char') !== myHostType ||
+          String(_state.room.hostId || '') !== myHostId ||
           !isActorActiveInRoom(_state.room, myActorId);
       },
       isLatest: function() {
@@ -2068,6 +2358,9 @@
       charObj: actor,
       userObj: _state.user,
       hostMode: r.hostMode,
+      hostType: r.hostType,
+      hostId: r.hostId,
+      hostName: r.hostName,
       program: r.program,
       programTitle: r.title,
       programStyle: r.style,
@@ -2240,10 +2533,11 @@
     var recWrap = $('#hl-gift-recipient-wrap');
     var recSel = $('#hl-gift-recipient');
     if (recWrap && recSel) {
-      if (r.hostMode === 'user' && actors.length > 0) {
+      if (actors.length > 1 || (r.hostMode === 'user' && actors.length > 0)) {
         recWrap.style.display = 'block';
         recSel.innerHTML = actors.map(function(a) {
-          return '<option value="' + esc(a.id) + '">' + esc(a.name) + '（' + (a.roleType === 'npc' ? 'NPC' : 'Char') + '）</option>';
+          var isHostTag = (r.hostMode !== 'user' && String(a.id) === String(r.hostId)) ? ' · 主播' : '';
+          return '<option value="' + esc(a.id) + '">' + esc(a.name) + '（' + (a.roleType === 'npc' ? 'NPC' : 'Char') + isHostTag + '）</option>';
         }).join('');
         recSel.value = _state.selectedGiftRecipientId || String(actors[0].id);
         recSel.onchange = function() {
@@ -2479,7 +2773,7 @@
 
     var hostLabel = r.hostMode === 'user'
       ? (_state.user.name + '（我）')
-      : ((r.hostCharObj && r.hostCharObj.name) || 'Char');
+      : ((r.hostCharObj && r.hostCharObj.name) || r.hostName || (r.hostType === 'npc' ? 'NPC' : 'Char')) + (r.hostType === 'npc' ? ' [NPC]' : '');
     if (titleEl) titleEl.textContent = hostLabel;
 
     var statusText = prog.icon + ' ' + prog.label;
@@ -2487,7 +2781,7 @@
       statusText = '🎧 剩' + Math.ceil((_state.asmrDeadlineMs - Date.now()) / 60000) + '分';
     } else if (r.hostMode === 'user' && r.cohostCharObj) {
       statusText = '🎙 连麦 ' + r.cohostCharObj.name;
-    } else if (r.hostMode === 'user' && r.invitedViewers && r.invitedViewers.length > 0) {
+    } else if (r.invitedViewers && r.invitedViewers.length > 0) {
       statusText = prog.icon + ' ' + r.invitedViewers.length + '人观看';
     }
     if (statusEl) statusEl.textContent = statusText;
@@ -2499,7 +2793,7 @@
       if (src) {
         avatarEl.innerHTML = '<img src="' + esc(src) + '" alt="' + esc(hostLabel) + '">';
       } else {
-        avatarEl.textContent = r.hostMode === 'user' ? '🎀' : ((hostActor && hostActor.emojiFallback) || '🌸');
+        avatarEl.textContent = r.hostMode === 'user' ? '🎀' : ((hostActor && hostActor.emojiFallback) || (r.hostType === 'npc' ? '🎭' : '🌸'));
       }
     }
   }
@@ -2685,30 +2979,44 @@
 
     var saved = null;
     if (r && ((r.fullMessages && r.fullMessages.length > 0) || r.messages.length > 0) && storage()) {
+      var hostType = r.hostType || (r.hostMode === 'user' ? 'user' : r.hostMode === 'npc' ? 'npc' : 'char');
+      var hostId = r.hostId || (hostType === 'user' ? String((_state.user && _state.user.id) || 'user') : String((r.hostCharObj && r.hostCharObj.id) || ''));
+      var hostName = r.hostName || (hostType === 'user' ? ((_state.user && _state.user.name) || '我') : ((r.hostCharObj && r.hostCharObj.name) || 'Char'));
       var participants = getAllRoomActors(r).map(function(p) {
         return { id: String(p.id), name: p.name, roleType: p.roleType === 'npc' ? 'npc' : 'char' };
       });
       var realChars = participants.filter(function(p) { return p.roleType === 'char'; });
       var npcs = participants.filter(function(p) { return p.roleType === 'npc'; });
       var primaryChar = realChars[0] || participants[0] || null;
-      var cId = primaryChar ? primaryChar.id : '';
-      var cName = participants.length > 1
-        ? (participants.map(function(p) { return p.name; }).slice(0, 3).join('、') + (participants.length > 3 ? '等' + participants.length + '人' : ''))
-        : (primaryChar ? primaryChar.name : '个人直播（未邀请嘉宾）');
-      var charType = realChars.length > 0 && npcs.length > 0
-        ? 'mixed'
-        : (realChars.length === 0 && npcs.length > 0) ? 'npc' : 'char';
+      var cId = hostType === 'user' ? (primaryChar ? primaryChar.id : '') : hostId;
+      var cName = hostType === 'user'
+        ? (participants.length > 1
+            ? (participants.map(function(p) { return p.name; }).slice(0, 3).join('、') + (participants.length > 3 ? '等' + participants.length + '人' : ''))
+            : (primaryChar ? primaryChar.name : '个人直播（未邀请嘉宾）'))
+        : hostName;
+      var charType = hostType === 'npc'
+        ? 'npc'
+        : realChars.length > 0 && npcs.length > 0
+          ? 'mixed'
+          : (realChars.length === 0 && npcs.length > 0) ? 'npc' : 'char';
+      var hasRealChar = hostType === 'npc'
+        ? false
+        : (hostType === 'char' || (hostType === 'user' && realChars.length > 0));
+      var endedAt = Date.now();
       var totalCount = Math.max(Number(flushedCount) || 0, (r.fullMessages && r.fullMessages.length) || r.messages.length);
 
       var draft = aiMod().buildJournalDraft({
         hostMode: r.hostMode,
+        hostType: hostType,
+        hostId: hostId,
+        hostName: hostName,
         charId: cId,
         charName: cName,
         invitedParticipants: participants,
         program: r.program,
         title: r.title,
         startedAt: r.startedAt,
-        endedAt: Date.now(),
+        endedAt: endedAt,
         msgCount: totalCount,
         giftsTotalCoins: r.giftsTotalCoins,
         cohostUsed: r.cohostUsed,
@@ -2719,12 +3027,15 @@
         sessionId: r.logSessionId,
         hasChatLog: true,
         logMessageCount: totalCount,
+        hostMode: r.hostMode,
+        hostType: hostType,
+        hostId: hostId,
+        hostName: hostName,
         charId: cId,
         charName: cName,
         charType: charType,
         invitedParticipants: participants,
-        hasRealChar: realChars.length > 0,
-        hostMode: r.hostMode,
+        hasRealChar: hasRealChar,
         program: r.program,
         programLabel: (aiMod().PROGRAMS[r.program] || aiMod().PROGRAMS.chat).label,
         title: r.title,
@@ -2734,7 +3045,7 @@
         cohostUsed: r.cohostUsed,
         asmrUsed: r.asmrUsed,
         startedAt: r.startedAt,
-        endedAt: Date.now()
+        endedAt: endedAt
       });
       _state.journals = await storage().loadJournals();
     }
@@ -2766,7 +3077,8 @@
     var box = $('#hl-summary-body');
     var rememberBtn = $('#hl-summary-remember');
     var replayBtn = $('#hl-summary-replay');
-    var canWriteMem = Boolean(journal && journal.charId && journal.hasRealChar !== false && journal.charType !== 'npc');
+    var isNpcHost = Boolean(journal && (journal.hostType === 'npc' || journal.hostMode === 'npc'));
+    var canWriteMem = Boolean(journal && !isNpcHost && journal.charId && journal.hasRealChar !== false && journal.charType !== 'npc');
     if (box) {
       box.innerHTML =
         '<div class="hl-plan-preview">' +
@@ -2777,9 +3089,11 @@
           (autoFinished ? 'ASMR 定时已圆满结束。' : '本场直播已记录到「直播手账」，并保存了完整聊天记录。') +
           (canWriteMem
             ? '是否顺便将它写入「长期记忆」？（需您审阅确认，绝不自动写入）'
-            : (journal && journal.charType === 'npc'
-                ? '本场仅含 NPC 嘉宾互动，将保存在手账与聊天回放中而不写入 Char 长期记忆。'
-                : '本场为未绑定 Char 的个人开播记录，将保存在手账与聊天回放中而不写入角色长期记忆。')) +
+            : isNpcHost
+              ? '本场为 NPC 主播独立直播记录，仅保存在手账与聊天回放中，不会写入任何 Char 长期记忆。'
+              : (journal && journal.charType === 'npc'
+                  ? '本场仅含 NPC 嘉宾互动，将保存在手账与聊天回放中而不写入 Char 长期记忆。'
+                  : '本场为未绑定 Char 的个人开播记录，将保存在手账与聊天回放中而不写入角色长期记忆。')) +
         '</p>';
     }
     if (rememberBtn) {
@@ -2859,12 +3173,14 @@
   }
 
   // ===== 直播回放 / 完整聊天记录查看页 =====
-  function renderReplayListHtml(messages) {
+  function renderReplayListHtml(messages, journal) {
+    var hostType = (journal && journal.hostType) || (journal && journal.hostMode === 'npc' ? 'npc' : journal && journal.hostMode === 'user' ? 'user' : 'char');
+    var hostId = journal && journal.hostId ? String(journal.hostId) : '';
     var tagLabels = {
-      user: '主播 我',
+      user: hostType === 'user' ? '主播 我' : '观众 我',
       user_cohost: '连麦发言',
-      char: 'Char',
-      npc: 'NPC',
+      char: hostType === 'char' ? 'Char 主播' : 'Char',
+      npc: hostType === 'npc' ? 'NPC 主播' : 'NPC',
       gift: '礼物互动',
       system: '直播事件',
       ai_audience: 'AI观众'
@@ -2872,9 +3188,13 @@
     return messages.map(function(m) {
       var timeStr = new Date(m.createdAt || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       var sType = m.senderType || 'system';
+      var badge = tagLabels[sType] || '消息';
+      if ((sType === 'char' || sType === 'npc') && hostId && m.senderId && String(m.senderId) !== hostId) {
+        badge = sType === 'npc' ? 'NPC 嘉宾' : 'Char 嘉宾';
+      }
       return '<div class="hl-replay-msg role-' + esc(sType) + '">' +
         '<div class="hl-replay-msg-head">' +
-          '<span class="hl-replay-badge role-' + esc(sType) + '">' + esc(tagLabels[sType] || '消息') + '</span>' +
+          '<span class="hl-replay-badge role-' + esc(sType) + '">' + esc(badge) + '</span>' +
           '<b>' + esc(m.senderNameSnapshot || '未知') + '</b>' +
           '<small>' + esc(timeStr) + '</small>' +
         '</div>' +
@@ -2903,9 +3223,15 @@
     });
     _state.replayMeta = res;
 
-    var dateStr = new Date(j.startedAt || Date.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    var startStr = new Date(j.startedAt || Date.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    var endStr = j.endedAt ? new Date(j.endedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+    var hostIdentityText = j.hostType === 'npc'
+      ? ('NPC 主播 · ' + (j.hostName || j.charName || 'NPC'))
+      : j.hostType === 'user'
+        ? ('User 主播 · ' + (j.hostName || _state.user.name || '我'))
+        : ('Char 主播 · ' + (j.hostName || j.charName || 'Char'));
     if (metaEl) {
-      metaEl.textContent = dateStr + ' · ' + (j.programLabel || '直播') + ' · ' + (j.charName || '个人直播') +
+      metaEl.textContent = startStr + (endStr ? ('-' + endStr) : '') + ' · ' + hostIdentityText + ' · ' + (j.programLabel || '直播') +
         (res.exists ? (' · 共 ' + res.totalCount + ' 条记录') : '');
     }
     if (simToggleWrap) {
@@ -2934,7 +3260,7 @@
       return;
     }
 
-    var listHtml = renderReplayListHtml(_state.replayLoaded);
+    var listHtml = renderReplayListHtml(_state.replayLoaded, j);
     var moreHtml = res.hasMore
       ? ('<div class="hl-replay-more"><button type="button" class="hl-plainbtn" id="hl-replay-load-more">加载更早记录（剩余 ' + (res.filteredCount - _state.replayLoaded.length) + ' 条）</button></div>')
       : '<div class="hl-replay-end">—— 已显示全部 ' + _state.replayLoaded.length + ' 条记录 ——</div>';
@@ -2987,21 +3313,36 @@
 
     listEl.innerHTML = _state.journals.map(function(j) {
       var dateStr = new Date(j.startedAt || Date.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      var endStr = j.endedAt ? new Date(j.endedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+      var timeRangeStr = endStr ? (dateStr + '~' + endStr) : dateStr;
       var memAlive = Boolean(j.memoryId && existingMemIds.has(Number(j.memoryId)));
-      var hasEligibleChar = Boolean(j.charId && j.hasRealChar !== false && j.charType !== 'npc');
+      var isNpcHost = j.hostType === 'npc' || j.hostMode === 'npc';
+      var hasEligibleChar = Boolean(!isNpcHost && j.charId && j.hasRealChar !== false && j.charType !== 'npc');
       var memBtnHtml = !hasEligibleChar
-        ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#8e7994">' + (j.charType === 'npc' ? 'NPC陪伴·不写记忆' : '个人独播手账') + '</span>'
+        ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#8e7994">' + (isNpcHost ? 'NPC主播·不写记忆' : (j.charType === 'npc' ? 'NPC陪伴·不写记忆' : '个人独播手账')) + '</span>'
         : memAlive
           ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#3d8462;border-color:#bfe2cf">✓ 已写入长期记忆</span>'
           : '<button type="button" class="hl-pinkbtn" style="padding:7px 12px;font-size:11px" data-jnl-remember="' + esc(j.id) + '">记住这场直播</button>';
-      var typeBadge = j.charType === 'npc'
-        ? '<span class="hl-tag" style="background:#ede9fb;color:#6b529c">NPC</span>'
-        : j.charType === 'mixed'
+      var hostBadge = isNpcHost
+        ? '<span class="hl-tag hl-host-type-tag npc">NPC 主播</span>'
+        : j.hostType === 'user'
+          ? '<span class="hl-tag hl-host-type-tag user">User 主播</span>'
+          : '<span class="hl-tag hl-host-type-tag char">Char 主播</span>';
+      var typeBadge = j.charType === 'mixed'
+        ? '<span class="hl-tag" style="background:#eaf5ef;color:#3a7a5c">多人</span>'
+        : (j.invitedParticipants && j.invitedParticipants.length > 1)
           ? '<span class="hl-tag" style="background:#eaf5ef;color:#3a7a5c">多人</span>'
           : '';
+      var hostDisplay = j.hostName || j.charName || '个人直播';
+      var guestNames = Array.isArray(j.invitedParticipants)
+        ? j.invitedParticipants.filter(function(p) { return p && String(p.id) !== String(j.hostId); }).map(function(p) { return p.name; })
+        : [];
+      var participantMeta = guestNames.length
+        ? ('主播 ' + hostDisplay + '（同场：' + guestNames.slice(0, 3).join('、') + (guestNames.length > 3 ? '等' + guestNames.length + '人' : '') + '）')
+        : (j.hostType === 'user' ? ('主播 ' + hostDisplay + (j.charName && j.charName !== hostDisplay ? (' · 嘉宾 ' + j.charName) : '')) : ('主播 ' + hostDisplay));
       return '<div class="hl-diarycard">' +
-        '<div class="hl-diarycard-head"><b>' + esc(j.title) + '</b><div>' + typeBadge + '<span class="hl-tag" style="background:#f6e6ef;color:#935c7c">' + esc(j.programLabel) + '</span></div></div>' +
-        '<div class="hl-diarycard-meta">' + esc(dateStr) + ' · ' + esc(j.charName) + ' · ' + (j.msgCount || 0) + ' 条互动' + (j.giftsTotalCoins ? ' · 礼物 ' + j.giftsTotalCoins + ' 金币' : '') + '</div>' +
+        '<div class="hl-diarycard-head"><b>' + esc(j.title) + '</b><div>' + hostBadge + typeBadge + '<span class="hl-tag" style="background:#f6e6ef;color:#935c7c">' + esc(j.programLabel) + '</span></div></div>' +
+        '<div class="hl-diarycard-meta">' + esc(timeRangeStr) + ' · ' + esc(participantMeta) + ' · ' + (j.msgCount || 0) + ' 条互动' + (j.giftsTotalCoins ? ' · 礼物 ' + j.giftsTotalCoins + ' 金币' : '') + '</div>' +
         '<p>' + esc(j.summary) + '</p>' +
         '<div class="hl-diarycard-actions">' +
           '<button type="button" class="hl-plainbtn" style="padding:7px 12px;font-size:11px" data-jnl-replay="' + esc(j.id) + '">查看本场聊天记录</button>' +
@@ -3061,11 +3402,12 @@
       prev.style.backgroundPosition = opt.position;
     }
     if (prevText) {
+      var roleTag = c.roleType === 'npc' ? ' [NPC]' : '';
       prevText.textContent = customSrc
-        ? (c.name + ' · 自定义直播形象')
+        ? (c.name + roleTag + ' · 自定义直播形象')
         : c.avatar
-          ? (c.name + ' · 当前使用微信角色头像')
-          : (c.name + ' · 尚未上传立绘');
+          ? (c.name + roleTag + ' · 当前使用角色头像')
+          : (c.name + roleTag + ' · 尚未上传立绘');
     }
     if (urlInput) urlInput.value = customSrc && customSrc.indexOf('https:') === 0 ? customSrc : '';
 
@@ -3073,10 +3415,14 @@
     var voiceStatusEl = $('#hl-char-voice-status');
     if (voiceEl) voiceEl.value = _state.charVoices[String(cid)] || '';
     if (voiceStatusEl) {
-      var st = await aiMod().getMinimaxStatus(cid);
-      voiceStatusEl.textContent = st.apiReady && st.voiceId
-        ? ('✓ 语音就绪（来源：' + (st.voiceSource === 'live' ? '直播专用音色' : '微信聊天音色') + '）')
-        : ('⚠ ' + (st.missingReason || '未就绪，将使用字幕回应'));
+      if (c && c.roleType === 'npc') {
+        voiceStatusEl.textContent = 'NPC 角色不使用微信单聊语音配置（直播中以文字字幕互动）';
+      } else {
+        var st = await aiMod().getMinimaxStatus(cid);
+        voiceStatusEl.textContent = st.apiReady && st.voiceId
+          ? ('✓ 语音就绪（来源：' + (st.voiceSource === 'live' ? '直播专用音色' : '微信聊天音色') + '）')
+          : ('⚠ ' + (st.missingReason || '未就绪，将使用字幕回应'));
+      }
     }
   }
 
@@ -3442,12 +3788,12 @@
 
     var charSelect = $('#hl-char-img-select');
     if (charSelect) {
-      var chars = _state.chars.length ? _state.chars : [getActiveChar()];
-      charSelect.innerHTML = chars.map(function(c) {
-        return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>';
+      var manageRoles = (_state.invitees && _state.invitees.length) ? _state.invitees : (_state.chars.length ? _state.chars : [getActiveChar()]);
+      charSelect.innerHTML = manageRoles.map(function(c) {
+        return '<option value="' + esc(c.id) + '">' + esc(c.name) + (c.roleType === 'npc' ? ' (NPC)' : ' (Char)') + '</option>';
       }).join('');
-      if (!chars.some(function(c) { return String(c.id) === String(_state.selectedCharManageId); })) {
-        _state.selectedCharManageId = String(chars[0].id);
+      if (!manageRoles.some(function(c) { return String(c.id) === String(_state.selectedCharManageId); })) {
+        _state.selectedCharManageId = String(manageRoles[0].id);
       }
       charSelect.value = _state.selectedCharManageId;
     }
@@ -3503,15 +3849,16 @@
             '</button>' +
           '</div></div>' +
           '<div class="hl-home-content">' +
-            '<div class="hl-subhead"><b>✨ 选择 Char</b><span>当前同伴切换</span></div>' +
-            '<div class="hl-char-picker-row" id="hl-char-picker"></div>' +
-            '<div class="hl-subhead"><b>🔴 正在直播</b><span>点击卡片策划开播</span></div>' +
-            '<div class="hl-broadcasts" id="hl-broadcasts"></div>' +
             '<div class="hl-subhead"><b>✨ 我要开播</b><span>直接开播 · 可选邀 Char / NPC</span></div>' +
             '<div class="hl-create"><div class="hl-ico">🎤</div><div><b>我的心动直播间</b><p>点击直接进入个人直播，播中可邀多人陪伴</p></div><button type="button" class="hl-pinkbtn" id="hl-go-live">开播</button></div>' +
             '<div class="hl-subhead"><b>💗 双人连线</b><span>仅你和 Char</span></div>' +
             '<div class="hl-featured"><b>一键进入私人连线<br>和喜欢的 Char 见面</b><p>已接入真实 Char 档案、世界书、Minimax 语音与共享金币。</p><button type="button" class="hl-pinkbtn" id="hl-private-start">♡ 开始私人连线</button></div>' +
             '<div class="hl-create"><div class="hl-ico">💞</div><div><b>私人双人直播</b><p>闲聊 · ASMR · 睡前电台 · 云陪伴</p></div><button type="button" class="hl-pinkbtn" id="hl-private-start2">连线</button></div>' +
+            '<div class="hl-subhead"><b>🎭 选择 Char 或 NPC</b><span>多角色独立开播</span></div>' +
+            '<div class="hl-create"><div class="hl-ico">🌟</div><div><b>让 Char 或 NPC 来开播</b><p>支持全部 / Char / NPC 筛选，NPC 无需微信聊天即可独立开播</p></div><button type="button" class="hl-pinkbtn" id="hl-open-role-picker">选择 Char 或 NPC</button></div>' +
+            '<div class="hl-char-picker-row" id="hl-char-picker"></div>' +
+            '<div class="hl-subhead"><b>🔴 正在直播</b><span>点击卡片策划开播</span></div>' +
+            '<div class="hl-broadcasts" id="hl-broadcasts"></div>' +
           '</div>' +
         '</section>' +
 
@@ -3749,7 +4096,7 @@
             '</div>' +
             '<label class="hl-plan-label" for="hl-plan-title">直播标题</label>' +
             '<input class="hl-plan-input" id="hl-plan-title" maxlength="36" placeholder="给今晚的直播起个名字">' +
-            '<label class="hl-plan-label" for="hl-plan-style">Char 互动节奏</label>' +
+            '<label class="hl-plan-label" id="hl-plan-style-label" for="hl-plan-style">Char 互动节奏</label>' +
             '<select class="hl-plan-select" id="hl-plan-style"><option value="natural">自然主动 · 推荐</option><option value="quiet">安静陪伴</option><option value="lively">活跃互动</option></select>' +
             '<div class="hl-asmr-config" id="hl-asmr-config">' +
               '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
@@ -3814,7 +4161,7 @@
           '</div>' +
         '</div>' +
 
-        // 抽屉 5：User 开播多人邀请 (Char + NPC)
+        // 抽屉 5：User / 主播 直播中多人邀请 (Char + NPC)
         '<div class="hl-planner" id="hl-userhost-planner" data-modal="userHost" role="dialog" aria-modal="true">' +
           '<div class="hl-planner-sheet">' +
             '<div class="hl-plan-head"><b>🎤 邀请 Char / NPC 来直播间陪伴</b><button type="button" data-close-modal>×</button></div>' +
@@ -3827,6 +4174,22 @@
             '</div>' +
             '<div class="hl-char-picker-row" id="hl-userhost-list" style="margin:10px 0 12px;flex-wrap:wrap"></div>' +
             '<div class="hl-plan-buttons"><button type="button" class="hl-pinkbtn" data-close-modal>完成邀请</button></div>' +
+          '</div>' +
+        '</div>' +
+
+        // 抽屉 5.5：选择 Char 或 NPC 独立开播面板
+        '<div class="hl-planner" id="hl-rolepicker-planner" data-modal="rolePicker" role="dialog" aria-modal="true">' +
+          '<div class="hl-planner-sheet">' +
+            '<div class="hl-plan-head"><b>🌟 选择 Char 或 NPC 开播</b><button type="button" data-close-modal>×</button></div>' +
+            '<p class="hl-help" id="hl-rolepicker-summary" style="margin-top:8px">正在读取真实角色库…</p>' +
+            '<input class="hl-plan-input hl-invite-search" id="hl-rolepicker-search" maxlength="32" placeholder="搜索 Char 或 NPC 名称…">' +
+            '<div class="hl-invite-tabs">' +
+              '<button type="button" class="hl-invite-tab active" data-role-filter="all">全部</button>' +
+              '<button type="button" class="hl-invite-tab" data-role-filter="char">Char</button>' +
+              '<button type="button" class="hl-invite-tab" data-role-filter="npc">NPC</button>' +
+            '</div>' +
+            '<div class="hl-role-card-list" id="hl-rolepicker-list"></div>' +
+            '<div class="hl-plan-buttons"><button type="button" class="hl-plainbtn" data-close-modal>关闭</button></div>' +
           '</div>' +
         '</div>' +
 
@@ -3895,9 +4258,28 @@
     var priv1 = $('#hl-private-start');
     var priv2 = $('#hl-private-start2');
     var goLive = $('#hl-go-live');
-    if (priv1) priv1.onclick = function() { openPlannerModal('private', false); };
-    if (priv2) priv2.onclick = function() { openPlannerModal('private', false); };
+    var openRolePickerBtn = $('#hl-open-role-picker');
+    if (priv1) priv1.onclick = function() { openPlannerModal('private', false, getActiveChar()); };
+    if (priv2) priv2.onclick = function() { openPlannerModal('private', false, getActiveChar()); };
     if (goLive) goLive.onclick = function() { startUserSoloLive(); };
+    if (openRolePickerBtn) openRolePickerBtn.onclick = function() { openRolePickerModal(); };
+
+    var rolePickerSearch = $('#hl-rolepicker-search');
+    if (rolePickerSearch) {
+      rolePickerSearch.oninput = function() {
+        _state.rolePickerSearch = rolePickerSearch.value || '';
+        renderRolePickerBody();
+      };
+    }
+    $$('[data-role-filter]').forEach(function(tab) {
+      tab.onclick = function() {
+        _state.rolePickerFilter = tab.dataset.roleFilter || 'all';
+        $$('[data-role-filter]').forEach(function(t) {
+          t.classList.toggle('active', t === tab);
+        });
+        renderRolePickerBody();
+      };
+    });
 
     // 抽屉通用关闭
     $$('[data-close-modal]').forEach(function(btn) {
@@ -3976,9 +4358,12 @@
           }, true);
           showToast('已切换节目，直播继续 ♡');
         } else {
+          var hostTarget = _state.plannerPendingMode === 'user'
+            ? null
+            : (_state.plannerHostObj || (_state.plannerPendingMode === 'npc' ? null : getActiveChar()));
           await startLiveRoom({
             hostMode: _state.plannerPendingMode,
-            charObj: _state.plannerPendingMode === 'user' ? null : getActiveChar(),
+            charObj: hostTarget,
             program: _state.plannerProgram,
             title: titleVal,
             style: styleVal,
@@ -3997,7 +4382,7 @@
     var quickSwitch = $('#hl-quick-program-switch');
     if (quickSwitch) {
       quickSwitch.onclick = function() {
-        if (_state.room) openPlannerModal(_state.room.hostMode, true);
+        if (_state.room) openPlannerModal(_state.room.hostMode, true, _state.room.hostCharObj);
       };
     }
 
@@ -4018,7 +4403,7 @@
     var inviteBtn = $('#hl-invite-btn');
     if (inviteBtn) {
       inviteBtn.onclick = function() {
-        if (!_state.room || _state.room.hostMode !== 'user') return;
+        if (!_state.room || _state.room.hostMode === 'private') return;
         _state.pendingConnectAfterInvite = false;
         openUserHostPicker();
       };
@@ -4726,6 +5111,7 @@
     applyProgramToRoom: applyProgramToRoom,
     startConnection: startConnection,
     openConnectModal: openConnectModal,
+    openRolePickerModal: openRolePickerModal,
     disconnectCall: disconnectCall,
     applyConnectionLayout: applyConnectionLayout,
     checkAsmrTimer: checkAsmrTimer,
@@ -4733,6 +5119,7 @@
     restoreFromMiniWindow: restoreFromMiniWindow,
     removeMiniWindow: removeMiniWindow,
     inviteCharToUserRoom: inviteCharToUserRoom,
+    inviteViewerToRoom: inviteCharToUserRoom,
     removeViewerFromUserRoom: removeViewerFromUserRoom,
     openReplayView: openReplayView,
     getState: function() { return _state; }

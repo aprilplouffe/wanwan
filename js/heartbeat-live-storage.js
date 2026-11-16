@@ -1284,9 +1284,34 @@
     return dbDeleteConfig(chatLogKey(sid));
   }
 
+  function normalizeJournalHostFields(item) {
+    if (!item || typeof item !== 'object') return item;
+    var hm = item.hostMode === 'user'
+      ? 'user'
+      : item.hostMode === 'private'
+        ? 'private'
+        : item.hostMode === 'npc'
+          ? 'npc'
+          : 'char';
+    var ht = (item.hostType === 'user' || item.hostType === 'npc' || item.hostType === 'char')
+      ? item.hostType
+      : (hm === 'user' ? 'user' : hm === 'npc' ? 'npc' : 'char');
+    var hid = String(item.hostId || (ht === 'user' ? (item.ownerUid || 'user') : (item.charId || '')));
+    var hname = sanitizeText(item.hostName || (ht === 'user' ? '我' : (item.charName || 'Char')), 48);
+    if (item.hostMode === hm && item.hostType === ht && item.hostId === hid && item.hostName === hname) {
+      return item;
+    }
+    return Object.assign({}, item, {
+      hostMode: hm,
+      hostType: ht,
+      hostId: hid,
+      hostName: hname
+    });
+  }
+
   async function loadJournals() {
     var list = await dbReadConfig(KEYS.JOURNALS, []);
-    return Array.isArray(list) ? list : [];
+    return Array.isArray(list) ? list.map(normalizeJournalHostFields).filter(Boolean) : [];
   }
 
   async function addJournalEntry(entry) {
@@ -1301,16 +1326,31 @@
           };
         }).filter(function(p) { return p.id; })
       : [];
+    var hostMode = entry.hostMode === 'user'
+      ? 'user'
+      : entry.hostMode === 'private'
+        ? 'private'
+        : entry.hostMode === 'npc'
+          ? 'npc'
+          : 'char';
+    var hostType = (entry.hostType === 'user' || entry.hostType === 'npc' || entry.hostType === 'char')
+      ? entry.hostType
+      : (hostMode === 'user' ? 'user' : hostMode === 'npc' ? 'npc' : 'char');
+    var hostId = String(entry.hostId || (hostType === 'user' ? (entry.ownerUid || 'user') : (entry.charId || '')));
+    var hostName = sanitizeText(entry.hostName || (hostType === 'user' ? '我' : (entry.charName || 'Char')), 48);
     var record = {
       id: String(entry.id || ('jnl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6))),
       sessionId: sanitizeText(entry.sessionId || entry.logSessionId || '', 80),
       ownerUid: Number(entry.ownerUid) || 0,
+      hostMode: hostMode,
+      hostType: hostType,
+      hostId: hostId,
+      hostName: hostName,
       charId: String(entry.charId || ''),
-      charName: sanitizeText(entry.charName || 'Char', 48),
+      charName: sanitizeText(entry.charName || hostName || 'Char', 48),
       charType: entry.charType === 'npc' ? 'npc' : entry.charType === 'mixed' ? 'mixed' : 'char',
       invitedParticipants: invited,
-      hasRealChar: entry.hasRealChar !== undefined ? Boolean(entry.hasRealChar) : Boolean(entry.charId && entry.charType !== 'npc'),
-      hostMode: entry.hostMode === 'user' ? 'user' : entry.hostMode === 'private' ? 'private' : 'char',
+      hasRealChar: entry.hasRealChar !== undefined ? Boolean(entry.hasRealChar) : Boolean(hostType === 'char' && entry.charId),
       program: sanitizeText(entry.program || 'chat', 24),
       programLabel: sanitizeText(entry.programLabel || '闲聊直播', 24),
       title: sanitizeText(entry.title || '心动直播时刻', 40),

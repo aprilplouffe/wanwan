@@ -196,7 +196,7 @@
 
 /* ===== 直播大厅 ===== */
 .hl-home-content {
-  padding: 15px 16px calc(86px + var(--hl-safe-bottom));
+  padding: 15px 16px calc(96px + var(--hl-safe-bottom));
 }
 
 .hl-featured {
@@ -435,6 +435,12 @@
   flex-shrink: 0;
 }
 
+.hl-create > div:not(.hl-ico) {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .hl-create b {
   font-size: 13px;
   display: block;
@@ -445,12 +451,14 @@
   font-size: 11px;
   color: #8f7790;
   margin: 4px 0 0;
+  line-height: 1.45;
 }
 
 .hl-create .hl-pinkbtn {
   margin-left: auto;
   white-space: nowrap;
   flex-shrink: 0;
+  min-height: 36px;
 }
 
 /* ===== 底部三页签导航 ===== */
@@ -1622,12 +1630,22 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.hl-diarycard-head > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
 }
 
 .hl-diarycard b {
   font-size: 14px;
   color: var(--hl-deep);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .hl-diarycard-meta {
@@ -2015,6 +2033,18 @@
   .hl-room:not(.hl-connection-active) .hl-connection-tile {
     height: 112px;
   }
+  .hl-create {
+    padding: 12px;
+    gap: 9px;
+  }
+  .hl-create .hl-pinkbtn {
+    padding: 8px 11px;
+    font-size: 11px;
+  }
+  .hl-role-card {
+    padding: 9px 10px;
+    gap: 8px;
+  }
 }
 
 @media (max-width: 335px) {
@@ -2037,6 +2067,14 @@
   .hl-invite-pill {
     padding: 4px 5px;
     font-size: 9px;
+  }
+  .hl-create {
+    flex-wrap: wrap;
+  }
+  .hl-create .hl-pinkbtn {
+    margin-left: 0;
+    width: 100%;
+    text-align: center;
   }
 }
 
@@ -2117,6 +2155,7 @@
 
 .hl-invite-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 4px;
 }
@@ -2127,6 +2166,10 @@
   color: #7c6782;
   border-radius: 999px;
   padding: 5px 12px;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 11px;
   font-weight: 600;
 }
@@ -2452,3 +2495,102 @@
     transition: none !important;
   }
 }
+
+/* ===== V1.1.2 选择 Char 或 NPC 开播面板与主播身份标签 ===== */
+.hl-role-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+
+.hl-role-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #ffffff;
+  border: 1px solid #f1e2ec;
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-shadow: 0 3px 10px rgba(140, 110, 134, 0.05);
+}
+
+.hl-role-card-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: #f5d9e7;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.hl-role-card-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hl-role-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.hl-role-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hl-role-card-head b {
+  font-size: 13px;
+  color: var(--hl-deep);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.hl-role-card-info small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #8d7792;
+  overflow-wrap: anywhere;
+}
+
+.hl-role-start-btn {
+  min-height: 36px;
+  padding: 8px 14px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.hl-empty-roles {
+  background: #fdf6fa;
+  border: 1px dashed #e9cde0;
+  border-radius: 14px;
+  padding: 16px 14px;
+  text-align: center;
+  color: #846e8b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.hl-host-type-tag.npc {
+  background: #ede9fb;
+  color: #6b529c;
+}
+
+.hl-host-type-tag.char {
+  background: #ffe6f2;
+  color: #b45585;
+}
+
+.hl-host-type-tag.user {
+  background: #fff1e4;
+  color: #9e6632;
+}
+

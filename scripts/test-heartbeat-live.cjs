@@ -917,19 +917,20 @@ async function main() {
   check(h.fakeTrackList.every(t => t.stopped === true), '退出心动直播时立即停止全部麦克风与摄像头轨道');
   check(h.revokedUrls.length > 0, '退出时回收所有临时 Blob URL');
 
-  // 9. V1.1 直播大厅入口顺序调整
-  console.log('\n9. V1.1 直播大厅入口顺序（Char / User 开播在双人连线之前）');
+  // 9. V1.1.2 直播大厅入口顺序调整
+  console.log('\n9. V1.1.2 直播大厅入口顺序（我要开播 -> 双人连线 -> 选择 Char 或 NPC -> 正在直播）');
   await app.open();
   const homeHtml = h.doc.getElementById('heartbeat-live-page').innerHTML;
-  const idxCharPicker = homeHtml.indexOf('id="hl-char-picker"');
-  const idxBroadcasts = homeHtml.indexOf('id="hl-broadcasts"');
   const idxUserLive = homeHtml.indexOf('id="hl-go-live"');
   const idxPrivFeatured = homeHtml.indexOf('id="hl-private-start"');
   const idxPrivCard = homeHtml.indexOf('id="hl-private-start2"');
+  const idxRolePickerBtn = homeHtml.indexOf('id="hl-open-role-picker"');
+  const idxCharPicker = homeHtml.indexOf('id="hl-char-picker"');
+  const idxBroadcasts = homeHtml.indexOf('id="hl-broadcasts"');
   check(
-    idxCharPicker > 0 && idxBroadcasts > idxCharPicker && idxUserLive > idxBroadcasts &&
-    idxPrivFeatured > idxUserLive && idxPrivCard > idxUserLive,
-    '直播大厅按「选择 Char / 正在直播 -> 我要开播 -> 双人连线」顺序渲染'
+    idxUserLive > 0 && idxPrivFeatured > idxUserLive && idxPrivCard > idxPrivFeatured &&
+    idxRolePickerBtn > idxPrivCard && idxCharPicker > idxRolePickerBtn && idxBroadcasts > idxCharPicker,
+    '直播大厅按「我要开播 -> 双人连线 -> 选择 Char 或 NPC -> 正在直播」顺序渲染'
   );
   h.doc.getElementById('hl-private-start').click();
   check(app.getState().openModal === 'planner' && app.getState().plannerPendingMode === 'private', '调整顺序后「开始私人连线」仍正常进入私人连线企划');
@@ -1439,6 +1440,240 @@ async function main() {
 
   h.doc.getElementById('hl-back-settings').click();
   await app.switchView('home');
+  app.close(false);
+
+  // 17. V1.1.2 多角色开播（选择 Char 或 NPC、NPC 独立开播、严格隔离、兼容旧档与移动端适配）
+  console.log('\n17. V1.1.2 多角色开播（选择 Char 或 NPC、NPC 独立开播、严格隔离与回放兼容）');
+  await app.open();
+
+  // 17.1 角色选择面板：全部 / Char / NPC 筛选、搜索与真实角色读取
+  const openRolePickerBtn = h.doc.getElementById('hl-open-role-picker');
+  check(Boolean(openRolePickerBtn) && openRolePickerBtn.textContent.includes('选择 Char 或 NPC'), '大厅已升级为「选择 Char 或 NPC」入口');
+  openRolePickerBtn.click();
+  await new Promise(r => setTimeout(r, 20));
+  check(app.getState().openModal === 'rolePicker', '点击「选择 Char 或 NPC」弹出独立角色选择面板');
+  let roleCardsAll = h.doc.querySelectorAll('#hl-rolepicker-list .hl-role-card');
+  check(roleCardsAll.length === 3, '默认「全部」列表展示 2 位 Char 与 1 位真实 NPC');
+
+  const npcTab = h.doc.querySelector('[data-role-filter="npc"]');
+  npcTab.click();
+  let roleCardsNpc = h.doc.querySelectorAll('#hl-rolepicker-list .hl-role-card');
+  check(roleCardsNpc.length === 1 && roleCardsNpc[0].textContent.includes('阿茶') && roleCardsNpc[0].textContent.includes('NPC'), '切换「NPC」筛选页签仅展示真实 NPC（阿茶）');
+
+  const rpSearch = h.doc.getElementById('hl-rolepicker-search');
+  rpSearch.value = '查无此人';
+  if (typeof rpSearch.oninput === 'function') rpSearch.oninput();
+  check(h.doc.querySelectorAll('#hl-rolepicker-list .hl-role-card').length === 0 && Boolean(h.doc.querySelector('#hl-rolepicker-list .hl-empty-roles')), '搜索无匹配 NPC 时展示明确提示且不伪造 NPC');
+  rpSearch.value = '';
+  if (typeof rpSearch.oninput === 'function') rpSearch.oninput();
+
+  // 17.2 无 NPC 时诚实空状态，严禁编造虚构 NPC
+  const savedNpc201 = h.charsMap.get(201);
+  h.charsMap.delete(201);
+  await app.openRolePickerModal('npc');
+  const emptyNpcCards = h.doc.querySelectorAll('#hl-rolepicker-list .hl-role-card');
+  const emptyNpcBox = h.doc.querySelector('#hl-rolepicker-list .hl-empty-roles');
+  check(emptyNpcCards.length === 0 && Boolean(emptyNpcBox) && emptyNpcBox.textContent.includes('不会编造或伪造虚构 NPC'), '角色库无 NPC 时显示诚实空状态并严禁编造虚构 NPC');
+  h.charsMap.set(201, savedNpc201);
+
+  // 17.3 NPC 无需微信单聊即可独立开播（h.chats 中完全没有 201 的聊天记录）
+  await app.openRolePickerModal('npc');
+  const npcStartBtn = h.doc.querySelector('[data-role-start="201"]');
+  check(Boolean(npcStartBtn), '真实 NPC 恢复后出现「开播」按钮');
+  npcStartBtn.click();
+  check(app.getState().openModal === 'planner' && app.getState().plannerPendingMode === 'npc' && app.getState().plannerHostObj && app.getState().plannerHostObj.id === '201', '点击 NPC「开播」进入 NPC 独立开播企划，未串为 Char');
+
+  h.clearAiQueue();
+  h.capturedAiCalls.length = 0;
+  h.memReadCalls.length = 0;
+  h.wxReadCalls.length = 0;
+  h.lorebookCalls.length = 0;
+  const memCountBeforeNpc = h.memoriesMap.size;
+  h.pushAiHandler(async () => JSON.stringify({ speech: '欢迎光临转角咖啡馆的夜班直播，点杯热美式慢慢听我聊吧。', audience: '阿茶今天营业状态满分' }));
+
+  h.doc.getElementById('hl-plan-title').value = '阿茶的夜班咖啡台';
+  await h.doc.getElementById('hl-plan-confirm').click();
+  await new Promise(r => setTimeout(r, 30));
+
+  const npcRoom = app.getState().room;
+  check(
+    Boolean(npcRoom) &&
+    npcRoom.hostMode === 'npc' &&
+    npcRoom.hostType === 'npc' &&
+    npcRoom.hostId === '201' &&
+    npcRoom.hostName === '阿茶',
+    '无微信单聊记录的 NPC（阿茶）成功进入独立直播间，统一主播身份为 hostType=npc'
+  );
+  check(
+    h.doc.getElementById('hl-host-name').textContent.includes('阿茶') &&
+    h.doc.getElementById('hl-host-name').textContent.includes('[NPC]') &&
+    h.doc.getElementById('hl-host-status').textContent.includes('NPC') &&
+    h.doc.getElementById('hl-room-title').textContent.includes('阿茶的夜班咖啡台'),
+    '直播间顶栏与舞台准确显示 NPC 头像/名称与「NPC 主播」身份标记'
+  );
+
+  // 17.4 NPC 严格隔离校验：不读 Char 记忆、不读万象镜、不使用双语、绝不写入 db.memories
+  h.pushAiHandler(async () => JSON.stringify({ speech: '店里刚磨好一壶耶加雪菲，你那边忙完了吗？', audience: '' }));
+  h.doc.getElementById('hl-message-input').value = '我刚下班过来捧场';
+  h.doc.getElementById('hl-send').click();
+  await new Promise(r => setTimeout(r, 35));
+
+  const npcAiCalls = h.capturedAiCalls.slice();
+  const npcSysPrompt = npcAiCalls.map(c => String((c.opts && c.opts.system) || '')).join('\n');
+  check(npcAiCalls.length >= 2 && npcSysPrompt.includes('<npc_persona>') && !npcSysPrompt.includes('<char_persona>'), 'NPC 直播提示词采用专属 <npc_persona> 块而非 Char <char_persona>');
+  check(
+    !h.memReadCalls.includes(201) && !h.memReadCalls.includes('201') &&
+    !h.wxReadCalls.includes(201) && !h.wxReadCalls.includes('201') &&
+    !npcSysPrompt.includes('月光海岸') && !npcSysPrompt.includes('Char_101') && !npcSysPrompt.includes('<bilingual_rule>'),
+    'NPC 开播严格隔离：绝不读取 Char 长期记忆/万象镜经历/微信单聊/双语规则'
+  );
+  check(h.memoriesMap.size === memCountBeforeNpc, 'NPC 直播过程不会自动写入 Char 长期记忆 db.memories');
+
+  // 17.5 NPC 直播间中可邀 Char 作为普通观众旁听，且不影响 NPC 作为本场主播，亦支持与用户双人连麦布局切换
+  h.pushAiHandler(async () => JSON.stringify({ speech: '星野过来听阿茶煮咖啡啦。', audience: '' }));
+  await app.inviteViewerToRoom('101');
+  await new Promise(r => setTimeout(r, 25));
+  check(
+    app.getState().room.hostId === '201' &&
+    app.getState().room.hostType === 'npc' &&
+    app.getState().room.invitedViewers.some(v => v.id === '101'),
+    'NPC 直播间可额外邀请 Char 作为观众互动，且不篡改 NPC 的主播身份'
+  );
+
+  h.doc.getElementById('hl-connect-btn').click();
+  check(app.getState().openModal === 'connect', 'NPC 直播间点击连麦正常打开连麦方式选择');
+  h.pushAiHandler(async () => JSON.stringify({ speech: '上麦啦，今天想点什么歌？', audience: '' }));
+  h.doc.getElementById('hl-text-connect').click();
+  await new Promise(r => setTimeout(r, 20));
+  check(app.getState().connectionType === 'text' && app.getState().connectionLayout === 'floating', 'User 可与 NPC 主播发起双人连麦（默认经典小窗）');
+  h.doc.getElementById('hl-layout-toggle').click();
+  check(app.getState().connectionLayout === 'split', '与 NPC 连麦同样支持切换左右并列布局');
+  h.doc.getElementById('hl-disconnect').click();
+  check(!app.getState().connectionType, '挂断与 NPC 的连麦后恢复单主播舞台');
+
+  // 17.6 结束 NPC 直播：保存为 NPC 主播手账，禁用长期记忆写入，支持回放过滤
+  const npcLogId = app.getState().room.logSessionId;
+  h.doc.getElementById('hl-exit-room').click();
+  await new Promise(r => setTimeout(r, 30));
+
+  const journalsAfterNpc = await store.loadJournals();
+  const npcJournal = journalsAfterNpc.find(j => j.title === '阿茶的夜班咖啡台');
+  check(
+    Boolean(npcJournal) &&
+    npcJournal.hostType === 'npc' &&
+    npcJournal.hostId === '201' &&
+    npcJournal.hostName === '阿茶' &&
+    npcJournal.hasRealChar === false &&
+    Boolean(npcJournal.startedAt) && Boolean(npcJournal.endedAt),
+    'NPC 直播结束后生成带 hostType=npc、起止时间与 hasRealChar=false 的手账记录'
+  );
+
+  const npcMemSaveRes = await ctx.HeartbeatLiveAI.saveJournalToLongMemory({ journal: npcJournal, title: '非法写入测试', content: 'NPC不应写入' });
+  check(Boolean(npcMemSaveRes && !npcMemSaveRes.ok) && h.memoriesMap.size === memCountBeforeNpc, 'NPC 主播手账严禁写入 Char 长期记忆（即使手动调用亦被拦截）');
+
+  // 手账回放检查 NPC 主播与 User 观众角色区分
+  await app.switchView('diary');
+  await new Promise(r => setTimeout(r, 20));
+  const diaryText = h.doc.getElementById('hl-diary-list').textContent;
+  check(diaryText.includes('NPC 主播') && diaryText.includes('阿茶的夜班咖啡台'), '手账页明确标示「NPC 主播」徽章');
+  const npcReplayBtn = h.doc.querySelector('[data-jnl-replay="' + npcJournal.id + '"]');
+  check(Boolean(npcReplayBtn), 'NPC 直播手账提供「查看本场聊天记录」回放入口');
+  npcReplayBtn.click();
+  await new Promise(r => setTimeout(r, 25));
+  const replayText = h.doc.getElementById('hl-replay-list').textContent;
+  check(replayText.includes('NPC 主播') && replayText.includes('阿茶') && replayText.includes('观众 我'), 'NPC 直播回放清晰区分 NPC 主播与观众发言角色');
+  h.doc.getElementById('hl-replay-back').click();
+
+  // 17.7 双人连线与 Char 选中隔离：选择 NPC 不会污染「双人连线」默认 Char
+  await app.switchView('home');
+  check(app.getState().selectedHostId === '201' && app.getState().selectedCharId !== '201', '选择 NPC 主播仅更新 selectedHostId，不会把 NPC 混入 selectedCharId');
+  h.doc.getElementById('hl-private-start').click();
+  check(
+    app.getState().openModal === 'planner' &&
+    app.getState().plannerPendingMode === 'private' &&
+    app.getState().plannerHostObj &&
+    app.getState().plannerHostObj.roleType !== 'npc',
+    '点击「双人连线」始终只选择真实 Char，严格拒绝 NPC 混入私人连线'
+  );
+  h.doc.getElementById('hl-planner').querySelector('[data-close-modal]').click();
+
+  // 17.8 跨主播异步防串台校验：NPC 房发出的延迟 AI 回复，切换为 Char 主播房间后自动丢弃
+  let resolveDelayedNpc;
+  const delayedNpcPromise = new Promise(r => { resolveDelayedNpc = r; });
+  h.clearAiQueue();
+  h.pushAiHandler(async () => JSON.stringify({ speech: '阿茶开播啦', audience: '' }));
+  await app.startLiveRoom({ hostMode: 'npc', charObj: { id: '201', roleType: 'npc', name: '阿茶' }, title: '防串台NPC房', program: 'chat' });
+  await new Promise(r => setTimeout(r, 15));
+  h.pushAiHandler(async () => await delayedNpcPromise);
+  h.doc.getElementById('hl-message-input').value = '等下回复我';
+  h.doc.getElementById('hl-send').click();
+  await new Promise(r => setTimeout(r, 10));
+
+  // 不等阿茶 AI 回复落地，立刻切房为 Char 101 开播
+  h.pushAiHandler(async () => JSON.stringify({ speech: '这里是星野的直播间', audience: '' }));
+  await app.startLiveRoom({ hostMode: 'char', charObj: chars[0], title: '星野防串台房', program: 'chat' });
+  await new Promise(r => setTimeout(r, 20));
+  resolveDelayedNpc(JSON.stringify({ speech: '这是延迟落地的NPC串台句', audience: 'NPC延迟弹幕' }));
+  await new Promise(r => setTimeout(r, 30));
+
+  const charRoomMsgs = app.getState().room.messages.map(m => m.text).join('\n');
+  check(!charRoomMsgs.includes('这是延迟落地的NPC串台句') && app.getState().room.hostId === '101', '跨主播切房后延迟返回的 NPC AI 回复被 session/hostId 防串台守卫彻底拦截');
+  h.doc.getElementById('hl-exit-room').click();
+  await new Promise(r => setTimeout(r, 25));
+
+  // 17.9 旧版 V1.0 / V1.1 / V1.1.1 历史手账向下兼容（缺少 hostType/hostId/hostName）
+  const legacyKey = store.KEYS.JOURNALS;
+  const legacyRow = h.configMap.get(legacyKey);
+  const legacyRaw = Array.isArray(legacyRow && legacyRow.value) ? legacyRow.value.slice() : [];
+  legacyRaw.unshift({
+    id: 'hl_legacy_v10',
+    sessionId: 'hl_legacy_sess_1',
+    charId: '',
+    charName: '用户主播',
+    hostMode: 'user',
+    title: 'V1.0 早期用户独自直播',
+    program: 'chat',
+    programLabel: '闲聊',
+    summary: '早期记录兼容测试',
+    createdAt: Date.now() - 86400000
+  });
+  legacyRaw.unshift({
+    id: 'hl_legacy_v10_char',
+    sessionId: 'hl_legacy_sess_2',
+    charId: '101',
+    charName: '星野',
+    hostMode: 'char',
+    title: 'V1.0 早期 Char 直播',
+    program: 'radio',
+    programLabel: '电台',
+    summary: '早期 Char 兼容测试',
+    createdAt: Date.now() - 86500000
+  });
+  h.configMap.set(legacyKey, { key: legacyKey, value: legacyRaw });
+  const compatJournals = await store.loadJournals();
+  const compatUser = compatJournals.find(j => j.id === 'hl_legacy_v10');
+  const compatChar = compatJournals.find(j => j.id === 'hl_legacy_v10_char');
+  check(
+    Boolean(compatUser && compatUser.hostType === 'user' && compatUser.hostName === '我') &&
+    Boolean(compatChar && compatChar.hostType === 'char' && compatChar.hostId === '101' && compatChar.hostName === '星野'),
+    '历史 V1.0/V1.1/V1.1.1 旧版手账缺少 hostType 时自动向下兼容补全，不报错不丢档'
+  );
+  await app.switchView('diary');
+  await new Promise(r => setTimeout(r, 20));
+  const compatDiaryHtml = h.doc.getElementById('hl-diary-list').textContent;
+  check(compatDiaryHtml.includes('V1.0 早期用户独自直播') && compatDiaryHtml.includes('V1.0 早期 Char 直播'), '兼容补全后的历史旧版手账在手账列表正常渲染');
+
+  // 17.10 移动端窄屏 CSS 响应式与防溢出规则核验
+  const updatedCss = fs.readFileSync('css/heartbeat-live.css', 'utf8');
+  check(
+    updatedCss.includes('.hl-role-card') &&
+    updatedCss.includes('.hl-empty-roles') &&
+    updatedCss.includes('overflow-wrap: anywhere') &&
+    updatedCss.includes('@media (max-width: 365px)') &&
+    updatedCss.includes('@media (max-width: 335px)'),
+    'CSS 已补齐选择面板卡片、角色徽章与 320px/360px 移动端窄屏防换行溢出规则'
+  );
+
   app.close(false);
 
   console.log('\n=== 测试结果：通过 ' + passed + ' 项，失败 ' + failed + ' 项 ===');

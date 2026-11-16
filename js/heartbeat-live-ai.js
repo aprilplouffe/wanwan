@@ -81,10 +81,25 @@
     return Array.isArray(list) ? list : [];
   }
 
+  function isValidParticipantRaw(c) {
+    if (!c || c.id == null || c.id === '') return false;
+    if (c.type === 'user') return false;
+    var label = String(c.nick || c.name || '').trim();
+    return Boolean(label);
+  }
+
   async function loadAvailableChars() {
     var list = await loadAllCharactersRaw();
     return list
-      .filter(function(c) { return c && (c.type === 'char' || !c.type); })
+      .filter(function(c) { return isValidParticipantRaw(c) && (c.type === 'char' || !c.type); })
+      .map(normalizeParticipantRecord)
+      .filter(Boolean);
+  }
+
+  async function loadAvailableNpcs() {
+    var list = await loadAllCharactersRaw();
+    return list
+      .filter(function(c) { return isValidParticipantRaw(c) && c.type === 'npc'; })
       .map(normalizeParticipantRecord)
       .filter(Boolean);
   }
@@ -92,7 +107,7 @@
   async function loadAvailableInvitees() {
     var list = await loadAllCharactersRaw();
     return list
-      .filter(function(c) { return c && (c.type === 'char' || c.type === 'npc' || !c.type); })
+      .filter(function(c) { return isValidParticipantRaw(c) && (c.type === 'char' || c.type === 'npc' || !c.type); })
       .map(normalizeParticipantRecord)
       .filter(Boolean);
   }
@@ -106,7 +121,7 @@
       if (!global.db || !global.db.characters) {
         if (!list.length) return { exists: true, record: null };
       }
-      var match = list.find(function(c) { return c && String(c.id) === pid && c.type !== 'user'; });
+      var match = list.find(function(c) { return isValidParticipantRaw(c) && String(c.id) === pid; });
       return { exists: Boolean(match), record: match ? normalizeParticipantRecord(match) : null };
     } catch (_) {
       return { exists: true, record: null };
@@ -321,6 +336,10 @@
     var userObj = params.userObj || { name: '我', description: '' };
     var ctx = params.ctx || {};
     var hostMode = params.hostMode || 'char';
+    var hostType = params.hostType || (hostMode === 'user' ? 'user' : hostMode === 'npc' ? 'npc' : 'char');
+    var actorIdStr = charObj && charObj.id != null ? String(charObj.id) : '';
+    var hostIdStr = params.hostId != null ? String(params.hostId) : actorIdStr;
+    var isCurrentHost = hostMode !== 'user' && actorIdStr && hostIdStr && actorIdStr === hostIdStr;
     var programId = params.program || 'chat';
     var progInfo = PROGRAMS[programId] || PROGRAMS.chat;
     var programTitle = params.programTitle || progInfo.defaultTitle;
@@ -332,25 +351,41 @@
     var isNpc = Boolean(ctx.isNpc || (charObj && (charObj.roleType === 'npc' || (charObj.raw && charObj.raw.type === 'npc'))));
 
     var charName = charObj ? charObj.name : (isNpc ? 'NPC' : 'Char');
+    var hostNameLabel = params.hostName || charName;
     var raw = (charObj && charObj.raw) || {};
     var userName = userObj.name || '我';
     var relationText = '';
     try {
-      if (global._wechatCallHelpers && typeof global._wechatCallHelpers.buildCurrentRelationText === 'function') {
+      if (!isNpc && global._wechatCallHelpers && typeof global._wechatCallHelpers.buildCurrentRelationText === 'function') {
         relationText = global._wechatCallHelpers.buildCurrentRelationText(raw) || '';
       }
     } catch (_) {}
 
     var companions = Array.isArray(params.companionNames) ? params.companionNames.filter(Boolean) : [];
     var companionLine = companions.length
-      ? ('当前直播间还有其他受邀观众/嘉宾：' + companions.join('、') + '（各有独立身份，请勿替他人发言或混淆彼此经历）。')
+      ? ('当前直播间还有其他同场成员：' + companions.join('、') + '（各有独立身份，请勿替他人发言或混淆彼此经历）。')
       : '';
 
-    var modeDesc = hostMode === 'user'
-      ? ('当前是【User 开播模式】：' + userName + ' 正在作为主播开播，你是受邀前排观众' + (isNpc ? '（NPC 嘉宾）' : '') + (isCohost && connectionType ? '，并且你已上麦连线，正在与主播实时同台互动。' : '，目前在观众席弹幕区观看并与主播互动，请勿自称已经上麦或占据主舞台。'))
-      : hostMode === 'private'
-        ? ('当前是【私人双人连线模式】：直播间没有外部公开观众，只有你（' + charName + '）和 ' + userName + ' 两个人。')
-        : ('当前是【Char 开播模式】：你（' + charName + '）正在开个人直播，' + userName + (connectionType ? ' 已连麦进入你的直播同台互动。' : ' 正在直播间观看并发送弹幕。'));
+    var modeDesc = '';
+    if (hostMode === 'user') {
+      modeDesc = '当前是【User 开播模式】：' + userName + ' 正在作为主播开播，你是受邀前排观众' +
+        (isNpc ? '（NPC 嘉宾）' : '（Char 嘉宾）') +
+        (isCohost && connectionType
+          ? '，并且你已上麦连线，正在与主播实时同台互动。'
+          : '，目前在观众席弹幕区观看并与主播互动，请勿自称是本场主播或已经上麦。');
+    } else if (hostMode === 'private') {
+      modeDesc = '当前是【私人双人连线模式】：直播间没有外部公开观众，只有你（' + charName + '）和 ' + userName + ' 两个人。';
+    } else if (!isCurrentHost) {
+      modeDesc = '当前是【' + (hostType === 'npc' ? 'NPC 主播' : 'Char 主播') + '直播间】：' +
+        (hostType === 'npc' ? 'NPC 主播「' : 'Char 主播「') + hostNameLabel + '」正在主导开播，你是受邀进入观众席的' +
+        (isNpc ? ' NPC 嘉宾' : ' Char 嘉宾') + '（请坚守自己的观众嘉宾身份，不要抢占主播身份）。';
+    } else if (hostType === 'npc' || hostMode === 'npc' || isNpc) {
+      modeDesc = '当前是【NPC 独立开播模式】：你（' + charName + '）作为独立 NPC 主播正在开启自己的直播间，' +
+        userName + (connectionType ? ' 已连麦进入你的直播同台互动。' : ' 正在你的直播间观看并发送弹幕。请严格使用你自己的 NPC 人设回应，不得冒充其他 Char。');
+    } else {
+      modeDesc = '当前是【Char 开播模式】：你（' + charName + '）正在开个人直播，' +
+        userName + (connectionType ? ' 已连麦进入你的直播同台互动。' : ' 正在直播间观看并发送弹幕。');
+    }
 
     var styleDesc = {
       natural: '保持自然亲切的互动节奏，适时回应和抛话题',
@@ -623,16 +658,22 @@
   function buildJournalDraft(session) {
     var prog = PROGRAMS[session.program] || PROGRAMS.chat;
     var invitedList = Array.isArray(session.invitedParticipants) ? session.invitedParticipants : [];
-    var hasChar = Boolean(session.charId || invitedList.length);
-    var charName = invitedList.length > 1
-      ? invitedList.map(function(p) { return p.name; }).slice(0, 3).join('、') + (invitedList.length > 3 ? ' 等 ' + invitedList.length + ' 人' : '')
-      : (hasChar ? (session.charName || (invitedList[0] && invitedList[0].name) || '嘉宾') : '个人直播间');
+    var isNpcHost = session.hostType === 'npc' || session.hostMode === 'npc';
+    var hostName = session.hostName || session.charName || (invitedList[0] && invitedList[0].name) || '个人直播间';
+    var hasChar = Boolean(session.charId || invitedList.length || isNpcHost);
+    var charName = isNpcHost
+      ? hostName
+      : (invitedList.length > 1
+          ? invitedList.map(function(p) { return p.name; }).slice(0, 3).join('、') + (invitedList.length > 3 ? ' 等 ' + invitedList.length + ' 人' : '')
+          : (hasChar ? (session.charName || (invitedList[0] && invitedList[0].name) || '嘉宾') : '个人直播间'));
     var dateStr = new Date(session.startedAt || Date.now()).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
     var modeText = session.hostMode === 'user'
-      ? (hasChar ? ('我开播、邀请了 ' + charName + ' 观看陪伴') : '我独自开启的个人直播')
+      ? (invitedList.length ? ('我开播、邀请了 ' + charName + ' 观看陪伴') : '我独自开启的个人直播')
       : session.hostMode === 'private'
         ? ('与 ' + charName + ' 的私人连线')
-        : (charName + ' 的直播间');
+        : isNpcHost
+          ? (charName + '（NPC 主播）的直播间' + (invitedList.length > 1 ? '（同场嘉宾 ' + invitedList.length + ' 人）' : ''))
+          : (charName + ' 的直播间');
     var extras = [];
     if (session.cohostUsed) extras.push('开启了连麦同框');
     if (session.asmrUsed) extras.push('伴随了 ASMR 音景');
@@ -647,7 +688,7 @@
     return {
       title: title,
       content: content,
-      keywords: ['心动直播', prog.label, hasChar ? charName : '个人开播'].filter(Boolean)
+      keywords: ['心动直播', prog.label, isNpcHost ? (charName + '(NPC)') : (hasChar ? charName : '个人开播')].filter(Boolean)
     };
   }
 
@@ -656,6 +697,9 @@
     var targetCharId = String((params && params.charId) || (journal && journal.charId) || '');
     if (!journal || !targetCharId) {
       return { ok: false, error: '缺少 Char 角色标识，无法写入长期记忆' };
+    }
+    if (journal.hostType === 'npc' || journal.hostMode === 'npc') {
+      return { ok: false, error: 'NPC 主播场次不写入 Char 长期记忆（仅保存在直播手账与聊天回放）' };
     }
     var checkTarget = await verifyParticipantExists(targetCharId);
     if (checkTarget.record && checkTarget.record.roleType === 'npc') {
@@ -730,6 +774,7 @@
     PROGRAMS: PROGRAMS,
     GIFT_CATALOG: GIFT_CATALOG,
     loadAvailableChars: loadAvailableChars,
+    loadAvailableNpcs: loadAvailableNpcs,
     loadAvailableInvitees: loadAvailableInvitees,
     verifyParticipantExists: verifyParticipantExists,
     loadCurrentUserProfile: loadCurrentUserProfile,
