@@ -590,10 +590,11 @@ function loadScripts(h) {
     Number,
     String,
     Boolean,
-    Error
+    Error,
+    Uint8Array
   }));
 
-  for (const rel of ['js/heartbeat-live-storage.js', 'js/heartbeat-live-ai.js', 'js/heartbeat-live.js']) {
+  for (const rel of ['js/tts-provider.js', 'js/heartbeat-live-storage.js', 'js/heartbeat-live-ai.js', 'js/heartbeat-live.js']) {
     const code = fs.readFileSync(path.join(process.cwd(), rel), 'utf8');
     vm.runInContext(code, ctx, { filename: rel });
   }
@@ -1685,6 +1686,305 @@ async function main() {
   );
 
   app.close(false);
+
+  // 18. Minimax + Fish Audio 全平台双语音服务、微信/直播隔离与 NPC 音色能力验收
+  console.log('\n18. Minimax + Fish Audio 全平台双语音服务、微信/直播隔离与 NPC 音色验收');
+
+  // 18.1 静态接入与全局/微信/数据备份边界核验
+  const settingsJs = fs.readFileSync('js/settings.js', 'utf8');
+  const wechatJs = fs.readFileSync('js/wechat.js', 'utf8');
+  const ttsProviderJs = fs.readFileSync('js/tts-provider.js', 'utf8');
+
+  check(indexHtml.includes('js/tts-provider.js'), 'index.html 已按序引入 js/tts-provider.js');
+  check(
+    settingsJs.includes('fishAudioApiKey') &&
+    settingsJs.includes('fishAudioModel') &&
+    settingsJs.includes('fishAudioFormat') &&
+    settingsJs.includes('defaultTtsProvider') &&
+    settingsJs.includes('minimaxApiKey') &&
+    settingsJs.includes('#row-fish-audio-config') &&
+    settingsJs.includes('#row-default-tts-provider'),
+    'settings.js 保留全部 Minimax 配置键并新增 Fish Audio 与全局默认语音服务配置入口'
+  );
+  check(
+    wechatJs.includes('chatTtsProvider_') &&
+    wechatJs.includes('chatVoiceId_') &&
+    wechatJs.includes('chatFishVoiceId_') &&
+    wechatJs.includes('resolveWechatChatTtsTarget') &&
+    wechatJs.includes('callWechatTTS') &&
+    wechatJs.includes('showVoiceErrorActionModal') &&
+    wechatJs.includes('call-tts-error-bar'),
+    'wechat.js 支持按 chatId 独立保存双服务音色、失败保留文字重试/切换弹窗与通话纠错栏'
+  );
+  check(
+    ttsProviderJs.includes('https://api.fish.audio/v1/tts') &&
+    ttsProviderJs.includes('s2.1-pro') &&
+    ttsProviderJs.includes('reference_id') &&
+    !dataJs.includes("'fishAudioApiKey'"),
+    'tts-provider.js 严格遵循 Fish Audio /v1/tts 协议且 data.js 备份完整保留双语音配置'
+  );
+
+  // 18.2 WanWanTTS 底层引擎（Minimax hex 解码 + Fish Audio 二进制流 + CORS/HTTP 错误处理）
+  const h2 = createHarness();
+  const ctx2 = loadScripts(h2);
+  const store2 = ctx2.HeartbeatLiveStorage;
+  const ai2 = ctx2.HeartbeatLiveAI;
+  const app2 = ctx2.HeartbeatLiveApp;
+  const tts2 = ctx2.WanWanTTS;
+  const FakeBlob2 = h2.win.Blob;
+
+  await h2.win.db.config.put({ key: 'minimaxVersion', value: 'domestic' });
+  await h2.win.db.config.put({ key: 'minimaxGroupId', value: 'grp_test' });
+  await h2.win.db.config.put({ key: 'minimaxApiKey', value: 'mm_secret_test' });
+  await h2.win.db.config.put({ key: 'minimaxModel', value: 'speech-2.8-hd' });
+  await h2.win.db.config.put({ key: 'fishAudioApiKey', value: 'fish_secret_test' });
+  await h2.win.db.config.put({ key: 'fishAudioModel', value: 's2.1-pro' });
+  await h2.win.db.config.put({ key: 'fishAudioFormat', value: 'mp3' });
+
+  check((await tts2.getGlobalDefaultProvider()) === 'minimax', '默认全局语音服务安全回退为 minimax');
+
+  const fetchCalls = [];
+  let fishFailMode = '';
+  h2.setFetchHandler(async (url, opts) => {
+    fetchCalls.push({ url, opts });
+    if (String(url).includes('minimax')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { base_resp: { status_code: 0 }, data: { audio: '494433' } }; }
+      };
+    }
+    if (String(url).includes('api.fish.audio/v1/tts')) {
+      if (fishFailMode === 'http500') {
+        return {
+          ok: false,
+          status: 500,
+          async text() { return JSON.stringify({ message: 'upstream error' }); }
+        };
+      }
+      if (fishFailMode === 'cors') {
+        throw new TypeError('Failed to fetch');
+      }
+      return {
+        ok: true,
+        status: 200,
+        async blob() { return new FakeBlob2(['ID3_FISH_MOCK'], { type: 'audio/mpeg', _forceSize: 1024 }); }
+      };
+    }
+    return { ok: false, status: 404, async json() { return {}; } };
+  });
+
+  const mmRes = await tts2.synthesize({ provider: 'minimax', text: '测试 Minimax', voiceId: 'mm_global_v1' });
+  const fishRes = await tts2.synthesize({ provider: 'fish_audio', text: '测试 Fish Audio', referenceId: 'fish_ref_v1' });
+  const fishReq = fetchCalls.find(c => String(c.url).includes('api.fish.audio/v1/tts'));
+  const fishReqBody = fishReq && fishReq.opts && fishReq.opts.body ? JSON.parse(fishReq.opts.body) : {};
+  check(
+    Boolean(mmRes.blobUrl && mmRes.provider === 'minimax') &&
+    Boolean(fishRes.blobUrl && fishRes.provider === 'fish_audio') &&
+    fishReq && fishReq.opts.headers.Authorization === 'Bearer fish_secret_test' &&
+    fishReq.opts.headers.model === 's2.1-pro' &&
+    fishReqBody.reference_id === 'fish_ref_v1' &&
+    fishReqBody.normalize === true,
+    'WanWanTTS 正确分发 Minimax (/v1/t2a_v2) 与 Fish Audio (/v1/tts, model header + reference_id + 二进制音频流)'
+  );
+
+  fishFailMode = 'cors';
+  let fishCorsMsg = '';
+  try { await tts2.callFishAudioTTS('网络异常', 'fish_ref_v1'); } catch (e) { fishCorsMsg = e.message || ''; }
+  check(fishCorsMsg.includes('CORS') || fishCorsMsg.includes('请求失败'), 'Fish Audio 网络/跨域失败时给出明确可读错误提示');
+  fishFailMode = '';
+
+  // 18.3 微信端独立双音色逻辑实测（切换服务绝不互相覆盖，双语服务按 chatId 隔离解析）
+  const wechatLines = wechatJs.split('\n');
+  const wcSlice = wechatLines.slice(18988, 19065).join('\n') +
+    '\nwindow.__wcTest = { resolveWechatChatTtsTarget, callWechatTTS };';
+  const vm = require('vm');
+  vm.runInContext(wcSlice, ctx2, { filename: 'wechat-tts-slice.js' });
+
+  await h2.win.db.config.put({ key: 'chatVoiceId_501', value: 'wx_mm_char101' });
+  await h2.win.db.config.put({ key: 'chatFishVoiceId_501', value: 'wx_fish_char101' });
+  await h2.win.db.config.put({ key: 'chatTtsProvider_501', value: 'fish_audio' });
+
+  const wcTargetFish = await ctx2.__wcTest.resolveWechatChatTtsTarget(501);
+  const wcCallFish = await ctx2.__wcTest.callWechatTTS(501, '微信 Fish 测试');
+  await h2.win.db.config.put({ key: 'chatTtsProvider_501', value: 'minimax' });
+  const wcTargetMm = await ctx2.__wcTest.resolveWechatChatTtsTarget(501);
+  check(
+    wcTargetFish.provider === 'fish_audio' &&
+    wcTargetFish.voiceId === 'wx_fish_char101' &&
+    wcTargetFish.minimaxVoiceId === 'wx_mm_char101' &&
+    wcCallFish && Boolean(wcCallFish.blobUrl) &&
+    wcTargetMm.provider === 'minimax' &&
+    wcTargetMm.voiceId === 'wx_mm_char101' &&
+    wcTargetMm.fishReferenceId === 'wx_fish_char101',
+    '微信端按 chatId 独立存储与解析双服务，切换服务绝不覆盖另一家音色 ID'
+  );
+
+  // 18.4 微信与心动直播严格隔离 + 旧版字符串格式无损迁移 + Char/NPC 同 ID 键名不冲突
+  const liveIsoStatus = await ai2.getLiveTtsStatus({ id: '101', roleType: 'char' });
+  check(
+    !liveIsoStatus.voiceId &&
+    liveIsoStatus.missingReason.includes('不自动复用微信音色'),
+    '严格隔离：即使微信单聊已绑定音色，心动直播 Char 未单独配置时绝不读取微信 Voice ID'
+  );
+
+  await h2.win.db.config.put({
+    key: store2.KEYS.CHAR_VOICES,
+    value: { '101': 'legacy_mm_live_101' }
+  });
+  const migrated101 = await store2.getRoleVoiceConfig('101', 'char');
+  check(
+    migrated101.provider === 'minimax' &&
+    migrated101.minimaxVoiceId === 'legacy_mm_live_101' &&
+    migrated101.fishReferenceId === '',
+    '旧版 heartbeat_live_char_voices_v1 字符串配置无损兼容升级为对象结构'
+  );
+
+  await store2.saveRoleVoiceConfig('101', 'npc', {
+    provider: 'fish_audio',
+    minimaxVoiceId: 'mm_npc_collide',
+    fishReferenceId: 'fish_npc_collide'
+  });
+  const afterChar101 = await store2.getRoleVoiceConfig('101', 'char');
+  const afterNpc101 = await store2.getRoleVoiceConfig('101', 'npc');
+  check(
+    afterChar101.minimaxVoiceId === 'legacy_mm_live_101' &&
+    afterNpc101.provider === 'fish_audio' &&
+    afterNpc101.fishReferenceId === 'fish_npc_collide',
+    'Char 与 NPC 音色键严格分池（char_ / npc_），即使数字 ID 相同也互不覆盖'
+  );
+
+  // 18.5 直播设置 UI（Char + NPC 双音色编辑与独立试听）
+  await app2.open();
+  await app2.switchView('settings');
+  await new Promise(r => setTimeout(r, 25));
+
+  const roleSelect = h2.doc.getElementById('hl-char-img-select');
+  roleSelect.value = '201';
+  if (typeof roleSelect.onchange === 'function') roleSelect.onchange();
+  await new Promise(r => setTimeout(r, 20));
+
+  h2.doc.getElementById('hl-role-tts-provider').value = 'fish_audio';
+  h2.doc.getElementById('hl-char-voice-id').value = 'mm_npc_201';
+  h2.doc.getElementById('hl-role-fish-voice-id').value = 'fish_npc_201';
+  await h2.doc.getElementById('hl-char-voice-save').click();
+  await new Promise(r => setTimeout(r, 25));
+
+  const savedNpc201Voice = await store2.getRoleVoiceConfig('201', 'npc');
+  const statusAfterSave = h2.doc.getElementById('hl-char-voice-status').textContent;
+  check(
+    savedNpc201Voice.provider === 'fish_audio' &&
+    savedNpc201Voice.minimaxVoiceId === 'mm_npc_201' &&
+    savedNpc201Voice.fishReferenceId === 'fish_npc_201' &&
+    statusAfterSave.includes('NPC') && statusAfterSave.includes('Fish Audio') && statusAfterSave.includes('就绪'),
+    '直播设置页支持为 NPC 独立保存 Minimax 与 Fish Audio 双套音色且状态实时就绪'
+  );
+
+  fetchCalls.length = 0;
+  h2.audioInstances.length = 0;
+  h2.revokedUrls.length = 0;
+  await h2.doc.getElementById('hl-role-voice-preview').click();
+  await new Promise(r => setTimeout(r, 25));
+  const previewCalledFish = fetchCalls.some(c => {
+    if (!String(c.url).includes('api.fish.audio/v1/tts')) return false;
+    try { return JSON.parse(c.opts.body).reference_id === 'fish_npc_201'; } catch (_) { return false; }
+  });
+  check(
+    previewCalledFish &&
+    h2.audioInstances.length >= 1 &&
+    h2.doc.getElementById('hl-role-voice-preview').textContent.includes('停止试听'),
+    '点击设置页「独立试听」直接调用所选角色独立音色合成并播放'
+  );
+  // 再次点击停止试听并验证释放 Blob URL
+  h2.doc.getElementById('hl-role-voice-preview').click();
+  check(
+    h2.doc.getElementById('hl-role-voice-preview').textContent.includes('独立试听') &&
+    h2.revokedUrls.length >= 1,
+    '再次点击停止试听后立即停播并释放试听 Blob URL'
+  );
+
+  // 18.6 NPC 开播语音合成（AI 队列 + ASMR 闪避 + 临时切换 + 打断暂停/恢复 + 错误降级文字）
+  await store2.addAsmrTrack({ name: 'rain_duck.mp3', type: 'audio/mpeg', size: 102400 });
+  h2.doc.getElementById('hl-back-settings').click();
+  fetchCalls.length = 0;
+  h2.audioInstances.length = 0;
+  h2.clearAiQueue();
+  h2.pushAiHandler(async () => JSON.stringify({ speech: '我是阿茶，欢迎来到夜间咖啡馆！', audience: '' }));
+
+  await app2.startLiveRoom({
+    hostMode: 'npc',
+    charObj: { id: '201', roleType: 'npc', name: '阿茶' },
+    program: 'asmr',
+    title: '阿茶夜半耳语'
+  });
+  await new Promise(r => setTimeout(r, 40));
+
+  const npcSpokeWithFish = fetchCalls.some(c => {
+    if (!String(c.url).includes('api.fish.audio/v1/tts')) return false;
+    try { return JSON.parse(c.opts.body).reference_id === 'fish_npc_201'; } catch (_) { return false; }
+  });
+  const activeTtsAudio = h2.audioInstances[h2.audioInstances.length - 1];
+  const pauseBtn = h2.doc.getElementById('hl-tts-playback-btn');
+  check(
+    npcSpokeWithFish &&
+    Boolean(activeTtsAudio && !activeTtsAudio.paused) &&
+    app2.getState().asmrDucking === true &&
+    Boolean(pauseBtn && !pauseBtn.hidden),
+    'NPC 开播后直接通过独立 Fish Audio 音色发声，并联动开启 ASMR 闪避与暂停控制'
+  );
+
+  // 用户打断发送弹幕 -> 暂停当前 TTS 语音并释放闪避，随后可一键恢复播放
+  h2.pushAiHandler(async () => JSON.stringify({ speech: '收到，换 Minimax 音色和你聊！', audience: '' }));
+  h2.doc.getElementById('hl-message-input').value = '打断一下先听我说';
+  h2.doc.getElementById('hl-send').click();
+  check(
+    Boolean(activeTtsAudio && activeTtsAudio.paused) &&
+    app2.getState().ttsPaused === true &&
+    app2.getState().asmrDucking === false &&
+    pauseBtn.textContent.includes('恢复语音'),
+    '用户发言打断时平滑暂停 AI 语音并恢复背景音量，同时显示「▶ 恢复语音」按钮'
+  );
+  // 点击恢复播放当前被打断的语音
+  pauseBtn.click();
+  check(
+    Boolean(activeTtsAudio && !activeTtsAudio.paused) &&
+    app2.getState().ttsPaused === false &&
+    app2.getState().asmrDucking === true &&
+    pauseBtn.textContent.includes('暂停语音'),
+    '点击「▶ 恢复语音」可无缝继续刚才被打断的 TTS 音频并重开环境音闪避'
+  );
+
+  // 本场临时切换为 Minimax，下一句 AI 回复使用 mm_npc_201
+  fetchCalls.length = 0;
+  await app2.setRoomTtsProviderOverride('minimax');
+  await new Promise(r => setTimeout(r, 40));
+  check(
+    app2.getState().room.ttsProviderOverride === 'minimax' &&
+    fetchCalls.some(c => String(c.url).includes('minimax') && JSON.parse(c.opts.body).voice_setting.voice_id === 'mm_npc_201'),
+    '直播间内临时切换为 Minimax 后立即生效且不改动全局与设置页存储'
+  );
+
+  // 临时切回 Fish Audio 并模拟 Fish Audio 500 错误：安全降级保留文字且不报错中断
+  await app2.setRoomTtsProviderOverride('fish_audio');
+  fishFailMode = 'http500';
+  h2.pushAiHandler(async () => JSON.stringify({ speech: '音频暂时故障但文字依然稳稳送达', audience: '' }));
+  h2.doc.getElementById('hl-message-input').value = '测试语音失败文字降级';
+  h2.doc.getElementById('hl-send').click();
+  await new Promise(r => setTimeout(r, 40));
+  fishFailMode = '';
+  const hasFallbackMsg = app2.getState().room.messages.some(m => m.text.includes('音频暂时故障但文字依然稳稳送达'));
+  check(hasFallbackMsg, 'TTS 合成失败时安全降级为文字字幕展示，不中断直播流');
+
+  // 退出直播并重开新房间：验证临时语音覆盖已清空，默认回到角色独立设置
+  h2.setConfirm(true);
+  await h2.doc.getElementById('hl-exit-room').click();
+  await new Promise(r => setTimeout(r, 25));
+  h2.pushAiHandler(async () => JSON.stringify({ speech: '新场次开播', audience: '' }));
+  await app2.startLiveRoom({ hostMode: 'npc', charObj: { id: '201', roleType: 'npc', name: '阿茶' }, program: 'chat', title: '重开检查' });
+  await new Promise(r => setTimeout(r, 25));
+  check(app2.getState().room.ttsProviderOverride === '', '关闭直播间后本场临时语音服务切换自动重置，不影响新场次');
+
+  app2.close(false);
 
   console.log('\n=== 测试结果：通过 ' + passed + ' 项，失败 ' + failed + ' 项 ===');
   process.exit(failed > 0 ? 1 : 0);

@@ -70,6 +70,18 @@ function buildApiSection() {
       '<span class="row-value" id="val-minimax-config">未配置</span>' +
       '<i class="fa fa-angle-right row-chevron"></i>' +
     '</div>' +
+    '<div class="list-row clickable" id="row-fish-audio-config">' +
+      '<div class="row-icon-box"><i class="fa-solid fa-wave-square"></i></div>' +
+      '<div class="row-body"><div class="row-label">Fish Audio 语音配置</div></div>' +
+      '<span class="row-value" id="val-fish-audio-config">未配置</span>' +
+      '<i class="fa fa-angle-right row-chevron"></i>' +
+    '</div>' +
+    '<div class="list-row clickable" id="row-default-tts-provider">' +
+      '<div class="row-icon-box"><i class="fa-solid fa-sliders"></i></div>' +
+      '<div class="row-body"><div class="row-label">默认语音服务</div></div>' +
+      '<span class="row-value" id="val-default-tts-provider">Minimax</span>' +
+      '<i class="fa fa-angle-right row-chevron"></i>' +
+    '</div>' +
     '<div class="list-row clickable" id="row-image-gen-config">' +
       '<div class="row-icon-box"><i class="fa-solid fa-image"></i></div>' +
       '<div class="row-body"><div class="row-label">IMAGE 图像配置</div></div>' +
@@ -156,6 +168,130 @@ async function initMinimaxConfigPage(page) {
       window.toast('Minimax 语音配置已保存')
     } catch (error) {
       window.toast('Minimax 语音配置保存失败：' + (error.message || error))
+    }
+  })
+}
+
+// ===== Fish Audio 语音配置 =====
+var FISH_AUDIO_MODELS = [
+  's2.1-pro',
+  's2.1-pro-free',
+  'drama-3',
+  's2-pro'
+]
+var FISH_AUDIO_FORMATS = ['mp3', 'wav', 'opus', 'pcm']
+
+function openFishAudioConfigPage() {
+  var modelOptions = FISH_AUDIO_MODELS.map(function(m) {
+    return '<option value="' + settingsEscHtml(m) + '">' + settingsEscHtml(m) + '</option>'
+  }).join('')
+  var formatOptions = FISH_AUDIO_FORMATS.map(function(f) {
+    return '<option value="' + settingsEscHtml(f) + '">' + settingsEscHtml(f.toUpperCase()) + '</option>'
+  }).join('')
+  var html =
+    '<div class="setting-section"><div class="api-form" id="fish-audio-form">' +
+      '<label class="form-label">API Key</label>' +
+      '<div class="input-with-toggle">' +
+        '<input class="input-field" id="fish-audio-api-key" type="text" placeholder="输入 Fish Audio API Key">' +
+        '<button class="btn-text-toggle" id="toggle-fish-audio-key-vis">隐藏</button>' +
+      '</div>' +
+      '<label class="form-label">语音模型（HTTP Header: model）</label>' +
+      '<select class="input-field" id="fish-audio-model">' +
+        modelOptions +
+      '</select>' +
+      '<label class="form-label">音频格式</label>' +
+      '<select class="input-field" id="fish-audio-format">' +
+        formatOptions +
+      '</select>' +
+      '<div class="section-desc" style="padding:8px 0 0">' +
+        '接口地址：https://api.fish.audio/v1/tts<br>' +
+        '全局仅保存 API 凭据与默认编码格式；微信角色与心动直播角色的 Reference ID 各自独立配置。' +
+      '</div>' +
+      '<button class="btn-pill btn-full" id="btn-save-fish-audio">保存</button>' +
+    '</div></div>'
+  var page = buildSubPage('sub-fish-audio-config', 'Fish Audio 语音配置', html)
+  openSubPage(page)
+  initFishAudioConfigPage(page)
+}
+
+async function initFishAudioConfigPage(page) {
+  var results = await Promise.all([
+    db.config.get('fishAudioApiKey'),
+    db.config.get('fishAudioModel'),
+    db.config.get('fishAudioFormat')
+  ])
+  var apiKeyEl = page.querySelector('#fish-audio-api-key')
+  var modelEl = page.querySelector('#fish-audio-model')
+  var formatEl = page.querySelector('#fish-audio-format')
+  if (apiKeyEl && results[0]) apiKeyEl.value = results[0].value || ''
+  if (modelEl) {
+    var savedModel = (results[1] && results[1].value) ? String(results[1].value) : 's2.1-pro'
+    if (savedModel && !Array.prototype.some.call(modelEl.options, function(o) { return o.value === savedModel })) {
+      var opt = document.createElement('option')
+      opt.value = savedModel
+      opt.textContent = savedModel
+      modelEl.appendChild(opt)
+    }
+    modelEl.value = savedModel
+  }
+  if (formatEl) {
+    var savedFmt = (results[2] && results[2].value) ? String(results[2].value) : 'mp3'
+    formatEl.value = FISH_AUDIO_FORMATS.indexOf(savedFmt) >= 0 ? savedFmt : 'mp3'
+  }
+  bindKeyVisibilityText(page, 'toggle-fish-audio-key-vis', 'fish-audio-api-key')
+  page.querySelector('#btn-save-fish-audio').addEventListener('click', async function() {
+    var missing = findMissingSettingsFields([
+      { el: apiKeyEl, label: 'API Key' },
+      { el: modelEl, label: '语音模型' },
+      { el: formatEl, label: '音频格式' }
+    ])
+    if (showIncompleteSettingsSave(missing, 'Fish Audio 语音配置')) return
+    try {
+      await Promise.all([
+        db.config.put({ key: 'fishAudioApiKey', value: apiKeyEl.value.trim() }),
+        db.config.put({ key: 'fishAudioModel', value: modelEl.value }),
+        db.config.put({ key: 'fishAudioFormat', value: formatEl.value })
+      ])
+      var settingsPage = document.getElementById('settings-page')
+      if (settingsPage) await updateRowValues(settingsPage)
+      window.toast('Fish Audio 语音配置已保存')
+    } catch (error) {
+      window.toast('Fish Audio 语音配置保存失败：' + (error.message || error))
+    }
+  })
+}
+
+function openDefaultTtsProviderPage() {
+  var html =
+    '<div class="setting-section"><div class="api-form" id="default-tts-provider-form">' +
+      '<label class="form-label">全局默认语音服务（当角色设为“跟随默认”时生效）</label>' +
+      '<select class="input-field" id="default-tts-provider-select">' +
+        '<option value="minimax">Minimax（默认保留）</option>' +
+        '<option value="fish_audio">Fish Audio</option>' +
+      '</select>' +
+      '<div class="section-desc" style="padding:8px 0 0">' +
+        '仅决定全局默认使用的语音服务引擎；微信聊天与心动直播的音色 ID / Reference ID 始终各自独立存储。' +
+      '</div>' +
+      '<button class="btn-pill btn-full" id="btn-save-default-tts-provider">保存</button>' +
+    '</div></div>'
+  var page = buildSubPage('sub-default-tts-provider', '默认语音服务', html)
+  openSubPage(page)
+  initDefaultTtsProviderPage(page)
+}
+
+async function initDefaultTtsProviderPage(page) {
+  var row = await db.config.get('defaultTtsProvider')
+  var sel = page.querySelector('#default-tts-provider-select')
+  if (sel) sel.value = (row && row.value === 'fish_audio') ? 'fish_audio' : 'minimax'
+  page.querySelector('#btn-save-default-tts-provider').addEventListener('click', async function() {
+    try {
+      var val = sel && sel.value === 'fish_audio' ? 'fish_audio' : 'minimax'
+      await db.config.put({ key: 'defaultTtsProvider', value: val })
+      var settingsPage = document.getElementById('settings-page')
+      if (settingsPage) await updateRowValues(settingsPage)
+      window.toast('默认语音服务已更新')
+    } catch (error) {
+      window.toast('保存失败：' + (error.message || error))
     }
   })
 }
@@ -3730,6 +3866,10 @@ async function loadSettingsValues(page) {
   page.querySelector('#row-notification').addEventListener('click', openNotificationPage)
   page.querySelector('#row-api-config').addEventListener('click', openApiConfigPage)
   page.querySelector('#row-minimax-config').addEventListener('click', openMinimaxConfigPage)
+  var rowFishAudio = page.querySelector('#row-fish-audio-config')
+  if (rowFishAudio) rowFishAudio.addEventListener('click', openFishAudioConfigPage)
+  var rowDefaultTts = page.querySelector('#row-default-tts-provider')
+  if (rowDefaultTts) rowDefaultTts.addEventListener('click', openDefaultTtsProviderPage)
   page.querySelector('#row-image-gen-config').addEventListener('click', openImageGenConfigPage)
   page.querySelector('#row-font').addEventListener('click', openFontPage)
   page.querySelector('#row-wallpaper').addEventListener('click', openWallpaperPage)
@@ -3760,6 +3900,23 @@ async function updateRowValues(page) {
   var valMinimax = page.querySelector('#val-minimax-config')
   if (valMinimax) {
     valMinimax.textContent = (minimaxModel && minimaxModel.value) ? minimaxModel.value : '未配置'
+  }
+  var fishRows = await Promise.all([
+    db.config.get('fishAudioApiKey'),
+    db.config.get('fishAudioModel'),
+    db.config.get('fishAudioFormat'),
+    db.config.get('defaultTtsProvider')
+  ])
+  var valFish = page.querySelector('#val-fish-audio-config')
+  if (valFish) {
+    var fishKey = fishRows[0] && fishRows[0].value
+    var fishModel = fishRows[1] && fishRows[1].value
+    var fishFmt = (fishRows[2] && fishRows[2].value) || 'mp3'
+    valFish.textContent = (fishKey && fishModel) ? (fishModel + ' (' + fishFmt + ')') : '未配置'
+  }
+  var valDefaultTts = page.querySelector('#val-default-tts-provider')
+  if (valDefaultTts) {
+    valDefaultTts.textContent = (fishRows[3] && fishRows[3].value === 'fish_audio') ? 'Fish Audio' : 'Minimax'
   }
   var imageGenModel = await db.config.get('imageGenModel')
   var valImageGen = page.querySelector('#val-image-gen-config')

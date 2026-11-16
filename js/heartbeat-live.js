@@ -57,7 +57,7 @@
     inviteSearchQuery: '',
     selectedGiftRecipientId: '',
     // 抽屉与弹窗
-    openModal: '', // '' | 'planner' | 'rolePicker' | 'connect' | 'gift' | 'interact' | 'memory' | 'userHost' | 'summary'
+    openModal: '', // '' | 'planner' | 'rolePicker' | 'connect' | 'gift' | 'interact' | 'memory' | 'userHost' | 'summary' | 'roomVoice'
     plannerPendingMode: 'char',
     plannerHostObj: null,
     plannerEditing: false,
@@ -82,6 +82,8 @@
     sessionSeq: 0,
     aiRequestSeq: 0,
     ttsRequestSeq: 0,
+    ttsPaused: false,
+    ttsPausedActorName: '',
     asmrDeadlineMs: 0,
     asmrTimerId: null,
     asmrCurrentTrackIndex: 0,
@@ -97,6 +99,7 @@
   var _ttsAudioEl = null;
   var _ttsBlobUrl = '';
   var _previewAudioEl = null;
+  var _previewBlobUrl = '';
   var _toastTimer = null;
   var _logSaveTimer = null;
   var _importAbortCtrl = null;
@@ -257,8 +260,28 @@
   }
 
   // ===== 音频与流式媒体清理 (硬要求：绝不残留轨道或内存泄漏) =====
+  function syncTtsPlaybackButton() {
+    var btn = $('#hl-tts-playback-btn');
+    if (!btn) return;
+    if (!_ttsAudioEl || !_state.room) {
+      btn.hidden = true;
+      btn.classList.remove('is-paused');
+      return;
+    }
+    btn.hidden = false;
+    if (_state.ttsPaused) {
+      btn.classList.add('is-paused');
+      btn.textContent = '▶ 恢复语音' + (_state.ttsPausedActorName ? ('（' + _state.ttsPausedActorName + '）') : '');
+    } else {
+      btn.classList.remove('is-paused');
+      btn.textContent = '⏸ 暂停语音';
+    }
+  }
+
   function stopTtsPlayback() {
     _state.ttsRequestSeq++;
+    _state.ttsPaused = false;
+    _state.ttsPausedActorName = '';
     if (_ttsAudioEl) {
       try { _ttsAudioEl.pause(); _ttsAudioEl.src = ''; } catch (_) {}
       _ttsAudioEl = null;
@@ -268,6 +291,49 @@
     }
     _ttsBlobUrl = '';
     setAsmrDucking(false);
+    syncTtsPlaybackButton();
+  }
+
+  function pauseTtsPlayback(quiet) {
+    if (!_ttsAudioEl || _ttsAudioEl.paused) return false;
+    try { _ttsAudioEl.pause(); } catch (_) {}
+    _state.ttsPaused = true;
+    setAsmrDucking(false);
+    syncTtsPlaybackButton();
+    if (!quiet) showToast('⏸ 已暂停当前语音，可随时点击「▶ 恢复语音」继续');
+    return true;
+  }
+
+  function resumeTtsPlayback() {
+    if (!_ttsAudioEl || !_state.ttsPaused) return false;
+    _state.ttsPaused = false;
+    setAsmrDucking(true);
+    syncTtsPlaybackButton();
+    try {
+      var p = _ttsAudioEl.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(function() {
+          stopTtsPlayback();
+          showToast('当前语音恢复播放失败');
+        });
+      }
+    } catch (_) {
+      stopTtsPlayback();
+    }
+    return true;
+  }
+
+  function toggleTtsPauseResume() {
+    if (_state.ttsPaused) return resumeTtsPlayback();
+    return pauseTtsPlayback(false);
+  }
+
+  function syncRoleVoicePreviewButton() {
+    var btn = $('#hl-role-voice-preview');
+    if (!btn) return;
+    var cid = _state.selectedCharManageId || (getActiveChar() && getActiveChar().id) || '';
+    var isPlaying = Boolean(cid && _state.previewAudioId === ('role_voice_' + cid));
+    btn.textContent = isPlaying ? '⏹ 停止试听' : '🔊 独立试听';
   }
 
   function stopPreviewAudio() {
@@ -276,6 +342,11 @@
       try { _previewAudioEl.pause(); _previewAudioEl.src = ''; } catch (_) {}
       _previewAudioEl = null;
     }
+    if (_previewBlobUrl && typeof URL !== 'undefined' && URL.revokeObjectURL) {
+      try { URL.revokeObjectURL(_previewBlobUrl); } catch (_) {}
+    }
+    _previewBlobUrl = '';
+    syncRoleVoicePreviewButton();
   }
 
   function stopAsmrTimerOnly() {
@@ -1385,6 +1456,7 @@
       giftsTotalCoins: 0,
       cohostUsed: false,
       asmrUsed: false,
+      ttsProviderOverride: '', // '' | 'minimax' | 'fish_audio' (仅当场有效，关播清空)
       lastAiAudienceAt: 0,
       aiRoundRobinIndex: 0,
       messages: [],
@@ -1399,6 +1471,8 @@
     _state.messagesAutoFollow = true;
     _state.unreadWhileScrolled = 0;
     syncLatestMsgButton();
+    syncRoomVoiceButton();
+    syncTtsPlaybackButton();
 
     renderRoomIdentityChrome();
     await applyRoomThemeAndBackground();
@@ -1993,6 +2067,7 @@
       showToast('当前浏览器/内核不支持实时语音识别，请直接输入文字发送');
       return;
     }
+    pauseTtsPlayback(true);
     try {
       var rec = new SpeechRecognition();
       rec.lang = 'zh-CN';
@@ -2220,30 +2295,47 @@
     syncLatestMsgButton();
   }
 
-  async function maybePlayCharTts(text, charId, guard) {
+  async function maybePlayCharTts(text, actorOrId, guard) {
     var s = _state.settings || {};
     if (s.voice === 'text') return;
+    var r = _state.room;
+    var actorObj = (actorOrId && typeof actorOrId === 'object') ? actorOrId : getCharById(actorOrId);
     var ttsSeq = ++_state.ttsRequestSeq;
     try {
-      var res = await aiMod().speakCharLine(text, charId, s.voiceVol);
+      var res = await aiMod().speakCharLine(text, actorOrId, s.voiceVol, {
+        providerOverride: (r && r.ttsProviderOverride) || '',
+        liveDefaultProvider: s.ttsProvider
+      });
       if (guard.isStale() || ttsSeq !== _state.ttsRequestSeq) {
         if (res && res.blobUrl && typeof URL !== 'undefined' && URL.revokeObjectURL) {
           try { URL.revokeObjectURL(res.blobUrl); } catch (_) {}
         }
         return;
       }
+      if (res && res.failed) {
+        showToast((res.providerLabel || '语音') + ' 合成失败，已保留文字字幕（' + (res.reason || '请检查配置或网络') + '）');
+        return;
+      }
       if (!res || !res.played || !res.blobUrl) return;
       stopTtsPlayback();
       _state.ttsRequestSeq = ttsSeq;
       _ttsBlobUrl = res.blobUrl;
+      _state.ttsPaused = false;
+      _state.ttsPausedActorName = (actorObj && actorObj.name) || '';
       if (typeof Audio !== 'undefined') {
         var audio = new Audio(res.blobUrl);
         _ttsAudioEl = audio;
         audio.volume = res.volume;
         setAsmrDucking(true);
+        syncTtsPlaybackButton();
         var clearTts = function() {
-          if (_ttsAudioEl === audio) _ttsAudioEl = null;
+          if (_ttsAudioEl === audio) {
+            _ttsAudioEl = null;
+            _state.ttsPaused = false;
+            _state.ttsPausedActorName = '';
+          }
           setAsmrDucking(false);
+          syncTtsPlaybackButton();
           if (_ttsBlobUrl === res.blobUrl && typeof URL !== 'undefined' && URL.revokeObjectURL) {
             try { URL.revokeObjectURL(res.blobUrl); } catch (_) {}
             _ttsBlobUrl = '';
@@ -2255,6 +2347,7 @@
       }
     } catch (_) {
       setAsmrDucking(false);
+      syncTtsPlaybackButton();
     }
   }
 
@@ -2380,8 +2473,12 @@
 
     var msgRole = actor.roleType === 'npc' ? 'npc' : 'char';
     if (reply.speech) {
+      var ttsOpts = {
+        providerOverride: (r && r.ttsProviderOverride) || '',
+        liveDefaultProvider: _state.settings && _state.settings.ttsProvider
+      };
       if (_state.settings && _state.settings.voice === 'audio' && !_state.settings.captions) {
-        var ttsCheck = actor.roleType === 'npc' ? { apiReady: false, voiceId: '' } : await aiMod().getMinimaxStatus(myActorId);
+        var ttsCheck = await aiMod().getLiveTtsStatus(actor, ttsOpts);
         if (guard.isStale()) return;
         if (!ttsCheck.apiReady || !ttsCheck.voiceId) {
           appendRoomMessage({
@@ -2412,8 +2509,8 @@
           text: reply.speech
         });
       }
-      if (guard.isLatest() && actor.roleType !== 'npc') {
-        maybePlayCharTts(reply.speech, myActorId, guard);
+      if (guard.isLatest()) {
+        maybePlayCharTts(reply.speech, actor, guard);
       }
     }
 
@@ -2462,6 +2559,7 @@
     var text = inputEl.value.trim();
     if (!text) return;
     inputEl.value = '';
+    pauseTtsPlayback(true);
 
     var senderName = r.hostMode === 'user' ? (_state.user.name + '（主播）') : _state.user.name;
     appendRoomMessage({
@@ -2483,6 +2581,7 @@
     var r = _state.room;
     var clean = String(text || '').trim();
     if (!r || !clean) return;
+    pauseTtsPlayback(true);
     var isVoice = sourceKind === 'voice';
     var senderName = _state.user.name + (isVoice ? '（语音连麦）' : '（文字连麦）');
     appendRoomMessage({
@@ -3411,19 +3510,104 @@
     }
     if (urlInput) urlInput.value = customSrc && customSrc.indexOf('https:') === 0 ? customSrc : '';
 
+    var voiceProviderEl = $('#hl-role-tts-provider');
     var voiceEl = $('#hl-char-voice-id');
+    var fishVoiceEl = $('#hl-role-fish-voice-id');
     var voiceStatusEl = $('#hl-char-voice-status');
-    if (voiceEl) voiceEl.value = _state.charVoices[String(cid)] || '';
+    var rType = (c && c.roleType === 'npc') ? 'npc' : 'char';
+    var roleCfg = storage().extractRoleVoiceFromMap(_state.charVoices, cid, rType);
+    if (voiceProviderEl) voiceProviderEl.value = roleCfg.provider || 'default';
+    if (voiceEl) voiceEl.value = roleCfg.minimaxVoiceId || '';
+    if (fishVoiceEl) fishVoiceEl.value = roleCfg.fishReferenceId || '';
+    syncRoleVoicePreviewButton();
+
     if (voiceStatusEl) {
-      if (c && c.roleType === 'npc') {
-        voiceStatusEl.textContent = 'NPC 角色不使用微信单聊语音配置（直播中以文字字幕互动）';
+      var st = await aiMod().getLiveTtsStatus(
+        { id: cid, roleType: rType },
+        { liveDefaultProvider: _state.settings && _state.settings.ttsProvider }
+      );
+      var roleTagLabel = rType === 'npc' ? 'NPC' : 'Char';
+      voiceStatusEl.textContent = st.apiReady && st.voiceId
+        ? ('✓ ' + roleTagLabel + ' ' + st.providerLabel + ' 就绪（直播独立音色）')
+        : ('⚠ ' + (st.missingReason || '未就绪，将使用字幕回应'));
+    }
+  }
+
+  function syncRoomVoiceButton() {
+    var btn = $('#hl-room-voice-btn');
+    if (!btn) return;
+    var ov = (_state.room && _state.room.ttsProviderOverride) || '';
+    btn.classList.toggle('active', Boolean(ov));
+    btn.textContent = ov === 'fish_audio'
+      ? '🔊 Fish'
+      : ov === 'minimax'
+        ? '🔊 Mini'
+        : '🔊 语音';
+  }
+
+  async function renderRoomVoiceModal() {
+    var r = _state.room;
+    if (!r) return;
+    var curOv = r.ttsProviderOverride || '';
+    $$('[data-room-voice-opt]').forEach(function(btn) {
+      btn.classList.toggle('selected', (btn.dataset.roomVoiceOpt || '') === curOv);
+    });
+    var listEl = $('#hl-room-voice-status-list');
+    if (listEl) {
+      var actors = getAllRoomActors(r);
+      if (!actors.length) {
+        listEl.innerHTML = '<div class="hl-room-voice-status-item"><span>当前个人直播间尚未邀请嘉宾</span><small>支持随时 + 邀请 Char / NPC</small></div>';
       } else {
-        var st = await aiMod().getMinimaxStatus(cid);
-        voiceStatusEl.textContent = st.apiReady && st.voiceId
-          ? ('✓ 语音就绪（来源：' + (st.voiceSource === 'live' ? '直播专用音色' : '微信聊天音色') + '）')
-          : ('⚠ ' + (st.missingReason || '未就绪，将使用字幕回应'));
+        var rowsHtml = [];
+        for (var i = 0; i < actors.length; i++) {
+          var act = actors[i];
+          var st = await aiMod().getLiveTtsStatus(act, {
+            providerOverride: curOv,
+            liveDefaultProvider: _state.settings && _state.settings.ttsProvider
+          });
+          var badge = act.roleType === 'npc' ? 'NPC' : 'Char';
+          var statusText = st.apiReady && st.voiceId
+            ? ('✓ ' + st.providerLabel + ' 已就绪')
+            : ('字幕模式 · ' + (st.missingReason || '未配置'));
+          rowsHtml.push(
+            '<div class="hl-room-voice-status-item">' +
+              '<span><b>' + esc(act.name) + '</b> [' + badge + ']</span>' +
+              '<small>' + esc(statusText) + '</small>' +
+            '</div>'
+          );
+        }
+        listEl.innerHTML = rowsHtml.join('');
       }
     }
+    var pauseRowBtn = $('#hl-room-voice-pause-toggle');
+    if (pauseRowBtn) {
+      if (!_ttsAudioEl) {
+        pauseRowBtn.style.display = 'none';
+      } else {
+        pauseRowBtn.style.display = '';
+        pauseRowBtn.textContent = _state.ttsPaused ? '▶ 恢复刚才被打断的语音' : '⏸ 暂停当前正在播放的语音';
+      }
+    }
+  }
+
+  async function openRoomVoiceModal() {
+    if (!_state.room) return;
+    await renderRoomVoiceModal();
+    openModal('roomVoice');
+  }
+
+  async function setRoomTtsProviderOverride(providerOverride) {
+    if (!_state.room) return;
+    var clean = (providerOverride === 'minimax' || providerOverride === 'fish_audio') ? providerOverride : '';
+    _state.room.ttsProviderOverride = clean;
+    syncRoomVoiceButton();
+    await renderRoomVoiceModal();
+    var msg = clean === 'fish_audio'
+      ? '本场已临时切换为 Fish Audio（关播自动恢复默认）'
+      : clean === 'minimax'
+        ? '本场已临时切换为 Minimax（关播自动恢复默认）'
+        : '已恢复按角色 / 直播设置默认语音服务';
+    showToast(msg);
   }
 
   async function refreshUserPortraitPreview() {
@@ -3806,6 +3990,7 @@
     };
     bindVal('hl-motion', s.motion, true);
     bindVal('hl-voice', s.voice, false);
+    bindVal('hl-live-tts-provider', s.ttsProvider || 'default', false);
     bindVal('hl-expression', s.expression, false);
     bindVal('hl-voice-vol', s.voiceVol, false);
     bindVal('hl-captions', s.captions, true);
@@ -3874,6 +4059,7 @@
                 '<button type="button" class="hl-invite-pill" id="hl-invite-btn" style="display:none">+ 邀请</button>' +
                 '<button type="button" class="hl-top-pill" id="hl-connect-btn" title="连麦或视频">🎙 连麦</button>' +
                 '<button type="button" class="hl-top-pill" id="hl-callModeToggle" title="切换全屏或煲电话模式">📞 通话</button>' +
+                '<button type="button" class="hl-top-pill" id="hl-room-voice-btn" title="本场临时切换语音服务" aria-label="语音服务切换">🔊 语音</button>' +
                 '<button type="button" class="hl-top-pill" id="hl-minimize-btn" title="缩小为应用内悬浮小窗" aria-label="缩小直播">↙ 缩小</button>' +
                 '<span class="hl-audience" id="hl-audience">👁 模拟 1.2k</span>' +
                 '<button type="button" class="hl-close-room" id="hl-exit-room" aria-label="退出直播间">×</button>' +
@@ -3928,7 +4114,10 @@
                   '<button type="button" id="hl-voice-text-send">发送</button>' +
                 '</div>' +
               '</div>' +
-              '<div class="hl-notice" id="hl-notice">真实 Char AI 互动</div>' +
+              '<div class="hl-notice-row">' +
+                '<div class="hl-notice" id="hl-notice">真实 Char AI 互动</div>' +
+                '<button type="button" class="hl-tts-playback-btn" id="hl-tts-playback-btn" hidden>⏸ 暂停语音</button>' +
+              '</div>' +
               '<div class="hl-composer">' +
                 '<input id="hl-message-input" maxlength="160" placeholder="发一条弹幕…" aria-label="弹幕输入">' +
                 '<button type="button" class="hl-roundbtn" id="hl-send" aria-label="发送弹幕">➤</button>' +
@@ -3977,21 +4166,33 @@
             '<button type="button" class="hl-ghost" id="hl-back-settings">返回</button>' +
           '</div></div>' +
           '<div class="hl-settings">' +
-            '<h2>🧑‍🎤 Char 直播形象与音色</h2>' +
+            '<h2>🧑‍🎤 Char / NPC 直播形象与独立音色</h2>' +
             '<div class="hl-settingbox" style="padding:12px 14px">' +
-              '<p class="hl-help">每个 Char 形象与显示模式按角色 ID 独立保存；未上传时回退角色的微信头像。</p>' +
+              '<p class="hl-help">每个 Char 与 NPC 的直播形象、显示模式和音色均按角色独立保存，绝不共用或自动复用微信单聊音色。</p>' +
               '<select id="hl-char-img-select" class="hl-plan-select"></select>' +
               '<div class="hl-custom-tools">' +
-                '<label for="hl-char-img-file">🖼 上传 Char 图片<input type="file" id="hl-char-img-file" accept="image/*"></label>' +
+                '<label for="hl-char-img-file">🖼 上传角色图片<input type="file" id="hl-char-img-file" accept="image/*"></label>' +
                 '<button type="button" id="hl-char-img-clear">恢复默认形象</button>' +
               '</div>' +
               '<div class="hl-url-row"><input id="hl-char-img-url" type="url" placeholder="https:// 图片直链"><button type="button" id="hl-char-img-url-apply">应用 URL</button></div>' +
-              '<div class="hl-settingrow"><div><b>Char 直播画面模式</b><small>全屏直播 ↔ 煲电话模式随时切换</small></div><select id="hl-char-img-mode"><option value="fullscreen">🖼 全屏直播</option><option value="call">📞 煲电话模式</option></select></div>' +
+              '<div class="hl-settingrow"><div><b>直播画面模式</b><small>全屏直播 ↔ 煲电话模式随时切换</small></div><select id="hl-char-img-mode"><option value="fullscreen">🖼 全屏直播</option><option value="call">📞 煲电话模式</option></select></div>' +
               '<div class="hl-settingrow"><div><b>图片显示方式</b><small>铺满裁切或完整展示背景</small></div><select id="hl-char-img-fit"><option value="cover">全屏铺满</option><option value="contain">完整显示</option></select></div>' +
               '<div class="hl-settingrow"><div><b>画面位置</b><small>调整全屏形象焦点</small></div><select id="hl-char-img-position"><option value="center">居中</option><option value="center top">靠上</option><option value="center bottom">靠下</option></select></div>' +
               '<div class="hl-preview portrait-box" id="hl-char-img-preview"><span id="hl-char-img-preview-text">角色形象预览</span></div>' +
-              '<div class="hl-settingrow" style="border-top:1px solid #f5eef2;margin-top:6px"><div><b>Char 直播专用音色 ID</b><small id="hl-char-voice-status">检测中…</small></div></div>' +
-              '<div class="hl-url-row"><input id="hl-char-voice-id" placeholder="留空则沿用微信单聊 Minimax Voice ID"><button type="button" id="hl-char-voice-save">保存音色</button></div>' +
+              '<div class="hl-settingrow" style="border-top:1px solid #f5eef2;margin-top:6px">' +
+                '<div><b>直播专属音色（Char / NPC 独立）</b><small id="hl-char-voice-status">检测中…</small></div>' +
+                '<select id="hl-role-tts-provider" aria-label="角色语音服务"><option value="default">跟随直播默认</option><option value="minimax">Minimax</option><option value="fish_audio">Fish Audio</option></select>' +
+              '</div>' +
+              '<div class="hl-voice-config-fields">' +
+                '<label class="hl-help" for="hl-char-voice-id" style="display:block;margin:6px 0 3px">Minimax Voice ID（直播独立，不复用微信音色）</label>' +
+                '<input class="hl-plan-input" id="hl-char-voice-id" placeholder="输入 Minimax Voice ID（留空表示不绑定）">' +
+                '<label class="hl-help" for="hl-role-fish-voice-id" style="display:block;margin:8px 0 3px">Fish Audio Reference ID（直播独立，不复用微信音色）</label>' +
+                '<input class="hl-plan-input" id="hl-role-fish-voice-id" placeholder="输入 Fish Audio Reference ID（留空表示不绑定）">' +
+                '<div class="hl-plan-buttons" style="margin-top:9px">' +
+                  '<button type="button" class="hl-plainbtn" id="hl-role-voice-preview">🔊 独立试听</button>' +
+                  '<button type="button" class="hl-pinkbtn" id="hl-char-voice-save">保存独立音色</button>' +
+                '</div>' +
+              '</div>' +
             '</div>' +
 
             '<h2>🎀 User 直播形象</h2>' +
@@ -4022,11 +4223,12 @@
               '<div class="hl-settingrow"><div><b>柔和背景动效</b><small>自动尊重系统减少动态设置</small></div><input type="checkbox" id="hl-motion"></div>' +
             '</div>' +
 
-            '<h2>🎙️ Char 语音 (Minimax TTS)</h2>' +
+            '<h2>🎙️ 角色语音 (Minimax / Fish Audio)</h2>' +
             '<div class="hl-settingbox">' +
-              '<div class="hl-settingrow"><div><b>语音输出方式</b><small>未配置 Minimax 或音色时自动回退文字</small></div><select id="hl-voice"><option value="both">语音 + 字幕</option><option value="text">纯文字</option><option value="audio">语音为主</option></select></div>' +
+              '<div class="hl-settingrow"><div><b>直播默认语音服务</b><small>角色未单独指定时生效（播中可临时切换）</small></div><select id="hl-live-tts-provider"><option value="default">跟随全局默认设置</option><option value="minimax">Minimax</option><option value="fish_audio">Fish Audio</option></select></div>' +
+              '<div class="hl-settingrow"><div><b>语音输出方式</b><small>未配置 API 或独立音色时自动回退文字</small></div><select id="hl-voice"><option value="both">语音 + 字幕</option><option value="text">纯文字</option><option value="audio">语音为主</option></select></div>' +
               '<div class="hl-settingrow"><div><b>情感演绎程度</b><small>贴合角色设定</small></div><select id="hl-expression"><option value="natural">自然情感</option><option value="calm">克制自然</option><option value="immersive">沉浸演绎</option></select></div>' +
-              '<div class="hl-settingrow"><div><b>Char 语音音量</b><small id="hl-voice-vol-label">65%</small></div><input type="range" id="hl-voice-vol" min="0" max="100"></div>' +
+              '<div class="hl-settingrow"><div><b>角色语音音量</b><small id="hl-voice-vol-label">65%</small></div><input type="range" id="hl-voice-vol" min="0" max="100"></div>' +
               '<div class="hl-settingrow"><div><b>显示文字字幕</b><small>语音与文字保持一致</small></div><input type="checkbox" id="hl-captions"></div>' +
             '</div>' +
 
@@ -4125,7 +4327,7 @@
             '</div>' +
             '<label class="hl-plan-label" for="hl-connect-layout">连麦画面布局（直播中可随时无损切换）</label>' +
             '<select class="hl-plan-select" id="hl-connect-layout"><option value="floating">📺 主播大屏＋连麦小窗（经典版）</option><option value="split">👥 双人左右并列 PK（新版）</option></select>' +
-            '<p class="hl-help">文字连麦无需麦克风；语音连麦支持授权本机麦克风、语音转写与 Minimax TTS；视频连麦默认以双方图片虚拟同框。</p>' +
+            '<p class="hl-help">文字连麦无需麦克风；语音连麦支持授权本机麦克风、语音转写与 Minimax / Fish Audio 语音合成；视频连麦默认以双方图片虚拟同框。</p>' +
             '<div class="hl-plan-buttons"><button type="button" class="hl-pinkbtn" id="hl-text-connect">💬 文字连麦</button><button type="button" class="hl-plainbtn" id="hl-voice-connect">🎙 语音连麦</button></div>' +
             '<div class="hl-plan-buttons"><button type="button" class="hl-plainbtn" id="hl-video-connect">📹 虚拟同框画面</button><button type="button" class="hl-plainbtn" id="hl-camera-connect">📷 我的摄像头（仅本地预览）</button></div>' +
           '</div>' +
@@ -4223,6 +4425,24 @@
             '<div class="hl-plan-buttons">' +
               '<button type="button" class="hl-plainbtn" data-close-modal>取消</button>' +
               '<button type="button" class="hl-pinkbtn" id="hl-mem-confirm-btn">确认保存记忆</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        // 抽屉 8：直播间内本场临时语音服务切换与播放控制
+        '<div class="hl-planner" id="hl-room-voice-planner" data-modal="roomVoice" role="dialog" aria-modal="true">' +
+          '<div class="hl-planner-sheet">' +
+            '<div class="hl-plan-head"><b>🔊 本场语音服务切换</b><button type="button" data-close-modal>×</button></div>' +
+            '<p class="hl-help">仅在当前直播间临时生效，不会覆盖直播设置或系统默认；离开直播间后自动恢复。</p>' +
+            '<div class="hl-room-voice-options">' +
+              '<button type="button" class="hl-room-voice-opt selected" data-room-voice-opt="">跟随角色默认</button>' +
+              '<button type="button" class="hl-room-voice-opt" data-room-voice-opt="minimax">临时 Minimax</button>' +
+              '<button type="button" class="hl-room-voice-opt" data-room-voice-opt="fish_audio">临时 Fish Audio</button>' +
+            '</div>' +
+            '<div class="hl-room-voice-status-list" id="hl-room-voice-status-list"></div>' +
+            '<div class="hl-plan-buttons">' +
+              '<button type="button" class="hl-plainbtn" id="hl-room-voice-pause-toggle" style="display:none">⏸ 暂停当前语音</button>' +
+              '<button type="button" class="hl-pinkbtn" data-close-modal>完成</button>' +
             '</div>' +
           '</div>' +
         '</div>' +
@@ -4409,6 +4629,30 @@
     if (minBtn) {
       minBtn.onclick = function() {
         minimizeLiveRoom();
+      };
+    }
+    var roomVoiceBtn = $('#hl-room-voice-btn');
+    if (roomVoiceBtn) {
+      roomVoiceBtn.onclick = function() {
+        openRoomVoiceModal();
+      };
+    }
+    $$('[data-room-voice-opt]').forEach(function(btn) {
+      btn.onclick = function() {
+        setRoomTtsProviderOverride(btn.dataset.roomVoiceOpt || '');
+      };
+    });
+    var roomVoicePauseToggle = $('#hl-room-voice-pause-toggle');
+    if (roomVoicePauseToggle) {
+      roomVoicePauseToggle.onclick = function() {
+        toggleTtsPauseResume();
+        renderRoomVoiceModal();
+      };
+    }
+    var ttsPlaybackBtn = $('#hl-tts-playback-btn');
+    if (ttsPlaybackBtn) {
+      ttsPlaybackBtn.onclick = function() {
+        toggleTtsPauseResume();
       };
     }
     var inviteSearch = $('#hl-invite-search');
@@ -4673,11 +4917,111 @@
     if (voiceSaveBtn) {
       voiceSaveBtn.onclick = async function() {
         var cid = _state.selectedCharManageId || getActiveChar().id;
-        var v = (($('#hl-char-voice-id') || {}).value || '').trim();
-        await storage().saveCharVoiceId(cid, v);
+        var roleObj = getCharById(cid);
+        var rType = roleObj && roleObj.roleType === 'npc' ? 'npc' : 'char';
+        var prov = (($('#hl-role-tts-provider') || {}).value || 'default');
+        var mmId = (($('#hl-char-voice-id') || {}).value || '').trim();
+        var fishId = (($('#hl-role-fish-voice-id') || {}).value || '').trim();
+        await storage().saveRoleVoiceConfig(cid, rType, {
+          provider: prov,
+          minimaxVoiceId: mmId,
+          fishReferenceId: fishId
+        });
         _state.charVoices = await storage().loadCharVoices();
         await refreshCharManagePreview();
-        showToast(v ? '已保存 Char 直播音色' : '已恢复沿用微信单聊音色');
+        showToast('已保存 ' + (roleObj ? roleObj.name : '角色') + ' 的直播独立音色 ♡');
+      };
+    }
+
+    var roleVoicePreviewBtn = $('#hl-role-voice-preview');
+    if (roleVoicePreviewBtn) {
+      roleVoicePreviewBtn.onclick = async function() {
+        var cid = _state.selectedCharManageId || getActiveChar().id;
+        var previewKey = 'role_voice_' + cid;
+        if (_state.previewAudioId === previewKey) {
+          stopPreviewAudio();
+          return;
+        }
+        stopPreviewAudio();
+        var roleObj = getCharById(cid);
+        var rType = roleObj && roleObj.roleType === 'npc' ? 'npc' : 'char';
+        var prov = (($('#hl-role-tts-provider') || {}).value || 'default');
+        var mmId = (($('#hl-char-voice-id') || {}).value || '').trim();
+        var fishId = (($('#hl-role-fish-voice-id') || {}).value || '').trim();
+        roleVoicePreviewBtn.disabled = true;
+        roleVoicePreviewBtn.textContent = '⏳ 合成中…';
+        try {
+          var res = await aiMod().previewRoleVoiceLine({
+            roleId: cid,
+            roleType: rType,
+            roleName: (roleObj && roleObj.name) || '角色',
+            provider: prov,
+            minimaxVoiceId: mmId,
+            fishReferenceId: fishId,
+            voiceVol: _state.settings && _state.settings.voiceVol
+          });
+          if (!_state.pageEl) {
+            if (res && res.blobUrl && typeof URL !== 'undefined' && URL.revokeObjectURL) {
+              try { URL.revokeObjectURL(res.blobUrl); } catch (_) {}
+            }
+            return;
+          }
+          if (!res || !res.ok || !res.blobUrl) {
+            showToast((res && res.reason) || '试听失败，请检查音色与 API 配置');
+            syncRoleVoicePreviewButton();
+            return;
+          }
+          if (typeof Audio !== 'undefined') {
+            _state.previewAudioId = previewKey;
+            _previewBlobUrl = res.blobUrl;
+            _previewAudioEl = new Audio(res.blobUrl);
+            _previewAudioEl.volume = res.volume;
+            _previewAudioEl.onended = function() { stopPreviewAudio(); };
+            _previewAudioEl.onerror = function() {
+              stopPreviewAudio();
+              showToast('试听音频播放失败');
+            };
+            syncRoleVoicePreviewButton();
+            _previewAudioEl.play().catch(function() {
+              stopPreviewAudio();
+              showToast('无法播放试听音频');
+            });
+          } else if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
+            try { URL.revokeObjectURL(res.blobUrl); } catch (_) {}
+          }
+        } finally {
+          roleVoicePreviewBtn.disabled = false;
+          if (_state.previewAudioId !== previewKey) syncRoleVoicePreviewButton();
+        }
+      };
+    }
+
+    var roleProviderSel = $('#hl-role-tts-provider');
+    if (roleProviderSel) {
+      roleProviderSel.onchange = async function() {
+        var cid = _state.selectedCharManageId || getActiveChar().id;
+        var roleObj = getCharById(cid);
+        var rType = roleObj && roleObj.roleType === 'npc' ? 'npc' : 'char';
+        var st = await aiMod().getLiveTtsStatus(
+          { id: cid, roleType: rType },
+          {
+            providerOverride: (roleProviderSel.value === 'minimax' || roleProviderSel.value === 'fish_audio') ? roleProviderSel.value : '',
+            liveDefaultProvider: _state.settings && _state.settings.ttsProvider,
+            voiceConfigOverride: {
+              provider: roleProviderSel.value || 'default',
+              minimaxVoiceId: (($('#hl-char-voice-id') || {}).value || '').trim(),
+              fishReferenceId: (($('#hl-role-fish-voice-id') || {}).value || '').trim(),
+              roleType: rType
+            }
+          }
+        );
+        var voiceStatusEl = $('#hl-char-voice-status');
+        if (voiceStatusEl) {
+          var roleTagLabel = rType === 'npc' ? 'NPC' : 'Char';
+          voiceStatusEl.textContent = st.apiReady && st.voiceId
+            ? ('✓ ' + roleTagLabel + ' ' + st.providerLabel + ' 就绪（未保存改动将使用实时填写值）')
+            : ('⚠ ' + (st.missingReason || '未就绪，将使用字幕回应'));
+        }
       };
     }
 
@@ -4861,6 +5205,13 @@
 
     bindControl('hl-motion', 'motion', true);
     bindControl('hl-voice', 'voice', false);
+    bindControl('hl-live-tts-provider', 'ttsProvider', false);
+    var liveProvEl = $('#hl-live-tts-provider');
+    if (liveProvEl) {
+      liveProvEl.addEventListener('change', function() {
+        setTimeout(function() { refreshCharManagePreview(); }, 0);
+      });
+    }
     bindControl('hl-expression', 'expression', false);
     bindControl('hl-voice-vol', 'voiceVol', false);
     bindControl('hl-captions', 'captions', true);
@@ -5119,6 +5470,10 @@
     inviteViewerToRoom: inviteCharToUserRoom,
     removeViewerFromUserRoom: removeViewerFromUserRoom,
     openReplayView: openReplayView,
+    pauseTtsPlayback: pauseTtsPlayback,
+    resumeTtsPlayback: resumeTtsPlayback,
+    setRoomTtsProviderOverride: setRoomTtsProviderOverride,
+    openRoomVoiceModal: openRoomVoiceModal,
     getState: function() { return _state; }
   };
 

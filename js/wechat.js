@@ -16146,8 +16146,17 @@ async function openChatSettings(chatId, charId, chatPage) {
     ? await db.memories.where('chatId').equals(chatId).filter(m => m.ownerUid === _wechatUid && m.charId === charId).count()
     : 0
   const promptEstimate = await estimateWechatPromptContext(chatId, charId, _wechatUid, historyLimit)
-  const voiceIdStored = await db.config.get(`chatVoiceId_${chatId}`)
-  const voiceId = voiceIdStored?.value || ''
+  const [voiceIdStored, fishVoiceIdStored, ttsProviderStored] = await Promise.all([
+    db.config.get(`chatVoiceId_${chatId}`),
+    db.config.get(`chatFishVoiceId_${chatId}`),
+    db.config.get(`chatTtsProvider_${chatId}`)
+  ])
+  const voiceConfig = {
+    provider: (ttsProviderStored?.value === 'minimax' || ttsProviderStored?.value === 'fish_audio') ? ttsProviderStored.value : 'default',
+    minimaxVoiceId: voiceIdStored?.value || '',
+    fishReferenceId: fishVoiceIdStored?.value || '',
+    globalDefaultProvider: window.WanWanTTS ? await window.WanWanTTS.getGlobalDefaultProvider() : 'minimax'
+  }
   const msgNotify = await getChatMsgNotifySettings(chatId)
   settingsPage.innerHTML = buildChatSettingsHTML(
     char, profile, historyLimit,
@@ -16158,7 +16167,7 @@ async function openChatSettings(chatId, charId, chatPage) {
     chatBeautyRaw, chatBeautyPresets,
     longMemorySettings, longMemoryCount,
     promptEstimate,
-    voiceId, msgNotify
+    voiceConfig, msgNotify
   )
   window.openPage(settingsPage)
   bindChatSettingsEvents(settingsPage, chatId, charId, chatPage, char)
@@ -16791,13 +16800,36 @@ function buildLoreSectionHTML(lorebooks, mountedIds, charId) {
 }
 
 
-// Voice ID section
-function buildVoiceIdSectionHTML(voiceId) {
+// Voice ID section（微信独立按 chatId 保存 Minimax 与 Fish Audio 音色）
+function buildVoiceIdSectionHTML(voiceConfig) {
+  const cfg = (voiceConfig && typeof voiceConfig === 'object')
+    ? voiceConfig
+    : { provider: 'default', minimaxVoiceId: String(voiceConfig || ''), fishReferenceId: '', globalDefaultProvider: 'minimax' }
+  const provider = (cfg.provider === 'minimax' || cfg.provider === 'fish_audio') ? cfg.provider : 'default'
+  const globalDef = cfg.globalDefaultProvider === 'fish_audio' ? 'fish_audio' : 'minimax'
+  const globalDefLabel = globalDef === 'fish_audio' ? 'Fish Audio' : 'Minimax'
+  const effectiveProvider = provider === 'default' ? globalDef : provider
+  const effectiveLabel = effectiveProvider === 'fish_audio' ? 'Fish Audio' : 'Minimax'
+  const activeId = effectiveProvider === 'fish_audio' ? cfg.fishReferenceId : cfg.minimaxVoiceId
+  const hintText = activeId
+    ? `当前使用 ${effectiveLabel}（音色已配置）；切换服务不会覆盖另一家音色 ID`
+    : `当前使用 ${effectiveLabel}（该服务音色暂未填写）；两套音色 ID 独立保存`
   return `
     <div class="cs-section" data-cs-tab="role">
-      <div class="cs-section-label">Minimax 语音克隆</div>
-      <div class="cs-section-sub">填入 Voice ID，角色语音消息将用 Minimax TTS 生成</div>
-      <input class="input-field" id="cs-voice-id" placeholder="输入 Minimax Voice ID" value="${wcEscHtml(voiceId || '')}" style="margin:0 0 8px">
+      <div class="cs-section-label">角色语音服务</div>
+      <div class="cs-section-sub">选择本聊天使用的 TTS 服务，两家音色 ID 独立保存、互不覆盖</div>
+      <select class="input-field" id="cs-tts-provider" style="margin:0 0 10px">
+        <option value="default" ${provider === 'default' ? 'selected' : ''}>跟随默认（当前：${globalDefLabel}）</option>
+        <option value="minimax" ${provider === 'minimax' ? 'selected' : ''}>Minimax</option>
+        <option value="fish_audio" ${provider === 'fish_audio' ? 'selected' : ''}>Fish Audio</option>
+      </select>
+      <div class="cs-section-label" style="margin-top:4px">Minimax 语音克隆</div>
+      <div class="cs-section-sub">填入 Voice ID，使用 Minimax 合成语音消息与通话声音</div>
+      <input class="input-field" id="cs-voice-id" placeholder="输入 Minimax Voice ID" value="${wcEscHtml(cfg.minimaxVoiceId || '')}" style="margin:0 0 10px">
+      <div class="cs-section-label" style="margin-top:4px">Fish Audio 语音克隆</div>
+      <div class="cs-section-sub">填入 Reference ID，使用 Fish Audio 合成语音消息与通话声音</div>
+      <input class="input-field" id="cs-fish-voice-id" placeholder="输入 Fish Audio Reference ID" value="${wcEscHtml(cfg.fishReferenceId || '')}" style="margin:0 0 8px">
+      <div class="cs-section-sub" id="cs-voice-provider-hint" data-global-default="${globalDef}" style="margin-top:0">${wcEscHtml(hintText)}</div>
     </div>
   `
 }
@@ -17202,8 +17234,15 @@ async function saveChatSettingsPage(settingsPage, chatId, charId, chatPage, char
     const appearanceValue = readChatSettingsAppearanceValue(settingsPage)
     await db.config.put({ key: `chatAppearance_${chatId}`, value: appearanceValue })
 
+    const ttsProviderVal = settingsPage.querySelector('#cs-tts-provider')?.value || 'default'
+    const normalizedTtsProvider = (ttsProviderVal === 'minimax' || ttsProviderVal === 'fish_audio') ? ttsProviderVal : 'default'
     const voiceId = settingsPage.querySelector('#cs-voice-id')?.value.trim() || ''
-    await db.config.put({ key: `chatVoiceId_${chatId}`, value: voiceId })
+    const fishVoiceId = settingsPage.querySelector('#cs-fish-voice-id')?.value.trim() || ''
+    await Promise.all([
+      db.config.put({ key: `chatTtsProvider_${chatId}`, value: normalizedTtsProvider }),
+      db.config.put({ key: `chatVoiceId_${chatId}`, value: voiceId }),
+      db.config.put({ key: `chatFishVoiceId_${chatId}`, value: fishVoiceId })
+    ])
 
     settingsPage.dataset.csOriginalAvatarSize = String(appearanceValue.avatarSize)
     settingsPage.dataset.csOriginalAvatarRadius = String(appearanceValue.avatarRadius)
@@ -18917,11 +18956,75 @@ function showApiErrorModal(message, diagnostic) {
 
 // ===== Voice ID 设置事件绑定 =====
 function bindVoiceIdEvents(settingsPage, chatId) {
-  // Voice ID 由聊天设置顶栏的统一保存按钮保存。
+  const providerEl = settingsPage.querySelector('#cs-tts-provider')
+  const mmEl = settingsPage.querySelector('#cs-voice-id')
+  const fishEl = settingsPage.querySelector('#cs-fish-voice-id')
+  const hintEl = settingsPage.querySelector('#cs-voice-provider-hint')
+  const refreshHint = () => {
+    if (!hintEl) return
+    const globalDef = hintEl.dataset.globalDefault === 'fish_audio' ? 'fish_audio' : 'minimax'
+    const sel = providerEl?.value || 'default'
+    const eff = (sel === 'minimax' || sel === 'fish_audio') ? sel : globalDef
+    const effLabel = eff === 'fish_audio' ? 'Fish Audio' : 'Minimax'
+    const activeId = eff === 'fish_audio' ? (fishEl?.value.trim() || '') : (mmEl?.value.trim() || '')
+    hintEl.textContent = activeId
+      ? `当前使用 ${effLabel}（音色已配置）；切换服务不会覆盖另一家音色 ID`
+      : `当前使用 ${effLabel}（该服务音色暂未填写）；两套音色 ID 独立保存`
+  }
+  ;[providerEl, mmEl, fishEl].forEach(el => {
+    if (!el) return
+    el.addEventListener('change', () => {
+      refreshHint()
+      if (typeof setChatSettingsDirty === 'function') setChatSettingsDirty(settingsPage, true)
+    })
+    if (el.tagName === 'INPUT') {
+      el.addEventListener('input', () => {
+        refreshHint()
+        if (typeof setChatSettingsDirty === 'function') setChatSettingsDirty(settingsPage, true)
+      })
+    }
+  })
 }
 
-// ===== Minimax TTS 调用 =====
+// ===== 微信 TTS 双服务解析与调用（按 chatId 独立读取） =====
+async function resolveWechatChatTtsTarget(chatId, overrideProvider) {
+  const [providerRow, mmRow, fishRow] = await Promise.all([
+    db.config.get(`chatTtsProvider_${chatId}`),
+    db.config.get(`chatVoiceId_${chatId}`),
+    db.config.get(`chatFishVoiceId_${chatId}`)
+  ])
+  const selectedProvider = (providerRow?.value === 'minimax' || providerRow?.value === 'fish_audio') ? providerRow.value : 'default'
+  const minimaxVoiceId = String(mmRow?.value || '').trim()
+  const fishReferenceId = String(fishRow?.value || '').trim()
+  const globalDefault = window.WanWanTTS ? await window.WanWanTTS.getGlobalDefaultProvider() : 'minimax'
+
+  let activeProvider
+  if (overrideProvider === 'minimax' || overrideProvider === 'fish_audio') {
+    activeProvider = overrideProvider
+  } else {
+    activeProvider = selectedProvider === 'default' ? globalDefault : selectedProvider
+  }
+  const altProvider = activeProvider === 'fish_audio' ? 'minimax' : 'fish_audio'
+  const activeVoiceId = activeProvider === 'fish_audio' ? fishReferenceId : minimaxVoiceId
+  const altVoiceId = altProvider === 'fish_audio' ? fishReferenceId : minimaxVoiceId
+
+  return {
+    chatId,
+    selectedProvider,
+    globalDefault,
+    provider: activeProvider,
+    providerLabel: activeProvider === 'fish_audio' ? 'Fish Audio' : 'Minimax',
+    voiceId: activeVoiceId,
+    minimaxVoiceId,
+    fishReferenceId,
+    altProvider,
+    altProviderLabel: altProvider === 'fish_audio' ? 'Fish Audio' : 'Minimax',
+    altVoiceId
+  }
+}
+
 async function getMinimaxConfig() {
+  if (window.WanWanTTS) return window.WanWanTTS.getMinimaxConfig()
   const results = await Promise.all([
     db.config.get('minimaxVersion'),
     db.config.get('minimaxGroupId'),
@@ -18937,63 +19040,28 @@ async function getMinimaxConfig() {
 }
 
 async function callMinimaxTTS(text, voiceId) {
-  const cfg = await getMinimaxConfig()
-  if (!cfg.groupId || !cfg.apiKey) throw new Error('Minimax API 未配置，请在设置中填写 Group ID 和 API Key')
-  if (!cfg.model) throw new Error('Minimax 语音模型未选择，请在设置中选择模型')
-  if (!voiceId) throw new Error('Voice ID 未配置，请在聊天设置中填写')
+  if (window.WanWanTTS) return window.WanWanTTS.callMinimaxTTS(text, voiceId)
+  throw new Error('TTS 引擎未加载')
+}
 
-  const host = cfg.version === 'international' ? 'https://api.minimaxi.chat' : 'https://api.minimax.chat'
-  const url = `${host}/v1/t2a_v2?GroupId=${encodeURIComponent(cfg.groupId)}`
+async function callFishAudioTTS(text, referenceId, options) {
+  if (window.WanWanTTS) return window.WanWanTTS.callFishAudioTTS(text, referenceId, options)
+  throw new Error('TTS 引擎未加载')
+}
 
-  const body = {
-    model: cfg.model,
-    text: text,
-    stream: false,
-    voice_setting: {
-      voice_id: voiceId,
-      speed: 1.0,
-      vol: 1.0,
-      pitch: 0
-    },
-    audio_setting: {
-      sample_rate: 32000,
-      bitrate: 128000,
-      format: 'mp3'
-    }
+async function callWechatTTS(chatId, text, overrideProvider) {
+  const target = await resolveWechatChatTtsTarget(chatId, overrideProvider)
+  if (!target.voiceId) {
+    throw new Error(`${target.providerLabel} ${target.provider === 'fish_audio' ? 'Reference ID' : 'Voice ID'} 未配置，请在聊天设置中填写`)
   }
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + cfg.apiKey
-    },
-    body: JSON.stringify(body)
+  if (!window.WanWanTTS) throw new Error('TTS 引擎未加载')
+  const res = await window.WanWanTTS.synthesize({
+    provider: target.provider,
+    text,
+    voiceId: target.voiceId,
+    referenceId: target.voiceId
   })
-
-  if (!res.ok) {
-    let detail = ''
-    try {
-      const j = await res.json()
-      detail = j?.base_resp?.status_msg || j?.error?.message || j?.message || ''
-    } catch (_) {}
-    throw new Error('Minimax TTS HTTP ' + res.status + (detail ? '：' + detail.slice(0, 300) : ''))
-  }
-
-  const json = await res.json()
-  if (json?.base_resp?.status_code !== 0 && json?.base_resp?.status_code !== undefined) {
-    throw new Error('Minimax TTS 错误：' + (json.base_resp.status_msg || '未知错误'))
-  }
-
-  const audioHex = json?.data?.audio
-  if (!audioHex) throw new Error('Minimax TTS 未返回音频数据')
-
-  const bytes = new Uint8Array(audioHex.length / 2)
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(audioHex.substr(i * 2, 2), 16)
-  }
-  const blob = new Blob([bytes], { type: 'audio/mpeg' })
-  return URL.createObjectURL(blob)
+  return { blobUrl: res.blobUrl, target }
 }
 
 // ===== 语音音频缓存 =====
@@ -19019,7 +19087,79 @@ async function blobUrlToDataUrl(blobUrl) {
   })
 }
 
-// ===== 重写 toggleVoice：点击语音条时触发 TTS =====
+async function generateAndPlayWechatVoiceBubble(bubbleEl, voiceEl, msgId, chatId, voiceText, overrideProvider) {
+  bubbleEl.classList.add('voice-loading')
+  try {
+    const { blobUrl } = await callWechatTTS(chatId, voiceText, overrideProvider)
+    const dataUrl = await blobUrlToDataUrl(blobUrl)
+    URL.revokeObjectURL(blobUrl)
+    await saveVoiceAudioCache(msgId, dataUrl)
+    if (voiceEl.classList.contains('is-open')) {
+      playVoiceAudio(dataUrl, voiceEl)
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e }
+  } finally {
+    bubbleEl.classList.remove('voice-loading')
+  }
+}
+
+function showVoiceErrorActionModal({ errorMessage, chatId, msgId, voiceText, voiceEl, bubbleEl, target }) {
+  const overlay = document.createElement('div')
+  overlay.className = 'sheet-overlay'
+  overlay.style.zIndex = '300'
+  const modal = document.createElement('div')
+  modal.className = 'center-modal'
+  modal.style.zIndex = '301'
+  const canRetryCurrent = Boolean(target?.voiceId)
+  const canSwitchAlt = Boolean(target?.altVoiceId)
+  modal.innerHTML = `
+    <div class="sheet-title" style="text-align:center">语音生成失败（已保留文字）</div>
+    <div style="padding:0 20px 14px;font-size:13px;color:var(--c-sub);line-height:1.7;text-align:center;word-break:break-word;white-space:pre-wrap">${wcEscHtml(errorMessage || '未知错误')}</div>
+    <div class="sheet-actions" style="display:flex;flex-direction:column;gap:8px">
+      ${canRetryCurrent ? `<button class="btn-pill btn-full" id="voice-err-retry">重试 ${wcEscHtml(target.providerLabel)}</button>` : ''}
+      ${canSwitchAlt ? `<button class="btn-ghost btn-full" id="voice-err-switch">改用 ${wcEscHtml(target.altProviderLabel)} 重试并设为默认</button>` : ''}
+      <button class="btn-ghost btn-full" id="voice-err-close">仅查看文字</button>
+    </div>
+  `
+  document.getElementById('app').appendChild(overlay)
+  document.getElementById('app').appendChild(modal)
+  requestAnimationFrame(() => { overlay.classList.add('show'); modal.classList.add('show') })
+  const close = () => {
+    overlay.classList.remove('show')
+    modal.classList.remove('show')
+    setTimeout(() => { overlay.remove(); modal.remove() }, 200)
+  }
+  overlay.addEventListener('click', close)
+  modal.querySelector('#voice-err-close')?.addEventListener('click', close)
+  modal.querySelector('#voice-err-retry')?.addEventListener('click', async () => {
+    close()
+    const res = await generateAndPlayWechatVoiceBubble(bubbleEl, voiceEl, msgId, chatId, voiceText, target.provider)
+    if (!res.ok) {
+      const latest = await resolveWechatChatTtsTarget(chatId)
+      showVoiceErrorActionModal({
+        errorMessage: res.error?.message || String(res.error || '未知错误'),
+        chatId, msgId, voiceText, voiceEl, bubbleEl, target: latest
+      })
+    }
+  })
+  modal.querySelector('#voice-err-switch')?.addEventListener('click', async () => {
+    close()
+    await db.config.put({ key: `chatTtsProvider_${chatId}`, value: target.altProvider })
+    window.toast?.(`已切换本聊天语音服务为 ${target.altProviderLabel}`)
+    const res = await generateAndPlayWechatVoiceBubble(bubbleEl, voiceEl, msgId, chatId, voiceText, target.altProvider)
+    if (!res.ok) {
+      const latest = await resolveWechatChatTtsTarget(chatId)
+      showVoiceErrorActionModal({
+        errorMessage: res.error?.message || String(res.error || '未知错误'),
+        chatId, msgId, voiceText, voiceEl, bubbleEl, target: latest
+      })
+    }
+  })
+}
+
+// ===== 重写 toggleVoice：点击语音条时触发 TTS（支持 Minimax 与 Fish Audio）=====
 window.toggleVoice = async function(bubbleEl) {
   const voice = bubbleEl.closest('.voice-message')
   if (!voice) return
@@ -19041,15 +19181,14 @@ window.toggleVoice = async function(bubbleEl) {
   if (!msg || msg.role !== 'assistant') return
 
   const chatId = msg.chatId
-  const voiceIdCfg = await db.config.get(`chatVoiceId_${chatId}`)
-  const voiceId = voiceIdCfg?.value
-  if (!voiceId) return
-
   const cached = msg.voiceAudioData
   if (cached) {
     playVoiceAudio(cached, voice)
     return
   }
+
+  const target = await resolveWechatChatTtsTarget(chatId)
+  if (!target.voiceId && !target.altVoiceId) return
 
   const parsed = parseMsgType(msg.content)
   if (parsed.type !== 'voice') return
@@ -19057,19 +19196,20 @@ window.toggleVoice = async function(bubbleEl) {
   const voiceText = getBilingualDisplayText(parsed.data.text, bilingualSettings).original
   if (!voiceText) return
 
-  bubbleEl.classList.add('voice-loading')
-  try {
-    const blobUrl = await callMinimaxTTS(voiceText, voiceId)
-    const dataUrl = await blobUrlToDataUrl(blobUrl)
-    URL.revokeObjectURL(blobUrl)
-    await saveVoiceAudioCache(msgId, dataUrl)
-    if (voice.classList.contains('is-open')) {
-      playVoiceAudio(dataUrl, voice)
-    }
-  } catch (e) {
-    showApiErrorModal('语音生成失败\n' + (e.message || String(e)))
-  } finally {
-    bubbleEl.classList.remove('voice-loading')
+  if (!target.voiceId && target.altVoiceId) {
+    showVoiceErrorActionModal({
+      errorMessage: `当前选择的 ${target.providerLabel} 尚未配置音色 ID，但另一家 ${target.altProviderLabel} 已配置音色。`,
+      chatId, msgId, voiceText, voiceEl: voice, bubbleEl, target
+    })
+    return
+  }
+
+  const res = await generateAndPlayWechatVoiceBubble(bubbleEl, voice, msgId, chatId, voiceText, target.provider)
+  if (!res.ok) {
+    showVoiceErrorActionModal({
+      errorMessage: res.error?.message || String(res.error || '未知错误'),
+      chatId, msgId, voiceText, voiceEl: voice, bubbleEl, target
+    })
   }
 }
 
@@ -19090,16 +19230,15 @@ async function autoGenerateVoiceIfNeeded(chatId, msgId, content) {
   const parsed = parseMsgType(content)
   if (parsed.type !== 'voice') return
 
-  const voiceIdCfg = await db.config.get(`chatVoiceId_${chatId}`)
-  const voiceId = voiceIdCfg?.value
-  if (!voiceId) return
+  const target = await resolveWechatChatTtsTarget(chatId)
+  if (!target.voiceId) return
 
   const bilingualSettings = await getChatBilingualSettings(chatId)
   const voiceText = getBilingualDisplayText(parsed.data.text, bilingualSettings).original
   if (!voiceText) return
 
   try {
-    const blobUrl = await callMinimaxTTS(voiceText, voiceId)
+    const { blobUrl } = await callWechatTTS(chatId, voiceText, target.provider)
     const dataUrl = await blobUrlToDataUrl(blobUrl)
     URL.revokeObjectURL(blobUrl)
     await saveVoiceAudioCache(msgId, dataUrl)
@@ -19754,6 +19893,7 @@ let _realCameraFacingMode = 'user'
 let _callRecognition = null
 let _callRecognitionTimeout = null
 let _callMinimized = false
+let _callTtsProviderOverride = ''
 
 const CALL_TTS_RETRY_DELAY_MS = 3000
 const CALL_AUDIO_PLAY_RETRY_DELAY_MS = 3000
@@ -20467,12 +20607,54 @@ function clearCallAudioPlayRetry() {
   }
 }
 
+function hideCallTtsErrorBar() {
+  const bar = document.getElementById('call-tts-error-bar')
+  if (bar) bar.remove()
+}
+
+function showCallTtsErrorBar(speechText, requestSeq, errMsg, target) {
+  const page = document.getElementById('call-page')
+  const content = page?.querySelector('.call-content')
+  if (!page || !content || _callState === 'idle') return
+  hideCallTtsErrorBar()
+  const bar = document.createElement('div')
+  bar.id = 'call-tts-error-bar'
+  bar.style.cssText = 'margin:0 16px 8px;padding:8px 10px;border-radius:10px;background:rgba(20,18,28,0.82);border:1px solid rgba(255,255,255,0.16);color:#fff;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:8px;backdrop-filter:blur(8px);'
+  const canSwitch = Boolean(target && target.altVoiceId)
+  bar.innerHTML = `
+    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${wcEscHtml(errMsg || '')}">语音生成失败（文字已保留）</span>
+    <span style="display:flex;gap:6px;flex-shrink:0;">
+      <button type="button" id="btn-call-tts-retry" style="border:0;border-radius:6px;padding:4px 8px;font-size:11px;background:rgba(255,255,255,0.2);color:#fff;cursor:pointer;">重试</button>
+      ${canSwitch ? `<button type="button" id="btn-call-tts-switch" style="border:0;border-radius:6px;padding:4px 8px;font-size:11px;background:#ff7aa2;color:#fff;cursor:pointer;">改用 ${wcEscHtml(target.altProviderLabel)}</button>` : ''}
+    </span>
+  `
+  const controls = content.querySelector('.call-controls')
+  if (controls) content.insertBefore(bar, controls)
+  else content.appendChild(bar)
+
+  bar.querySelector('#btn-call-tts-retry')?.addEventListener('click', () => {
+    hideCallTtsErrorBar()
+    cancelCallTTSRetry()
+    const nextSeq = ++_callTTSRequestSeq
+    tryPlayCallTTS(speechText, nextSeq)
+  })
+  bar.querySelector('#btn-call-tts-switch')?.addEventListener('click', () => {
+    hideCallTtsErrorBar()
+    _callTtsProviderOverride = target.altProvider
+    window.toast?.(`本通电话已临时切换为 ${target.altProviderLabel}`)
+    cancelCallTTSRetry()
+    const nextSeq = ++_callTTSRequestSeq
+    tryPlayCallTTS(speechText, nextSeq)
+  })
+}
+
 async function playCallAudioBlob(blobUrl) {
   if (_callState === 'idle') {
     URL.revokeObjectURL(blobUrl)
     return
   }
   stopCallAudio()
+  hideCallTtsErrorBar()
   _callPendingAudioBlobUrl = null
   _callAudioBlobUrl = blobUrl
   _callAudioPlayer = new Audio(blobUrl)
@@ -20508,24 +20690,41 @@ async function playCallTTS(speechText) {
 }
 
 async function tryPlayCallTTS(speechText, requestSeq) {
-  if (_callState === 'idle') return
+  if (_callState === 'idle' || requestSeq !== _callTTSRequestSeq) return
+  let resolvedTarget = null
   try {
-    const voiceIdCfg = await db.config.get(`chatVoiceId_${_callChatId}`)
-    if (_callState === 'idle') return
-    const voiceId = voiceIdCfg?.value
-    if (!voiceId) return
-
     const helpers = h()
-    if (typeof helpers.callMinimaxTTS !== 'function') return
     let ttsText = speechText
     const bilingualParsed = helpers.parseBilingualText?.(speechText)
     if (bilingualParsed?.original) {
       ttsText = bilingualParsed.original
     }
 
-    const blobUrl = await helpers.callMinimaxTTS(ttsText, voiceId)
-    if (!blobUrl) throw new Error('Minimax TTS 未返回音频地址')
-    if (_callState === 'idle') {
+    resolvedTarget = typeof helpers.resolveWechatChatTtsTarget === 'function'
+      ? await helpers.resolveWechatChatTtsTarget(_callChatId, _callTtsProviderOverride)
+      : null
+    if (_callState === 'idle' || requestSeq !== _callTTSRequestSeq) return
+
+    let blobUrl = ''
+    if (resolvedTarget) {
+      if (!resolvedTarget.voiceId) {
+        if (resolvedTarget.altVoiceId) {
+          showCallTtsErrorBar(speechText, requestSeq, `${resolvedTarget.providerLabel} 未配置音色 ID`, resolvedTarget)
+        }
+        return
+      }
+      const res = await helpers.callWechatTTS(_callChatId, ttsText, resolvedTarget.provider)
+      blobUrl = res?.blobUrl || ''
+    } else {
+      const voiceIdCfg = await db.config.get(`chatVoiceId_${_callChatId}`)
+      if (_callState === 'idle' || requestSeq !== _callTTSRequestSeq) return
+      const voiceId = voiceIdCfg?.value
+      if (!voiceId || typeof helpers.callMinimaxTTS !== 'function') return
+      blobUrl = await helpers.callMinimaxTTS(ttsText, voiceId)
+    }
+
+    if (!blobUrl) throw new Error('TTS 未返回音频地址')
+    if (_callState === 'idle' || requestSeq !== _callTTSRequestSeq) {
       URL.revokeObjectURL(blobUrl)
       return
     }
@@ -20533,6 +20732,7 @@ async function tryPlayCallTTS(speechText, requestSeq) {
     await playCallAudioBlob(blobUrl)
   } catch (e) {
     console.warn('通话 TTS 失败', e.message)
+    showCallTtsErrorBar(speechText, requestSeq, e.message, resolvedTarget)
     scheduleCallTTSRetry(speechText, requestSeq)
   }
 }
@@ -20864,6 +21064,8 @@ function resetCallState() {
   _realCameraFacingMode = 'user'
   _realCameraStream = null
   _callMinimized = false
+  _callTtsProviderOverride = ''
+  hideCallTtsErrorBar()
   stopCallSpeechRecognition()
 }
 
@@ -21264,6 +21466,9 @@ window._wechatCallHelpers = {
   getChatBilingualSettings,
   buildCurrentRelationText,
   callMinimaxTTS,
+  callFishAudioTTS,
+  callWechatTTS,
+  resolveWechatChatTtsTarget,
   blobUrlToDataUrl,
   getTimeOfDay,
   getWechatDisplayCharacter,

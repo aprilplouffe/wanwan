@@ -184,10 +184,98 @@
     return { ownerUid: ownerUid, chatId: chatId, charId: cidStr };
   }
 
-  async function getMinimaxStatus(charId) {
+  function normalizeActorRef(actorOrId, opts) {
+    opts = opts || {};
+    if (actorOrId && typeof actorOrId === 'object') {
+      return {
+        id: String(actorOrId.id != null ? actorOrId.id : (actorOrId.rawId != null ? actorOrId.rawId : '')),
+        roleType: (actorOrId.roleType === 'npc' || (actorOrId.raw && actorOrId.raw.type === 'npc') || opts.roleType === 'npc') ? 'npc' : 'char'
+      };
+    }
+    return {
+      id: String(actorOrId == null ? '' : actorOrId),
+      roleType: opts.roleType === 'npc' ? 'npc' : 'char'
+    };
+  }
+
+  async function resolveLiveDefaultProvider(opts) {
+    opts = opts || {};
+    if (opts.liveDefaultProvider === 'minimax' || opts.liveDefaultProvider === 'fish_audio') {
+      return opts.liveDefaultProvider;
+    }
+    try {
+      if (global.HeartbeatLiveStorage && typeof global.HeartbeatLiveStorage.loadSettings === 'function') {
+        var liveSettings = await global.HeartbeatLiveStorage.loadSettings();
+        if (liveSettings && (liveSettings.ttsProvider === 'minimax' || liveSettings.ttsProvider === 'fish_audio')) {
+          return liveSettings.ttsProvider;
+        }
+      }
+    } catch (_) {}
+    if (global.WanWanTTS && typeof global.WanWanTTS.getGlobalDefaultProvider === 'function') {
+      return global.WanWanTTS.getGlobalDefaultProvider();
+    }
+    try {
+      if (global.db && global.db.config) {
+        var row = await global.db.config.get('defaultTtsProvider');
+        if (row && row.value === 'fish_audio') return 'fish_audio';
+      }
+    } catch (_) {}
+    return 'minimax';
+  }
+
+  async function readProviderApiStatus(provider) {
+    var p = provider === 'fish_audio' ? 'fish_audio' : 'minimax';
+    if (global.WanWanTTS && typeof global.WanWanTTS.getProviderCredentialStatus === 'function') {
+      return global.WanWanTTS.getProviderCredentialStatus(p);
+    }
+    if (!global.db || !global.db.config) {
+      return { provider: p, label: p === 'fish_audio' ? 'Fish Audio' : 'Minimax', apiReady: false, missingReason: '数据库未就绪' };
+    }
+    if (p === 'fish_audio') {
+      var fRows = await Promise.all([
+        global.db.config.get('fishAudioApiKey'),
+        global.db.config.get('fishAudioModel')
+      ]);
+      var fKey = fRows[0] && fRows[0].value;
+      var fModel = (fRows[1] && fRows[1].value) || 's2.1-pro';
+      var fReady = Boolean(fKey && fModel);
+      return {
+        provider: 'fish_audio',
+        label: 'Fish Audio',
+        apiReady: fReady,
+        model: fModel,
+        missingReason: fReady ? '' : 'Fish Audio API 未配置（请前往系统设置填写 API Key 与模型）'
+      };
+    }
+    var rows = await Promise.all([
+      global.db.config.get('minimaxGroupId'),
+      global.db.config.get('minimaxApiKey'),
+      global.db.config.get('minimaxModel')
+    ]);
+    var mReady = Boolean(rows[0] && rows[0].value && rows[1] && rows[1].value && rows[2] && rows[2].value);
+    return {
+      provider: 'minimax',
+      label: 'Minimax',
+      apiReady: mReady,
+      model: (rows[2] && rows[2].value) || '',
+      missingReason: mReady ? '' : 'Minimax 语音 API 未配置（请前往系统设置填写 Group ID / API Key / 模型）'
+    };
+  }
+
+  // 严格隔离：心动直播（Char 与 NPC）绝不读取微信单聊 chatVoiceId_* / chatFishVoiceId_* / chatTtsProvider_*
+  async function getLiveTtsStatus(actorOrId, opts) {
+    opts = opts || {};
+    var actor = normalizeActorRef(actorOrId, opts);
     var result = {
+      roleId: actor.id,
+      roleType: actor.roleType,
+      provider: 'minimax',
+      providerLabel: 'Minimax',
+      savedProvider: 'default',
       apiReady: false,
       voiceId: '',
+      minimaxVoiceId: '',
+      fishReferenceId: '',
       voiceSource: '',
       missingReason: ''
     };
@@ -196,37 +284,41 @@
         result.missingReason = '数据库未就绪';
         return result;
       }
-      var rows = await Promise.all([
-        global.db.config.get('minimaxGroupId'),
-        global.db.config.get('minimaxApiKey'),
-        global.db.config.get('minimaxModel')
-      ]);
-      var groupId = rows[0] && rows[0].value;
-      var apiKey = rows[1] && rows[1].value;
-      var model = rows[2] && rows[2].value;
-      result.apiReady = Boolean(groupId && apiKey && model);
 
-      if (global.HeartbeatLiveStorage) {
-        var customVoices = await global.HeartbeatLiveStorage.loadCharVoices();
-        if (customVoices[String(charId)]) {
-          result.voiceId = customVoices[String(charId)];
-          result.voiceSource = 'live';
-        }
+      var roleCfg = { provider: 'default', minimaxVoiceId: '', fishReferenceId: '', roleType: actor.roleType };
+      if (opts.voiceConfigOverride && typeof opts.voiceConfigOverride === 'object') {
+        roleCfg = Object.assign({}, roleCfg, opts.voiceConfigOverride);
+      } else if (global.HeartbeatLiveStorage && typeof global.HeartbeatLiveStorage.getRoleVoiceConfig === 'function') {
+        roleCfg = await global.HeartbeatLiveStorage.getRoleVoiceConfig(actor.id, actor.roleType);
       }
-      if (!result.voiceId) {
-        var info = await resolveCharChatInfo(charId);
-        if (info.chatId) {
-          var vRow = await global.db.config.get('chatVoiceId_' + info.chatId);
-          if (vRow && vRow.value) {
-            result.voiceId = String(vRow.value);
-            result.voiceSource = 'chat';
-          }
-        }
+
+      result.savedProvider = roleCfg.provider || 'default';
+      result.minimaxVoiceId = String(roleCfg.minimaxVoiceId || '').trim();
+      result.fishReferenceId = String(roleCfg.fishReferenceId || '').trim();
+
+      var effectiveProvider;
+      if (opts.providerOverride === 'minimax' || opts.providerOverride === 'fish_audio') {
+        effectiveProvider = opts.providerOverride;
+      } else if (roleCfg.provider === 'minimax' || roleCfg.provider === 'fish_audio') {
+        effectiveProvider = roleCfg.provider;
+      } else {
+        effectiveProvider = await resolveLiveDefaultProvider(opts);
       }
+
+      result.provider = effectiveProvider;
+      result.providerLabel = effectiveProvider === 'fish_audio' ? 'Fish Audio' : 'Minimax';
+      result.voiceId = effectiveProvider === 'fish_audio' ? result.fishReferenceId : result.minimaxVoiceId;
+      result.voiceSource = result.voiceId ? 'live' : '';
+
+      var credStatus = await readProviderApiStatus(effectiveProvider);
+      result.apiReady = Boolean(credStatus && credStatus.apiReady);
+
       if (!result.apiReady) {
-        result.missingReason = 'Minimax 语音 API 未配置（请前往主设置填写 Group ID / API Key / 模型）';
+        result.missingReason = credStatus.missingReason || (result.providerLabel + ' API 未配置');
       } else if (!result.voiceId) {
-        result.missingReason = '该 Char 尚未设置 Voice ID（可在直播设置或微信聊天设置中填写）';
+        var roleLabel = actor.roleType === 'npc' ? '该 NPC' : '该 Char';
+        var idLabel = effectiveProvider === 'fish_audio' ? 'Fish Audio Reference ID' : 'Minimax Voice ID';
+        result.missingReason = roleLabel + ' 尚未设置直播专属 ' + idLabel + '（与微信聊天独立，不自动复用微信音色）';
       }
     } catch (e) {
       result.missingReason = (e && e.message) || '读取语音配置失败';
@@ -234,28 +326,115 @@
     return result;
   }
 
-  async function speakCharLine(text, charId, voiceVol) {
-    var cleanText = sanitizeText(text, 240);
-    if (!cleanText) return { played: false, reason: 'empty' };
-    var status = await getMinimaxStatus(charId);
-    if (!status.apiReady || !status.voiceId) {
-      return { played: false, reason: status.missingReason || 'unconfigured' };
+  async function getMinimaxStatus(charId, opts) {
+    return getLiveTtsStatus(charId, opts);
+  }
+
+  async function synthesizeLiveSpeech(status, ttsText) {
+    if (global.WanWanTTS && typeof global.WanWanTTS.synthesize === 'function') {
+      return global.WanWanTTS.synthesize({
+        provider: status.provider,
+        text: ttsText,
+        voiceId: status.voiceId,
+        referenceId: status.voiceId
+      });
     }
     var h = global._wechatCallHelpers;
-    if (!h || typeof h.callMinimaxTTS !== 'function') {
-      return { played: false, reason: 'TTS 引擎未加载' };
+    if (status.provider === 'minimax' && h && typeof h.callMinimaxTTS === 'function') {
+      var mmUrl = await h.callMinimaxTTS(ttsText, status.voiceId);
+      return { provider: 'minimax', blobUrl: mmUrl, mimeType: 'audio/mpeg' };
     }
+    throw new Error(status.providerLabel + ' TTS 引擎未加载');
+  }
+
+  async function speakCharLine(text, actorOrId, voiceVol, opts) {
+    opts = opts || {};
+    var cleanText = sanitizeText(text, 240);
+    if (!cleanText) return { played: false, reason: 'empty' };
+    var actor = normalizeActorRef(actorOrId, opts);
+    var status = await getLiveTtsStatus(actor, opts);
+    if (!status.apiReady || !status.voiceId) {
+      return {
+        played: false,
+        provider: status.provider,
+        providerLabel: status.providerLabel,
+        reason: status.missingReason || 'unconfigured'
+      };
+    }
+
     var ttsText = cleanText;
-    if (typeof h.parseBilingualText === 'function') {
-      var parsed = h.parseBilingualText(cleanText);
-      if (parsed && parsed.original) ttsText = parsed.original;
+    // NPC 严格隔离，不使用 Char 的微信双语规则；仅 Char 可安全剥离双语译文只读原句
+    if (actor.roleType !== 'npc') {
+      var h = global._wechatCallHelpers;
+      if (h && typeof h.parseBilingualText === 'function') {
+        var parsed = h.parseBilingualText(cleanText);
+        if (parsed && parsed.original) ttsText = parsed.original;
+      }
     }
-    var blobUrl = await h.callMinimaxTTS(ttsText, status.voiceId);
-    return {
-      played: true,
-      blobUrl: blobUrl,
-      volume: Math.max(0, Math.min(1, Number(voiceVol == null ? 65 : voiceVol) / 100))
-    };
+
+    try {
+      var synth = await synthesizeLiveSpeech(status, ttsText);
+      return {
+        played: true,
+        provider: synth.provider || status.provider,
+        providerLabel: status.providerLabel,
+        blobUrl: synth.blobUrl,
+        volume: Math.max(0, Math.min(1, Number(voiceVol == null ? 65 : voiceVol) / 100))
+      };
+    } catch (e) {
+      return {
+        played: false,
+        failed: true,
+        provider: status.provider,
+        providerLabel: status.providerLabel,
+        reason: (e && e.message) || '语音合成失败'
+      };
+    }
+  }
+
+  async function previewRoleVoiceLine(params) {
+    params = params || {};
+    var roleType = params.roleType === 'npc' ? 'npc' : 'char';
+    var roleName = sanitizeText(params.roleName || (roleType === 'npc' ? 'NPC' : 'Char'), 32);
+    var sampleText = sanitizeText(params.text, 180) || ('你好，我是' + roleName + '，这是心动直播的专属音色试听。');
+    var providerOverride = (params.provider === 'minimax' || params.provider === 'fish_audio') ? params.provider : '';
+    var status = await getLiveTtsStatus(
+      { id: params.roleId || 'preview', roleType: roleType },
+      {
+        providerOverride: providerOverride,
+        voiceConfigOverride: {
+          provider: params.provider || 'default',
+          minimaxVoiceId: params.minimaxVoiceId || '',
+          fishReferenceId: params.fishReferenceId || '',
+          roleType: roleType
+        }
+      }
+    );
+    if (!status.apiReady || !status.voiceId) {
+      return {
+        ok: false,
+        provider: status.provider,
+        providerLabel: status.providerLabel,
+        reason: status.missingReason || '未配置音色或 API'
+      };
+    }
+    try {
+      var synth = await synthesizeLiveSpeech(status, sampleText);
+      return {
+        ok: true,
+        provider: synth.provider || status.provider,
+        providerLabel: status.providerLabel,
+        blobUrl: synth.blobUrl,
+        volume: Math.max(0, Math.min(1, Number(params.voiceVol == null ? 65 : params.voiceVol) / 100))
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        provider: status.provider,
+        providerLabel: status.providerLabel,
+        reason: (e && e.message) || '试听请求失败'
+      };
+    }
   }
 
   async function gatherCharContext(charObj, recentLines, settings) {
@@ -781,8 +960,10 @@
     resolveCharChatInfo: resolveCharChatInfo,
     gatherCharContext: gatherCharContext,
     buildLiveSystemPrompt: buildLiveSystemPrompt,
+    getLiveTtsStatus: getLiveTtsStatus,
     getMinimaxStatus: getMinimaxStatus,
     speakCharLine: speakCharLine,
+    previewRoleVoiceLine: previewRoleVoiceLine,
     generateCharLiveReply: generateCharLiveReply,
     generateParticipantLiveReply: generateCharLiveReply,
     parseLiveAiResponse: parseLiveAiResponse,

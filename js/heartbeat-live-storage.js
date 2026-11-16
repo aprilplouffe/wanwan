@@ -38,6 +38,7 @@
     customBgUrl: '',
     motion: true,
     voice: 'both', // 'text' | 'both' | 'audio'
+    ttsProvider: 'default', // 'default' | 'minimax' | 'fish_audio'
     expression: 'natural', // 'natural' | 'calm' | 'immersive'
     voiceVol: 65,
     captions: true,
@@ -140,6 +141,7 @@
       merged.customBgUrl = '';
     }
     if (['text', 'both', 'audio'].indexOf(merged.voice) < 0) merged.voice = 'both';
+    if (['default', 'minimax', 'fish_audio'].indexOf(merged.ttsProvider) < 0) merged.ttsProvider = 'default';
     if (['natural', 'calm', 'immersive'].indexOf(merged.expression) < 0) merged.expression = 'natural';
     if (['random', 'single', 'loop', 'sequence'].indexOf(merged.asmrPlayMode) < 0) merged.asmrPlayMode = 'loop';
     if (['stop_program', 'exit_room'].indexOf(merged.asmrEndAction) < 0) merged.asmrEndAction = 'stop_program';
@@ -1173,19 +1175,119 @@
     return !!map[cid];
   }
 
+  function roleVoiceStorageKey(roleId, roleType) {
+    var rid = String(roleId || '').trim();
+    if (!rid) return '';
+    if (roleType === 'npc') {
+      return rid.indexOf('npc_') === 0 ? rid : ('npc_' + rid);
+    }
+    return rid.indexOf('char_') === 0 ? rid : ('char_' + rid);
+  }
+
+  function normalizeRoleVoiceRecord(raw, roleType) {
+    var rType = roleType === 'npc' ? 'npc' : 'char';
+    if (typeof raw === 'string') {
+      var legacyStr = sanitizeText(raw, 120);
+      return {
+        provider: legacyStr ? 'minimax' : 'default',
+        minimaxVoiceId: legacyStr,
+        fishReferenceId: '',
+        roleType: rType
+      };
+    }
+    if (raw && typeof raw === 'object') {
+      var prov = raw.provider === 'minimax' || raw.provider === 'fish_audio' || raw.provider === 'default'
+        ? raw.provider
+        : 'default';
+      return {
+        provider: prov,
+        minimaxVoiceId: sanitizeText(raw.minimaxVoiceId != null ? raw.minimaxVoiceId : (raw.voiceId || ''), 120),
+        fishReferenceId: sanitizeText(raw.fishReferenceId != null ? raw.fishReferenceId : (raw.referenceId || ''), 120),
+        roleType: raw.roleType === 'npc' ? 'npc' : rType
+      };
+    }
+    return {
+      provider: 'default',
+      minimaxVoiceId: '',
+      fishReferenceId: '',
+      roleType: rType
+    };
+  }
+
+  function extractRoleVoiceFromMap(map, roleId, roleType) {
+    var src = (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+    var rid = String(roleId || '').trim();
+    if (!rid) return normalizeRoleVoiceRecord(null, roleType);
+    if (roleType === 'npc') {
+      var npcKey = roleVoiceStorageKey(rid, 'npc');
+      if (Object.prototype.hasOwnProperty.call(src, npcKey)) {
+        return normalizeRoleVoiceRecord(src[npcKey], 'npc');
+      }
+      return normalizeRoleVoiceRecord(null, 'npc');
+    }
+    var charKey = roleVoiceStorageKey(rid, 'char');
+    if (Object.prototype.hasOwnProperty.call(src, charKey)) {
+      return normalizeRoleVoiceRecord(src[charKey], 'char');
+    }
+    if (Object.prototype.hasOwnProperty.call(src, rid)) {
+      var legacyEntry = src[rid];
+      if (!legacyEntry || typeof legacyEntry === 'string' || legacyEntry.roleType !== 'npc') {
+        return normalizeRoleVoiceRecord(legacyEntry, 'char');
+      }
+    }
+    return normalizeRoleVoiceRecord(null, 'char');
+  }
+
   async function loadCharVoices() {
-    var map = await dbReadConfig(KEYS.CHAR_VOICES, {});
-    return (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+    var rawMap = await dbReadConfig(KEYS.CHAR_VOICES, {});
+    var src = (rawMap && typeof rawMap === 'object' && !Array.isArray(rawMap)) ? rawMap : {};
+    var out = {};
+    var keys = Object.keys(src);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var inferredType = k.indexOf('npc_') === 0 ? 'npc' : 'char';
+      out[k] = normalizeRoleVoiceRecord(src[k], inferredType);
+    }
+    return out;
+  }
+
+  async function getRoleVoiceConfig(roleId, roleType) {
+    var map = await loadCharVoices();
+    return extractRoleVoiceFromMap(map, roleId, roleType);
+  }
+
+  async function saveRoleVoiceConfig(roleId, roleType, config) {
+    var rid = String(roleId || '').trim();
+    if (!rid) return null;
+    var rType = roleType === 'npc' ? 'npc' : 'char';
+    var key = roleVoiceStorageKey(rid, rType);
+    var rawMap = await dbReadConfig(KEYS.CHAR_VOICES, {});
+    var nextMap = (rawMap && typeof rawMap === 'object' && !Array.isArray(rawMap)) ? Object.assign({}, rawMap) : {};
+    var normalized = normalizeRoleVoiceRecord(config, rType);
+    if (!normalized.minimaxVoiceId && !normalized.fishReferenceId && normalized.provider === 'default') {
+      // 保留旧字段不被破坏，仅当为新命名空间写入空记录标记（以阻止已清空时回退到旧字符串），或对无旧记录时删除键
+      var hasLegacy = rType === 'char' && Object.prototype.hasOwnProperty.call(nextMap, rid);
+      if (hasLegacy) {
+        nextMap[key] = normalized;
+      } else {
+        delete nextMap[key];
+      }
+    } else {
+      nextMap[key] = normalized;
+    }
+    await dbWriteConfig(KEYS.CHAR_VOICES, nextMap);
+    return normalized;
   }
 
   async function saveCharVoiceId(charId, voiceId) {
-    var cid = String(charId || '');
+    var cid = String(charId || '').trim();
     if (!cid) return;
-    var map = await loadCharVoices();
-    var clean = sanitizeText(voiceId, 80);
-    if (clean) map[cid] = clean;
-    else delete map[cid];
-    await dbWriteConfig(KEYS.CHAR_VOICES, map);
+    var existing = await getRoleVoiceConfig(cid, 'char');
+    existing.minimaxVoiceId = sanitizeText(voiceId, 120);
+    if (existing.minimaxVoiceId && existing.provider === 'default') {
+      existing.provider = 'minimax';
+    }
+    await saveRoleVoiceConfig(cid, 'char', existing);
   }
 
   function normalizeChatLogMessage(msg, fallbackSessionId) {
@@ -1451,7 +1553,11 @@
     clearOpfsAudioDir: clearOpfsAudioDir,
     loadFollowedChars: loadFollowedChars,
     toggleFollowChar: toggleFollowChar,
+    normalizeRoleVoiceRecord: normalizeRoleVoiceRecord,
+    extractRoleVoiceFromMap: extractRoleVoiceFromMap,
     loadCharVoices: loadCharVoices,
+    getRoleVoiceConfig: getRoleVoiceConfig,
+    saveRoleVoiceConfig: saveRoleVoiceConfig,
     saveCharVoiceId: saveCharVoiceId,
     saveSessionChatLog: saveSessionChatLog,
     loadSessionChatLog: loadSessionChatLog,

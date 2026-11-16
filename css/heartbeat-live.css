@@ -2562,3 +2562,84 @@
   color: #9e6632;
 }
 
+/* ===== 双语音服务与直播内暂停/恢复控制 ===== */
+.hl-notice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hl-tts-playback-btn {
+  border: 1px solid rgba(255, 224, 240, 0.55);
+  background: rgba(45, 28, 60, 0.78);
+  color: #ffe8f3;
+  border-radius: 12px;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.hl-tts-playback-btn.is-paused {
+  background: rgba(242, 139, 182, 0.88);
+  color: #362040;
+  border-color: rgba(255, 236, 246, 0.92);
+}
+
+.hl-voice-config-fields {
+  padding: 4px 0 8px;
+}
+
+.hl-room-voice-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.hl-room-voice-opt {
+  border: 1px solid #efdce8;
+  background: #ffffff;
+  color: #6b5472;
+  border-radius: 12px;
+  padding: 10px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+
+.hl-room-voice-opt.selected {
+  background: #fff0f7;
+  border-color: #e88cb6;
+  color: #b45585;
+}
+
+.hl-room-voice-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 12px;
+}
+
+.hl-room-voice-status-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #faf3f8;
+  border: 1px solid #f0e1ec;
+  font-size: 11px;
+  color: #6b5472;
+}
+
+.hl-room-voice-status-item small {
+  color: #8f7796;
+  text-align: right;
+}
