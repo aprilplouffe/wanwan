@@ -297,6 +297,7 @@ function createHarness() {
 
   const win = {
     document: doc,
+    innerHeight: 844,
     Blob: FakeBlob,
     Audio: FakeAudio,
     URL: MockURL,
@@ -401,7 +402,8 @@ function createHarness() {
     setConfirm(v) { confirmResult = v; },
     setEcoCoins(v) { ecoCoins = v; },
     getEcoCoins() { return ecoCoins; },
-    pushAiHandler(fn) { aiQueue.push(fn); }
+    pushAiHandler(fn) { aiQueue.push(fn); },
+    clearAiQueue() { aiQueue.length = 0; }
   };
 }
 
@@ -639,7 +641,99 @@ async function main() {
   await new Promise(r => setTimeout(r, 20));
   check(!app.getState().room && h.fakeTrackList.every(t => t.stopped === true), 'ASMR exit_room 到点后自动结束本场直播并释放音频与摄像头流');
 
-  // 7. 顶栏点击「心动直播」返回桌面且右上角无设置按钮
+  // 7. V1.0.2 User 直接开播、移除节目快捷栏与纯图标连麦栏验收
+  console.log('\n7. V1.0.2 User 直接开播、移除快捷栏与纯 SVG 连麦控制栏');
+  check(!h.doc.getElementById('hl-modebar'), '直播间顶部已彻底移除四个节目快捷胶囊（#hl-modebar）');
+  check(!cssText.includes('.hl-modebar') && cssText.includes('min-width: 44px') && cssText.includes('min-height: 44px') && cssText.includes('.hl-kb-open'), 'CSS 已移除 .hl-modebar 并保证连麦图标 44x44 热区与软键盘适配');
+
+  // 点击「我的心动直播间 -> 开播」直接进入 User 个人直播间，不强制选 Char，不绑定错误角色
+  let aiCallCount = 0;
+  h.pushAiHandler(async () => { aiCallCount++; return JSON.stringify({ speech: '不应触发' }); });
+  h.doc.getElementById('hl-go-live').click();
+  await new Promise(r => setTimeout(r, 25));
+  const soloRoom = app.getState().room;
+  check(Boolean(soloRoom) && soloRoom.hostMode === 'user' && soloRoom.charObj === null && app.getState().openModal === '', 'User 点击「开播」直接进入个人直播间，无需预选 Char 且不默认绑定错误角色');
+  check(aiCallCount === 0, 'User 独自开播时不误触发 Char AI 开场请求');
+
+  // 独自开播期间支持发消息、热切换节目（如 ASMR）、禁止误扣金币向空角色送礼
+  h.doc.getElementById('hl-message-input').value = '今晚我先一个人播一会儿';
+  h.doc.getElementById('hl-send').click();
+  await new Promise(r => setTimeout(r, 20));
+  check(aiCallCount === 0 && soloRoom.messages.some(m => m.text.includes('今晚我先一个人播一会儿')), 'User 独自开播可正常发送消息且不误调 Char AI');
+  await app.applyProgramToRoom('radio', '晚安随想', 'quiet', {}, true);
+  check(app.getState().room.program === 'radio', '移除快捷栏后仍可通过节目切换机制热切节目');
+  const poorSoloGift = await ctx.HeartbeatLiveAI.sendGiftTransaction({
+    gift: ctx.HeartbeatLiveAI.GIFT_CATALOG.find(g => g.id === 'rose'),
+    charObj: soloRoom.charObj
+  });
+  check(!poorSoloGift.ok, 'User 未邀请 Char 时阻止向空目标送出付费金币礼物');
+
+  // 直播中通过顶栏「+ 邀请」主动邀请 Char，之后才能开启对话与连麦
+  const inviteBtn = h.doc.getElementById('hl-invite-btn');
+  check(Boolean(inviteBtn) && inviteBtn.style.display !== 'none', 'User 个人直播间顶部提供主动「+ 邀请」Char 入口');
+  inviteBtn.click();
+  check(app.getState().openModal === 'userHost', '点击邀请弹出直播中选角抽屉');
+  h.clearAiQueue();
+  h.pushAiHandler(async () => JSON.stringify({ speech: '哈喽，我收到邀请来前排陪你开播啦！', audience: '' }));
+  h.doc.getElementById('hl-userhost-list').querySelector('[data-invite-char="101"]').click();
+  await new Promise(r => setTimeout(r, 30));
+  check(app.getState().room.charObj && app.getState().room.charObj.id === '101' && app.getState().room.messages.some(m => m.senderRole === 'char' && m.text.includes('收到邀请来前排陪你')), '直播中主动邀请 Char 后成功接入真实 Char AI 对话');
+
+  // 开启文字连麦，检验纯 SVG 图标按钮与输入栏位置、双布局热切换与挂断恢复
+  await app.startConnection('text');
+  await new Promise(r => setTimeout(r, 20));
+  const layoutBtn = h.doc.getElementById('hl-layout-toggle');
+  const swapBtn = h.doc.getElementById('hl-swap-screens');
+  const discBtn = h.doc.getElementById('hl-disconnect');
+  const textCallBox = h.doc.getElementById('hl-text-call-composer');
+  const footerEl = h.doc.getElementById('heartbeat-live-page').querySelector('.hl-roomfooter');
+  check(Boolean(footerEl.querySelector('#hl-text-call-composer')) && !h.doc.getElementById('hl-connection-overlay').querySelector('#hl-text-call-composer'), '文字连麦输入框位于底栏内，与连麦画面和纯图标栏物理分离不互相遮挡');
+  check(!textCallBox.hidden && layoutBtn.textContent.trim() === '' && swapBtn.textContent.trim() === '' && discBtn.textContent.trim() === '', '三个连麦操作按钮均不显示文字');
+  check(Boolean(layoutBtn.querySelector('svg')) && Boolean(swapBtn.querySelector('svg')) && Boolean(discBtn.querySelector('svg')), '三个连麦操作按钮均使用内联 SVG 图标');
+  check(Boolean(layoutBtn.getAttribute('aria-label')) && Boolean(swapBtn.getAttribute('title')) && Boolean(discBtn.getAttribute('aria-label')), '纯图标按钮保留 title 与 aria-label 无障碍属性');
+
+  h.doc.getElementById('hl-text-call-input').value = '连麦中写了一半的文字';
+  layoutBtn.click();
+  swapBtn.click();
+  check(roomEl.classList.contains('hl-connection-active') && roomEl.classList.contains('hl-connection-swapped'), '纯图标按钮可正常切换双人并列布局并交换位置');
+  check(layoutBtn.textContent.trim() === '' && Boolean(layoutBtn.querySelector('svg')), '切换布局后按钮仍保持纯 SVG 图标不被文字覆盖');
+  check(h.doc.getElementById('hl-text-call-input').value === '连麦中写了一半的文字', '切换连麦布局不清空正在编辑的连麦文字');
+
+  discBtn.click();
+  check(h.doc.getElementById('hl-connection-overlay').hidden === true && !roomEl.classList.contains('hl-has-connection') && !roomEl.classList.contains('hl-connection-active'), '点击挂断图标恢复单人直播画面并重置布局类');
+
+  // 摄像头预览下切换布局不断流，且软键盘弹出触发 .hl-kb-open 避让
+  await app.startConnection('camera');
+  const camStreamBefore = app.getState().cameraStream;
+  const camEl = h.doc.getElementById('hl-user-camera');
+  layoutBtn.click();
+  swapBtn.click();
+  check(Boolean(camStreamBefore) && app.getState().cameraStream === camStreamBefore && camEl.srcObject === camStreamBefore && camEl.hidden === false, '摄像头连麦下切换并列布局与交换位置不破坏本地摄像头预览');
+  h.win.innerHeight = 460;
+  h.win.dispatchEvent({ type: 'resize' });
+  check(roomEl.classList.contains('hl-kb-open'), 'Android WebView 软键盘压缩窗口高度时自动进入 .hl-kb-open 避让态');
+  h.win.innerHeight = 844;
+  h.win.dispatchEvent({ type: 'resize' });
+  check(!roomEl.classList.contains('hl-kb-open'), '软键盘收起后自动解除 .hl-kb-open 紧缩态');
+  discBtn.click();
+  check(!app.getState().cameraStream && camEl.hidden === true && camEl.srcObject === null, '挂断摄像头连麦后释放预览流并恢复单人画面');
+
+  // User 未邀请 Char 独自开播后退出，手账安全记录且不崩溃
+  h.doc.getElementById('hl-exit-room').click();
+  await new Promise(r => setTimeout(r, 20));
+  await app.startLiveRoom({ hostMode: 'user', charObj: null, program: 'chat', title: '一个人的小夜曲' });
+  h.doc.getElementById('hl-message-input').value = '晚安记录';
+  h.doc.getElementById('hl-send').click();
+  h.doc.getElementById('hl-exit-room').click();
+  await new Promise(r => setTimeout(r, 20));
+  const soloJournals = await store.loadJournals();
+  check(soloJournals.some(j => j.title === '一个人的小夜曲' && j.charId === ''), 'User 未邀 Char 独自开播后退房安全保存手账，不崩溃且不绑定错误 Char');
+
+  // 8. 顶栏点击「心动直播」返回桌面且右上角无设置按钮
+  console.log('\n8. 顶栏返回桌面与退出资源释放');
+  if (app.getState().openModal) {
+    h.doc.getElementById('hl-summary-planner').querySelector('[data-close-modal]').click();
+  }
   check(!h.doc.getElementById('hl-settings-top'), '直播大厅右上角已移除设置按钮');
   const titleBackBtn = h.doc.getElementById('hl-back-desktop');
   check(Boolean(titleBackBtn) && titleBackBtn.textContent.includes('心动直播'), '大厅「心动直播」标题直接作为返回桌面入口');

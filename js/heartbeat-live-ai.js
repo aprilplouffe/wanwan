@@ -426,6 +426,9 @@
 
   async function generateCharLiveReply(params) {
     var charObj = params.charObj;
+    if (!charObj || !charObj.id) {
+      return { speech: '', audience: '', noChar: true };
+    }
     var userObj = params.userObj;
     var recentLines = params.recentLines || [];
     var settings = params.settings || {};
@@ -498,6 +501,9 @@
     if (gift.free || !gift.price || gift.price <= 0) {
       return { ok: true, free: true, coinsSpent: 0 };
     }
+    if (!charObj || !charObj.id) {
+      return { ok: false, msg: '当前未邀请 Char，请先邀请 Char 后再送出金币礼物' };
+    }
     var eco = global.SharedEconomyService;
     if (!eco || typeof eco.spendCoins !== 'function') {
       return { ok: false, msg: '共享经济系统未就绪，暂时无法扣费送礼' };
@@ -531,10 +537,11 @@
 
   function buildJournalDraft(session) {
     var prog = PROGRAMS[session.program] || PROGRAMS.chat;
-    var charName = session.charName || 'Char';
+    var hasChar = Boolean(session.charId);
+    var charName = hasChar ? (session.charName || 'Char') : '个人直播间';
     var dateStr = new Date(session.startedAt || Date.now()).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
     var modeText = session.hostMode === 'user'
-      ? ('我开播、' + charName + ' 来看我')
+      ? (hasChar ? ('我开播、' + charName + ' 来看我') : '我独自开启的个人直播')
       : session.hostMode === 'private'
         ? ('与 ' + charName + ' 的私人连线')
         : (charName + ' 的直播间');
@@ -543,7 +550,7 @@
     if (session.asmrUsed) extras.push('伴随了 ASMR 音景');
     if (session.giftsTotalCoins > 0) extras.push('送出 ' + session.giftsTotalCoins + ' 金币心意礼物');
     var mins = Math.max(1, Math.round(((session.endedAt || Date.now()) - (session.startedAt || Date.now())) / 60000));
-    var title = sanitizeText(dateStr + '·' + charName + '的' + prog.label, 30);
+    var title = sanitizeText(dateStr + '·' + (hasChar ? (charName + '的') : '我的') + prog.label, 30);
     var content = sanitizeText(
       dateStr + ' 进行了约 ' + mins + ' 分钟「' + (session.title || prog.label) + '」（' + modeText + '），共互动 ' + (session.msgCount || 0) + ' 条消息' +
       (extras.length ? '，期间' + extras.join('、') : '') + '。',
@@ -552,7 +559,7 @@
     return {
       title: title,
       content: content,
-      keywords: ['心动直播', prog.label, charName].filter(Boolean)
+      keywords: ['心动直播', prog.label, hasChar ? charName : '个人开播'].filter(Boolean)
     };
   }
 

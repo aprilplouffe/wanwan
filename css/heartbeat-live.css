@@ -498,6 +498,9 @@
   width: 100%;
   height: 100%;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   background: linear-gradient(150deg, #66658d, #ac87b2 58%, #e1afc4);
   background-size: cover;
   background-position: center;
@@ -546,14 +549,22 @@
   display: block;
 }
 
-.hl-roomtop {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+.hl-room-top-wrap {
+  position: relative;
   z-index: 8;
-  padding: calc(12px + var(--hl-safe-top)) 10px 8px;
+  flex-shrink: 0;
+  padding: calc(10px + var(--hl-safe-top)) 10px 4px;
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.hl-roomtop {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 4px;
   gap: 5px;
   align-items: center;
 }
@@ -561,25 +572,26 @@
 .hl-host {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   background: rgba(38, 26, 54, 0.58);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border-radius: 28px;
   padding: 4px 8px 4px 4px;
-  min-width: 0;
-  max-width: 39%;
+  min-width: 64px;
+  max-width: min(38%, 168px);
+  flex: 0 1 auto;
 }
 
 .hl-face {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
   border-radius: 50%;
   background: #f5d9e7;
   color: #5d4864;
-  font-size: 18px;
+  font-size: 17px;
   flex-shrink: 0;
   background-size: cover;
   background-position: center;
@@ -612,7 +624,8 @@
   text-overflow: ellipsis;
 }
 
-.hl-follow {
+.hl-follow,
+.hl-invite-pill {
   border: 0;
   background: #f08bb3;
   color: #ffffff;
@@ -624,7 +637,8 @@
   flex-shrink: 0;
 }
 
-.hl-follow.followed {
+.hl-follow.followed,
+.hl-invite-pill.invited {
   background: rgba(255, 255, 255, 0.24);
 }
 
@@ -676,62 +690,28 @@
 }
 
 .hl-room-title {
-  position: absolute;
-  z-index: 6;
-  top: calc(58px + var(--hl-safe-top));
-  left: 12px;
-  right: 12px;
-  max-width: calc(100% - 24px);
+  max-width: 100%;
   width: fit-content;
   font-size: 11px;
   color: #f8e6ef;
   background: rgba(43, 31, 57, 0.52);
   border-radius: 8px;
-  padding: 5px 9px;
+  padding: 4px 9px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .hl-program-status {
-  position: absolute;
-  left: 12px;
-  top: calc(88px + var(--hl-safe-top));
-  z-index: 6;
   background: rgba(48, 33, 59, 0.62);
   color: #ffffff;
   border-radius: 12px;
-  padding: 5px 10px;
+  padding: 4px 10px;
   font-size: 11px;
-  max-width: 78%;
+  max-width: 86%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.hl-modebar {
-  position: absolute;
-  top: calc(119px + var(--hl-safe-top));
-  left: 12px;
-  z-index: 6;
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.hl-modebar button {
-  font-size: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.36);
-  border-radius: 16px;
-  background: rgba(57, 43, 70, 0.54);
-  color: #ffffff;
-  padding: 6px 9px;
-}
-
-.hl-modebar button.selected {
-  background: #f7b3d1;
-  color: #513e5a;
-  font-weight: 700;
 }
 
 /* 舞台与双视觉模式 (全屏 vs 煲电话) */
@@ -820,57 +800,68 @@
   margin-right: 0;
 }
 
-/* 右侧互动按钮 */
+/* 右侧互动按钮与底部弹幕区合并进底栏流式层，绝不互遮 */
+.hl-roomfooter {
+  position: relative;
+  z-index: 10;
+  flex: 0 1 auto;
+  min-height: 0;
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 4px 12px max(12px, var(--hl-safe-bottom));
+}
+
+.hl-footer-upper {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
 .hl-sideactions {
-  position: absolute;
-  right: 11px;
-  bottom: calc(206px + var(--hl-safe-bottom));
-  z-index: 7;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 15px;
+  gap: 8px;
 }
 
 .hl-sideactions button {
   border: 1px solid rgba(255, 255, 255, 0.25);
   background: rgba(36, 27, 54, 0.55);
   color: #ffffff;
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
-  font-size: 19px;
+  font-size: 18px;
   display: grid;
   place-items: center;
 }
 
 .hl-sideactions small {
   font-size: 10px;
-  margin-top: -11px;
+  margin-top: -5px;
   color: #ffffff;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
-/* 底部弹幕流与输入框 */
-.hl-roomfooter {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 10px 12px max(14px, var(--hl-safe-bottom));
-  z-index: 8;
-}
-
 .hl-messages {
-  height: 150px;
+  flex: 1;
+  min-width: 0;
+  max-height: clamp(72px, 19dvh, 146px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   gap: 6px;
-  margin-right: 54px;
-  margin-bottom: 10px;
   scrollbar-width: none;
+}
+
+.hl-room.hl-has-connection .hl-messages {
+  max-height: clamp(54px, 14dvh, 106px);
 }
 
 .hl-messages::-webkit-scrollbar {
@@ -930,9 +921,8 @@
 .hl-notice {
   font-size: 10px;
   color: #ffe2ef;
-  margin-bottom: 8px;
   background: rgba(255, 255, 255, 0.14);
-  padding: 5px 9px;
+  padding: 4px 9px;
   border-radius: 8px;
   max-width: 100%;
   width: fit-content;
@@ -972,26 +962,27 @@
   place-items: center;
 }
 
-/* ===== 连麦双布局 (经典小窗 & 双人并列PK) ===== */
+/* ===== 连麦双布局 (经典小窗 & 双人并列PK，纯流式中间件防重叠) ===== */
 .hl-connection-overlay[hidden] {
   display: none !important;
 }
 
 .hl-connection-overlay {
-  position: absolute;
-  top: calc(154px + var(--hl-safe-top));
-  right: 12px;
+  position: relative;
   z-index: 9;
-  width: min(215px, 56vw);
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  pointer-events: auto;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 4px 12px;
+  gap: 8px;
+  pointer-events: none;
 }
 
 .hl-room.hl-connection-swapped:not(.hl-connection-active) .hl-connection-overlay {
-  left: 12px;
-  right: auto;
+  align-items: flex-start;
 }
 
 .hl-room:not(.hl-connection-active) .hl-connection-pair > .hl-main-connection-tile {
@@ -999,11 +990,21 @@
 }
 
 .hl-room:not(.hl-connection-active) .hl-connection-pair {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: calc(100% - 52px);
+  width: clamp(148px, 44vw, 196px);
+  max-width: 100%;
+  pointer-events: auto;
 }
 
 .hl-connection-tile {
-  height: 162px;
+  height: clamp(92px, 20dvh, 152px);
+  max-height: 100%;
+  min-height: 44px;
+  flex: 0 1 auto;
   background: #40334c;
   border: 2px solid rgba(255, 255, 255, 0.58);
   border-radius: 15px;
@@ -1051,21 +1052,62 @@
 }
 
 .hl-connection-controls {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  flex-shrink: 0;
+  pointer-events: auto;
+  max-width: 100%;
+}
+
+.hl-room:not(.hl-connection-active) .hl-connection-controls {
+  min-width: clamp(148px, 44vw, 196px);
 }
 
 .hl-connection-controls button {
-  flex: 1;
-  min-width: 0;
-  background: rgba(36, 28, 54, 0.84);
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  flex: 0 0 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(24, 17, 36, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.36);
-  border-radius: 9px;
-  font-size: 10px;
-  padding: 6px 4px;
-  white-space: nowrap;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 12px;
+  line-height: 0;
+  box-shadow: 0 4px 12px rgba(18, 10, 30, 0.32);
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.14s ease, background 0.14s ease;
+}
+
+.hl-connection-controls button:active {
+  transform: scale(0.95);
+}
+
+.hl-connection-controls button.hl-conn-btn-active {
+  background: rgba(242, 139, 182, 0.88);
+  color: #35213e;
+  border-color: rgba(255, 232, 243, 0.9);
+}
+
+.hl-connection-controls button.hl-conn-hangup {
+  color: #ff8aa4;
+  border-color: rgba(255, 138, 164, 0.45);
+}
+
+.hl-connection-controls svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+  pointer-events: none;
 }
 
 /* 布局 B: 双人左右并列 PK */
@@ -1075,25 +1117,21 @@
 }
 
 .hl-room.hl-connection-active .hl-connection-overlay {
-  position: absolute;
-  inset: calc(154px + var(--hl-safe-top)) 10px calc(222px + var(--hl-safe-bottom));
-  width: auto !important;
-  right: 10px;
-  left: 10px;
-  display: flex;
-  flex-direction: column;
   align-items: stretch;
+  justify-content: center;
+  padding: 4px 10px;
   gap: 8px;
-  pointer-events: none;
 }
 
 .hl-room.hl-connection-active .hl-connection-pair {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 6px;
+  gap: 8px;
   min-height: 0;
-  flex: 1;
+  flex: 1 1 auto;
+  max-height: min(280px, calc(100% - 52px));
   align-items: stretch;
+  pointer-events: auto;
 }
 
 .hl-room.hl-connection-active.hl-connection-swapped .hl-connection-pair {
@@ -1107,27 +1145,26 @@
 .hl-room.hl-connection-active .hl-connection-tile {
   width: 100%;
   height: 100%;
-  min-height: 120px;
+  min-height: 48px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.55);
 }
 
-.hl-room.hl-connection-active .hl-connection-controls,
-.hl-room.hl-connection-active .hl-text-call-composer,
-.hl-room.hl-connection-active .hl-voice-call-controls {
-  pointer-events: auto;
+.hl-room.hl-connection-active .hl-connection-controls {
+  align-self: center;
 }
 
-/* 文字/语音连麦专属控制面板 */
+/* 文字/语音连麦专属控制面板 (位于底栏内，与图标操作栏物理分层零遮挡) */
 .hl-text-call-composer,
 .hl-voice-call-controls {
   display: flex;
-  gap: 5px;
-  background: rgba(40, 30, 57, 0.88);
+  gap: 6px;
+  background: rgba(34, 24, 50, 0.86);
   border: 1px solid rgba(255, 255, 255, 0.3);
   border-radius: 12px;
   padding: 6px;
   width: 100%;
+  flex-shrink: 0;
 }
 
 .hl-text-call-composer[hidden],
@@ -1152,10 +1189,11 @@
   color: #422c48;
   border: 0;
   border-radius: 8px;
-  padding: 6px 8px;
+  padding: 6px 10px;
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .hl-voice-call-controls {
@@ -1167,7 +1205,7 @@
 
 .hl-voice-btn-row {
   display: flex;
-  gap: 5px;
+  gap: 6px;
   flex-wrap: wrap;
   justify-content: center;
 }
@@ -1726,22 +1764,128 @@
   opacity: 1;
 }
 
-@media (max-width: 365px) {
-  .hl-host {
-    max-width: 35%;
+/* 软键盘弹出或矮屏移动端紧缩适配，保证连麦操作栏与输入栏零重叠 */
+.hl-room.hl-kb-open .hl-room-title,
+.hl-room.hl-kb-open .hl-program-status,
+.hl-room.hl-kb-open .hl-notice,
+.hl-room.hl-kb-open .hl-host-stage {
+  display: none;
+}
+
+.hl-room.hl-kb-open .hl-messages {
+  max-height: 44px;
+}
+
+.hl-room.hl-kb-open .hl-sideactions {
+  display: none;
+}
+
+.hl-room.hl-kb-open .hl-connection-overlay {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  gap: 6px;
+}
+
+.hl-room.hl-kb-open:not(.hl-connection-active) .hl-connection-tile {
+  height: 76px;
+  min-height: 42px;
+}
+
+.hl-room.hl-kb-open.hl-connection-active .hl-connection-tile {
+  height: 100%;
+  min-height: 42px;
+}
+
+.hl-room.hl-kb-open .hl-voice-call-controls {
+  padding: 5px;
+  gap: 4px;
+}
+
+@media (max-height: 520px) {
+  .hl-notice,
+  .hl-program-status {
+    display: none;
   }
-  .hl-top-pill {
-    padding: 5px 6px;
-    font-size: 9px;
+  .hl-host-stage {
+    inset: calc(58px + var(--hl-safe-top)) 0 130px;
   }
+  .hl-bigavatar {
+    font-size: 72px;
+  }
+  .hl-bigavatar.portrait {
+    width: min(46vw, 180px);
+    height: min(28dvh, 180px);
+  }
+  .hl-messages {
+    max-height: 48px;
+  }
+  .hl-sideactions {
+    gap: 5px;
+  }
+  .hl-sideactions button {
+    width: 34px;
+    height: 34px;
+    font-size: 15px;
+  }
+  .hl-sideactions small {
+    display: none;
+  }
+  .hl-room:not(.hl-connection-active) .hl-connection-tile {
+    height: 78px;
+    min-height: 42px;
+  }
+}
+
+@media (max-width: 420px) {
   .hl-audience {
     display: none;
   }
-  .hl-connection-overlay {
-    width: 170px;
+}
+
+@media (max-width: 365px) {
+  .hl-host {
+    max-width: 42%;
+    min-width: 60px;
   }
-  .hl-connection-tile {
-    height: 142px;
+  .hl-roomtop {
+    gap: 4px;
+  }
+  .hl-top-pill,
+  .hl-follow,
+  .hl-invite-pill {
+    padding: 5px 6px;
+    font-size: 9px;
+  }
+  .hl-close-room {
+    width: 26px;
+    height: 26px;
+    font-size: 16px;
+  }
+  .hl-room:not(.hl-connection-active) .hl-connection-pair {
+    width: 148px;
+  }
+  .hl-room:not(.hl-connection-active) .hl-connection-controls {
+    min-width: 148px;
+  }
+  .hl-room:not(.hl-connection-active) .hl-connection-tile {
+    height: 112px;
+  }
+}
+
+@media (max-width: 335px) {
+  .hl-room-top-wrap {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+  .hl-roomfooter {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .hl-top-pill,
+  .hl-follow,
+  .hl-invite-pill {
+    padding: 4px 5px;
+    font-size: 9px;
   }
 }
 

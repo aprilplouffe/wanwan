@@ -30,6 +30,7 @@
     plannerPendingMode: 'char',
     plannerEditing: false,
     plannerProgram: 'chat',
+    pendingConnectAfterInvite: false,
     selectedGiftId: 'free_spark',
     giftConfirmPending: null,
     giftSubmitting: false,
@@ -323,7 +324,7 @@
         '</div>' +
         '<div class="hl-meta">' +
           '<b>换我来开播</b>' +
-          '<small>' + esc(active.name) + ' 来前排陪伴</small>' +
+          '<small>直接开播 · 可随时邀请 Char</small>' +
         '</div>' +
       '</button>'
     );
@@ -338,20 +339,75 @@
     });
     var uCard = $('#hl-card-user-live');
     if (uCard) {
-      uCard.onclick = function() { openUserHostPicker(); };
+      uCard.onclick = function() { startUserSoloLive(); };
+    }
+  }
+
+  function startUserSoloLive() {
+    return startLiveRoom({
+      hostMode: 'user',
+      charObj: null,
+      program: 'chat',
+      title: '我的个人直播间'
+    });
+  }
+
+  async function inviteCharToUserRoom(charObj) {
+    var r = _state.room;
+    if (!r || r.hostMode !== 'user' || !charObj || !charObj.id) return;
+    var sameChar = r.charObj && String(r.charObj.id) === String(charObj.id);
+    _state.selectedCharId = String(charObj.id);
+    if (!sameChar) {
+      _state.aiRequestSeq++;
+      stopTtsPlayback();
+      r.charObj = charObj;
+      renderRoomIdentityChrome();
+      updateRoomProgramChrome();
+      await updateConnectionVisuals();
+      appendRoomMessage({
+        senderRole: 'system',
+        sender: '嘉宾邀请',
+        text: '💌 已邀请 ' + charObj.name + ' 进入你的直播间！现在发送弹幕或开启连麦都会与 Ta 实时互动。'
+      });
+      showToast('已邀请 ' + charObj.name + ' ♡');
+      var progInfo = (aiMod().PROGRAMS[r.program] || aiMod().PROGRAMS.chat);
+      triggerCharAiTurn({
+        triggerType: 'opening',
+        userPrompt: _state.user.name + ' 正在开个人直播（节目：「' + progInfo.label + '」，标题：「' + r.title + '」），刚刚邀请你进来前排陪伴，请用贴合人设的语气自然打声招呼。'
+      });
+    } else {
+      showToast(charObj.name + ' 已经在直播间里啦 ♡');
+    }
+    if (_state.pendingConnectAfterInvite) {
+      _state.pendingConnectAfterInvite = false;
+      openModal('connect');
     }
   }
 
   function openUserHostPicker() {
     var list = $('#hl-userhost-list');
-    if (!list) {
-      openPlannerModal('user', false);
+    if (!list) return;
+    var chars = _state.chars || [];
+    var currentInvitedId = (_state.room && _state.room.charObj) ? String(_state.room.charObj.id) : '';
+    if (!chars.length) {
+      list.innerHTML =
+        '<div class="hl-note" style="width:100%">当前角色档案中尚未创建 Char，暂无法邀请角色互动；你可以继续独自使用个人直播间，或前往新建角色。' +
+        '<div style="margin-top:8px"><button type="button" class="hl-ghost" id="hl-invite-create-char" style="padding:6px 10px;font-size:11px">前往新建角色</button></div></div>';
+      var goBtn = $('#hl-invite-create-char');
+      if (goBtn) {
+        goBtn.onclick = function() {
+          _state.pendingConnectAfterInvite = false;
+          closeModal();
+          close(false);
+          if (typeof global.showCharacterPage === 'function') global.showCharacterPage();
+        };
+      }
+      openModal('userHost');
       return;
     }
-    var active = getActiveChar();
-    var chars = _state.chars.length ? _state.chars : [active];
+
     list.innerHTML = chars.map(function(c) {
-      var sel = String(c.id) === String(active.id);
+      var sel = currentInvitedId && String(c.id) === currentInvitedId;
       return '<button type="button" class="hl-char-chip' + (sel ? ' selected' : '') + '" data-invite-char="' + esc(c.id) + '">' +
         '<span class="hl-chip-avatar">' + renderCharAvatarHtml(c) + '</span>' +
         '<span>' + esc(c.name) + '</span>' +
@@ -359,9 +415,16 @@
     }).join('');
     $$('[data-invite-char]').forEach(function(btn) {
       btn.onclick = function() {
-        _state.selectedCharId = btn.dataset.inviteChar;
+        var cid = btn.dataset.inviteChar;
+        var found = _state.chars.find(function(c) { return String(c.id) === String(cid); });
         closeModal();
-        openPlannerModal('user', false);
+        if (!found) return;
+        if (_state.room && _state.room.hostMode === 'user') {
+          inviteCharToUserRoom(found);
+        } else {
+          _state.selectedCharId = String(found.id);
+          startLiveRoom({ hostMode: 'user', charObj: found, program: 'chat' });
+        }
       };
     });
     openModal('userHost');
@@ -395,12 +458,13 @@
   }
 
   function openPlannerModal(hostMode, editing) {
-    var c = _state.room && editing ? _state.room.charObj : getActiveChar();
+    var r = _state.room;
+    var c = (r && editing) ? r.charObj : (hostMode === 'user' ? null : getActiveChar());
     _state.plannerPendingMode = hostMode || 'char';
     _state.plannerEditing = Boolean(editing);
 
-    if (editing && _state.room) {
-      _state.plannerProgram = _state.room.program || 'chat';
+    if (editing && r) {
+      _state.plannerProgram = r.program || 'chat';
     } else {
       _state.plannerProgram = 'chat';
     }
@@ -416,9 +480,13 @@
     }
     var nameEl = $('#hl-plan-name');
     if (nameEl) {
-      nameEl.textContent = _state.plannerPendingMode === 'user'
-        ? ('我开播 · 特邀 ' + c.name)
-        : (_state.plannerPendingMode === 'private' ? (c.name + ' · 私人双人连线') : (c.name + ' 的直播'));
+      if (_state.plannerPendingMode === 'user') {
+        nameEl.textContent = c ? ('我开播 · 已邀 ' + c.name) : (_state.user.name + ' · 个人直播中');
+      } else if (_state.plannerPendingMode === 'private') {
+        nameEl.textContent = (c ? c.name : 'Char') + ' · 私人双人连线';
+      } else {
+        nameEl.textContent = (c ? c.name : 'Char') + ' 的直播';
+      }
     }
     var headEl = $('#hl-planner-heading');
     if (headEl) headEl.textContent = editing ? '☷ 切换当前节目（不断开直播）' : '📺 本场直播企划';
@@ -590,14 +658,18 @@
 
   // ===== 直播间创建与热切换 =====
   async function startLiveRoom(opts) {
+    opts = opts || {};
     cleanupAllMedia();
+    closeModal();
     _state.sessionSeq++;
+    _state.pendingConnectAfterInvite = false;
     var sid = _state.sessionSeq;
     var hostMode = opts.hostMode || 'char';
-    var charObj = opts.charObj || getActiveChar();
+    var charObj = opts.charObj !== undefined ? opts.charObj : (hostMode === 'user' ? null : getActiveChar());
     var progId = opts.program || 'chat';
     var progInfo = aiMod().PROGRAMS[progId] || aiMod().PROGRAMS.chat;
-    var title = (opts.title || '').trim() || progInfo.defaultTitle;
+    var defaultTitle = (hostMode === 'user' && progId === 'chat') ? '我的个人直播间' : progInfo.defaultTitle;
+    var title = (opts.title || '').trim() || defaultTitle;
     var style = opts.style || (_state.settings && _state.settings.initiative) || 'natural';
 
     _state.room = {
@@ -629,6 +701,15 @@
     switchView('live');
     await applyProgramToRoom(progId, title, style, opts, false);
 
+    if (hostMode === 'user' && !charObj) {
+      appendRoomMessage({
+        senderRole: 'system',
+        sender: '个人开播',
+        text: '个人直播已开启 ♡ 可自由发消息、使用右上角「☷ 切换」更换节目或播放 ASMR；如需与 Char 互动或连麦，可随时点击顶部「+ 邀请」。'
+      });
+      return;
+    }
+
     // 真实开场问候
     var openingUserPrompt = hostMode === 'user'
       ? ('我刚刚开启了我的直播间（节目：「' + progInfo.label + '」，标题：「' + title + '」），请作为刚进直播间的前排朋友兼特邀嘉宾自然打声招呼。')
@@ -649,34 +730,49 @@
     if (roomEl) {
       roomEl.classList.toggle('private', r.hostMode === 'private');
     }
-    var c = r.charObj;
+    var c = r.charObj || null;
     var hostName = $('#hl-host-name');
     var hostStatus = $('#hl-host-status');
     var audience = $('#hl-audience');
     var followBtn = $('#hl-follow');
-    var modebar = $('#hl-modebar');
+    var inviteBtn = $('#hl-invite-btn');
     var inputEl = $('#hl-message-input');
 
-    if (hostName) hostName.textContent = r.hostMode === 'user' ? (_state.user.name + '（我）') : c.name;
+    if (hostName) hostName.textContent = r.hostMode === 'user' ? (_state.user.name + '（我）') : (c ? c.name : 'Char');
     if (hostStatus) {
-      hostStatus.textContent = r.hostMode === 'private' ? '私人双人连线' : r.hostMode === 'user' ? '用户主播中' : '正在直播';
+      hostStatus.textContent = r.hostMode === 'private'
+        ? '私人双人连线'
+        : r.hostMode === 'user'
+          ? (c ? ('已邀 ' + c.name) : '个人直播中')
+          : '正在直播';
     }
     if (audience) {
-      audience.textContent = r.hostMode === 'user'
-        ? ('👁 ' + c.name + (_state.settings && _state.settings.sim ? ' + AI观众' : ' 在看'))
-        : (_state.settings && _state.settings.sim ? '👁 模拟热度 1.2k' : '👁 仅你观看');
+      if (r.hostMode === 'user') {
+        audience.textContent = c
+          ? ('👁 ' + c.name + (_state.settings && _state.settings.sim ? ' + AI观众' : ' 在看'))
+          : '👁 个人直播间';
+      } else {
+        audience.textContent = _state.settings && _state.settings.sim ? '👁 模拟热度 1.2k' : '👁 仅你观看';
+      }
     }
     if (followBtn) {
-      var followed = Boolean(_state.followedChars[String(c.id)]);
-      followBtn.textContent = followed ? '✓ 已关注' : '+ 关注';
-      followBtn.classList.toggle('followed', followed);
+      followBtn.style.display = (r.hostMode === 'char' && c) ? '' : 'none';
+      if (c) {
+        var followed = Boolean(_state.followedChars[String(c.id)]);
+        followBtn.textContent = followed ? '✓ 已关注' : '+ 关注';
+        followBtn.classList.toggle('followed', followed);
+      }
     }
-    if (modebar) modebar.style.display = r.hostMode === 'private' ? 'none' : 'flex';
+    if (inviteBtn) {
+      inviteBtn.style.display = r.hostMode === 'user' ? '' : 'none';
+      inviteBtn.textContent = c ? ('换邀 · ' + c.name) : '+ 邀请';
+      inviteBtn.classList.toggle('invited', Boolean(c));
+    }
     if (inputEl) {
-      inputEl.placeholder = r.hostMode === 'private'
+      inputEl.placeholder = r.hostMode === 'private' && c
         ? ('和 ' + c.name + ' 说点什么…')
         : r.hostMode === 'user'
-          ? '对直播间说点什么…'
+          ? (c ? ('对直播间和 ' + c.name + ' 说点什么…') : '记录此刻或对观众说点什么…')
           : '发一条弹幕…';
     }
     var likeEl = $('#hl-like-count');
@@ -686,6 +782,7 @@
   function updateRoomProgramChrome() {
     var r = _state.room;
     if (!r) return;
+    var c = r.charObj || null;
     var prog = aiMod().PROGRAMS[r.program] || aiMod().PROGRAMS.chat;
     var statusEl = $('#hl-program-status');
     var roomTitleEl = $('#hl-room-title');
@@ -697,22 +794,23 @@
     }
     if (roomTitleEl) {
       var prefix = r.hostMode === 'user'
-        ? ('🎤 我的直播间 · ' + r.charObj.name + '在看')
+        ? (c ? ('🎤 我的直播间 · ' + c.name + '在看') : ('🎤 ' + _state.user.name + ' 的个人直播间'))
         : r.hostMode === 'private'
-          ? ('♡ 与 ' + r.charObj.name + ' 私人连线')
-          : (r.charObj.name + ' 的直播间');
+          ? ('♡ 与 ' + (c ? c.name : 'Char') + ' 私人连线')
+          : ((c ? c.name : 'Char') + ' 的直播间');
       roomTitleEl.textContent = prefix + ' · ' + r.title;
     }
     if (signEl) {
       signEl.textContent = prog.icon + ' ' + r.title;
     }
     if (noticeEl) {
-      var simNote = (_state.settings && _state.settings.sim && r.hostMode !== 'private') ? '含 [AI观众] 气氛弹幕' : '无外部模拟观众';
-      noticeEl.textContent = prog.label + ' · 真实 Char AI 互动（' + simNote + '）';
+      if (r.hostMode === 'user' && !c) {
+        noticeEl.textContent = prog.label + ' · 个人开播中（可随时点击顶部「+ 邀请」邀 Char 互动）';
+      } else {
+        var simNote = (_state.settings && _state.settings.sim && r.hostMode !== 'private') ? '含 [AI观众] 气氛弹幕' : '无外部模拟观众';
+        noticeEl.textContent = prog.label + ' · 真实 Char AI 互动（' + simNote + '）';
+      }
     }
-    $$('#hl-modebar [data-mode]').forEach(function(btn) {
-      btn.classList.toggle('selected', btn.dataset.mode === r.program);
-    });
   }
 
   async function applyProgramToRoom(progId, title, style, opts, isHotSwitch) {
@@ -751,7 +849,7 @@
       }
     }
 
-    if (isHotSwitch) {
+    if (isHotSwitch && r.charObj) {
       triggerCharAiTurn({
         triggerType: 'program_switch',
         userPrompt: '我们刚刚把直播节目切换到了「' + prog.label + '」（标题：「' + r.title + '」），请自然顺着这个新节目接一句。'
@@ -839,7 +937,7 @@
 
   // ===== 连麦双布局 (经典小窗 <-> 双人并列PK, 不断流热切换) =====
   async function updateConnectionVisuals() {
-    if (!_state.connectionType || !_state.room) return;
+    if (!_state.connectionType || !_state.room || !_state.room.charObj) return;
     var r = _state.room;
     var c = r.charObj;
     var hostIsUser = r.hostMode === 'user';
@@ -882,10 +980,22 @@
     }
     var selectEl = $('#hl-connect-layout');
     if (selectEl) selectEl.value = _state.connectionLayout;
+
+    // 只更新无障碍属性与高亮状态，绝不覆盖纯图标按钮的 SVG 结构
     var toggleBtn = $('#hl-layout-toggle');
     var swapBtn = $('#hl-swap-screens');
-    if (toggleBtn) toggleBtn.textContent = split ? '📺 切换小窗' : '👥 切换并列';
-    if (swapBtn) swapBtn.textContent = split ? '⇄ 交换位置' : '⇄ 小窗位置';
+    if (toggleBtn) {
+      var layoutTip = split ? '切换为主播大屏与连麦小窗布局' : '切换为双人左右并列布局';
+      toggleBtn.setAttribute('title', layoutTip);
+      toggleBtn.setAttribute('aria-label', layoutTip);
+      toggleBtn.setAttribute('aria-pressed', split ? 'true' : 'false');
+      toggleBtn.classList.toggle('hl-conn-btn-active', split);
+    }
+    if (swapBtn) {
+      var swapTip = split ? '交换左右并列位置' : '交换连麦小窗位置';
+      swapBtn.setAttribute('title', swapTip);
+      swapBtn.setAttribute('aria-label', swapTip);
+    }
 
     if (_state.settings && _state.settings.connectionLayout !== _state.connectionLayout) {
       _state.settings.connectionLayout = _state.connectionLayout;
@@ -909,25 +1019,39 @@
     var guestArt = $('#hl-conn-art');
     if (guestArt) guestArt.hidden = false;
     var roomEl = $('#hl-room');
-    if (roomEl) roomEl.classList.remove('hl-connection-active', 'hl-connection-swapped');
+    if (roomEl) roomEl.classList.remove('hl-has-connection', 'hl-connection-active', 'hl-connection-swapped');
     var connBtn = $('#hl-connect-btn');
     if (connBtn) connBtn.classList.remove('active');
     if (!silent) showToast('已挂断连麦');
   }
 
+  function ensureCharBeforeConnect() {
+    if (!_state.room) return false;
+    if (_state.room.charObj) return true;
+    _state.pendingConnectAfterInvite = true;
+    closeModal();
+    openUserHostPicker();
+    showToast('开启双人连麦前，请先选择要邀请的 Char ♡');
+    return false;
+  }
+
   async function startConnection(type) {
     if (!_state.room) return;
+    if (!ensureCharBeforeConnect()) return;
+
     // 若切换连麦类型，停止旧的麦克风/摄像头流（但切布局绝不调 startConnection）
     stopMediaTracks();
     _state.connectionType = type;
     _state.room.cohostUsed = true;
     closeModal();
 
+    var roomEl = $('#hl-room');
     var overlay = $('#hl-connection-overlay');
     var textBox = $('#hl-text-call-composer');
     var voiceBox = $('#hl-voice-call-controls');
     var connBtn = $('#hl-connect-btn');
 
+    if (roomEl) roomEl.classList.add('hl-has-connection');
     if (overlay) overlay.hidden = false;
     if (textBox) textBox.hidden = type !== 'text';
     if (voiceBox) voiceBox.hidden = type !== 'voice';
@@ -1072,13 +1196,15 @@
   }
 
   async function enableLocalCamera() {
+    if (!_state.room) return;
+    if (!ensureCharBeforeConnect()) return;
     if (!global.navigator || !global.navigator.mediaDevices || typeof global.navigator.mediaDevices.getUserMedia !== 'function') {
       showToast('当前环境不支持摄像头预览，请使用 HTTPS 页面');
       return;
     }
     try {
       var stream = await global.navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
-      if (!_state.room) {
+      if (!_state.room || !_state.room.charObj) {
         stream.getTracks().forEach(function(t) { t.stop(); });
         return;
       }
@@ -1088,6 +1214,7 @@
       _state.room.cohostUsed = true;
       closeModal();
 
+      var roomEl = $('#hl-room');
       var overlay = $('#hl-connection-overlay');
       var textBox = $('#hl-text-call-composer');
       var voiceBox = $('#hl-voice-call-controls');
@@ -1095,6 +1222,7 @@
       var camEl = $('#hl-user-camera');
       var guestArt = $('#hl-conn-art');
 
+      if (roomEl) roomEl.classList.add('hl-has-connection');
       if (overlay) overlay.hidden = false;
       if (textBox) textBox.hidden = true;
       if (voiceBox) voiceBox.hidden = true;
@@ -1206,7 +1334,7 @@
 
   async function triggerCharAiTurn(opts) {
     var r = _state.room;
-    if (!r) return;
+    if (!r || !r.charObj || !r.charObj.id) return;
     opts = opts || {};
     var mySession = r.sessionId;
     var myCharId = String(r.charObj.id);
@@ -1216,6 +1344,7 @@
       isStale: function() {
         return !_state.room ||
           _state.room.sessionId !== mySession ||
+          !_state.room.charObj ||
           String(_state.room.charObj.id) !== myCharId;
       },
       isLatest: function() {
@@ -1240,7 +1369,7 @@
       isStale: guard.isStale
     });
 
-    if (!reply || reply.stale || guard.isStale()) return;
+    if (!reply || reply.stale || reply.noChar || guard.isStale()) return;
 
     if (reply.speech) {
       if (_state.settings && _state.settings.voice === 'audio' && !_state.settings.captions) {
@@ -1284,7 +1413,9 @@
 
     var senderName = r.hostMode === 'user' ? (_state.user.name + '（主播）') : _state.user.name;
     appendRoomMessage({ senderRole: 'user', sender: senderName, text: text });
-    triggerCharAiTurn({ triggerType: 'chat', userPrompt: '' });
+    if (r.charObj) {
+      triggerCharAiTurn({ triggerType: 'chat', userPrompt: '' });
+    }
   }
 
   function sendCohostMessage(text, sourceKind) {
@@ -1293,7 +1424,9 @@
     if (!r || !clean) return;
     var senderName = _state.user.name + (sourceKind === 'voice' ? '（语音连麦）' : '（文字连麦）');
     appendRoomMessage({ senderRole: 'user_cohost', sender: senderName, text: clean });
-    triggerCharAiTurn({ triggerType: 'cohost', userPrompt: '' });
+    if (r.charObj) {
+      triggerCharAiTurn({ triggerType: 'cohost', userPrompt: '' });
+    }
   }
 
   // ===== 点赞、官方金币礼物 & 互动小游戏 =====
@@ -1359,6 +1492,9 @@
     if (gift.free) {
       btn.textContent = '送出免费小心意 ' + gift.icon;
       tip.textContent = gift.desc;
+    } else if (_state.room && _state.room.hostMode === 'user' && !_state.room.charObj) {
+      btn.textContent = '需先邀请 Char 才可送金币礼物';
+      tip.textContent = '当前为个人独自开播，未邀请接收礼物的 Char；可发送免费小心意或先点击顶部「+ 邀请」。';
     } else if (_state.giftConfirmPending === gift.id) {
       btn.textContent = '确认支付 ' + gift.price + ' 金币送出';
       tip.textContent = '⚠️ 再次点击将通过官方共享经济扣除 ' + gift.price + ' 金币';
@@ -1371,6 +1507,10 @@
   async function submitGiftClick() {
     if (!_state.room || _state.giftSubmitting) return;
     var gift = aiMod().GIFT_CATALOG.find(function(g) { return g.id === _state.selectedGiftId; }) || aiMod().GIFT_CATALOG[0];
+    if (!gift.free && _state.room.hostMode === 'user' && !_state.room.charObj) {
+      showToast('当前尚未邀请 Char，请先邀请 Char 后再送出金币礼物');
+      return;
+    }
     if (!gift.free && _state.giftConfirmPending !== gift.id) {
       _state.giftConfirmPending = gift.id;
       updateGiftConfirmBar();
@@ -1393,15 +1533,17 @@
       }
       closeModal();
       var label = gift.icon + ' ' + _state.user.name + ' 送出了「' + gift.name + '」' + (res.free ? '（免费互动）' : '（-' + res.coinsSpent + ' 金币）');
-      spawnGiftBurst(gift.icon + ' 感谢送出 ' + gift.name + '！');
+      spawnGiftBurst(gift.icon + (_state.room.charObj ? (' 感谢送出 ' + gift.name + '！') : (' 点亮了 ' + gift.name + '！')));
       appendRoomMessage({ senderRole: 'system', sender: '礼物提醒', text: label });
       showToast(res.free ? '已送出免费小心意 ✨' : ('送礼成功！剩余金币：' + res.remaining));
 
-      triggerCharAiTurn({
-        triggerType: 'gift',
-        giftName: gift.name,
-        userPrompt: _state.user.name + ' 刚刚在直播间给你送出了「' + gift.name + '」，请开心又自然地道谢。'
-      });
+      if (_state.room.charObj) {
+        triggerCharAiTurn({
+          triggerType: 'gift',
+          giftName: gift.name,
+          userPrompt: _state.user.name + ' 刚刚在直播间给你送出了「' + gift.name + '」，请开心又自然地道谢。'
+        });
+      }
     } finally {
       _state.giftSubmitting = false;
       if (sendBtn) sendBtn.disabled = false;
@@ -1437,10 +1579,14 @@
     var msgText = customText && customText.trim() ? customText.trim() : gs.prompt;
     closeModal();
     appendRoomMessage({ senderRole: 'user', sender: _state.user.name + ' · 互动点单', text: msgText });
-    triggerCharAiTurn({
-      triggerType: 'interact_game',
-      userPrompt: _state.user.name + ' 在直播间「互动游戏」环节向你发起了第 ' + gs.round + ' 轮挑战：' + msgText + '。请直接配合参与游戏并有趣地回应！'
-    });
+    if (_state.room.charObj) {
+      triggerCharAiTurn({
+        triggerType: 'interact_game',
+        userPrompt: _state.user.name + ' 在直播间「互动游戏」环节向你发起了第 ' + gs.round + ' 轮挑战：' + msgText + '。请直接配合参与游戏并有趣地回应！'
+      });
+    } else {
+      appendRoomMessage({ senderRole: 'system', sender: '互动提示', text: '已发布互动话题；点击顶部「+ 邀请」邀请 Char 后即可由 Ta 实时接招回应 ♡' });
+    }
   }
 
   // ===== 退出直播、直播手账与长期记忆手动确认 =====
@@ -1449,12 +1595,22 @@
     cleanupAllMedia();
     _state.room = null;
     _state.connectionType = '';
+    _state.pendingConnectAfterInvite = false;
+    var roomEl = $('#hl-room');
+    if (roomEl) roomEl.classList.remove('hl-kb-open', 'hl-has-connection', 'hl-connection-active', 'hl-connection-swapped');
+    if (_state.pageEl) {
+      _state.pageEl.style.height = '';
+      _state.pageEl.style.maxHeight = '';
+    }
 
     if (r && r.messages.length > 0 && storage()) {
+      var hasChar = Boolean(r.charObj && r.charObj.id);
+      var cId = hasChar ? r.charObj.id : '';
+      var cName = hasChar ? r.charObj.name : '个人直播（未邀请 Char）';
       var draft = aiMod().buildJournalDraft({
         hostMode: r.hostMode,
-        charId: r.charObj.id,
-        charName: r.charObj.name,
+        charId: cId,
+        charName: cName,
         program: r.program,
         title: r.title,
         startedAt: r.startedAt,
@@ -1466,8 +1622,8 @@
       });
       var saved = await storage().addJournalEntry({
         ownerUid: _state.user.id,
-        charId: r.charObj.id,
-        charName: r.charObj.name,
+        charId: cId,
+        charName: cName,
         hostMode: r.hostMode,
         program: r.program,
         programLabel: (aiMod().PROGRAMS[r.program] || aiMod().PROGRAMS.chat).label,
@@ -1503,13 +1659,23 @@
 
   function openSessionSummaryModal(journal, autoFinished) {
     var box = $('#hl-summary-body');
+    var rememberBtn = $('#hl-summary-remember');
+    var canWriteMem = Boolean(journal && journal.charId);
     if (box) {
       box.innerHTML =
         '<div class="hl-plan-preview">' +
           '<b>' + esc(journal.title) + '</b><br>' +
           esc(journal.summary) +
         '</div>' +
-        '<p class="hl-help">' + (autoFinished ? 'ASMR 定时已圆满结束。' : '本场直播已记录到「直播手账」。') + '是否顺便将它写入「长期记忆」？（需您审阅确认，绝不自动写入）</p>';
+        '<p class="hl-help">' +
+          (autoFinished ? 'ASMR 定时已圆满结束。' : '本场直播已记录到「直播手账」。') +
+          (canWriteMem
+            ? '是否顺便将它写入「长期记忆」？（需您审阅确认，绝不自动写入）'
+            : '本场为未绑定 Char 的个人开播记录，将保存在手账中而不写入角色长期记忆。') +
+        '</p>';
+    }
+    if (rememberBtn) {
+      rememberBtn.style.display = canWriteMem ? '' : 'none';
     }
     _state.memoryDraft = journal;
     openModal('summary');
@@ -1583,15 +1749,18 @@
 
     listEl.innerHTML = _state.journals.map(function(j) {
       var dateStr = new Date(j.startedAt || Date.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-      var memAlive = j.memoryId && existingMemIds.has(Number(j.memoryId));
+      var memAlive = !!(j.memorySaved && j.memoryId && existingMemIds.has(Number(j.memoryId)));
+      var memBtnHtml = !j.charId
+        ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#8e7994">个人独播手账</span>'
+        : memAlive
+          ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#3d8462;border-color:#bfe2cf">✓ 已写入长期记忆</span>'
+          : '<button type="button" class="hl-pinkbtn" style="padding:7px 12px;font-size:11px" data-jnl-remember="' + esc(j.id) + '">记住这场直播</button>';
       return '<div class="hl-diarycard">' +
         '<div class="hl-diarycard-head"><b>' + esc(j.title) + '</b><span class="hl-tag" style="background:#f6e6ef;color:#935c7c">' + esc(j.programLabel) + '</span></div>' +
         '<div class="hl-diarycard-meta">' + esc(dateStr) + ' · ' + esc(j.charName) + ' · ' + (j.msgCount || 0) + ' 条互动' + (j.giftsTotalCoins ? ' · 礼物 ' + j.giftsTotalCoins + ' 金币' : '') + '</div>' +
         '<p>' + esc(j.summary) + '</p>' +
         '<div class="hl-diarycard-actions">' +
-          (memAlive
-            ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#3d8462;border-color:#bfe2cf">✓ 已写入长期记忆</span>'
-            : '<button type="button" class="hl-pinkbtn" style="padding:7px 12px;font-size:11px" data-jnl-remember="' + esc(j.id) + '">记住这场直播</button>') +
+          memBtnHtml +
           '<button type="button" class="hl-dangerbtn" data-jnl-del="' + esc(j.id) + '">删除手账</button>' +
         '</div>' +
       '</div>';
@@ -1831,8 +2000,8 @@
             '<div class="hl-char-picker-row" id="hl-char-picker"></div>' +
             '<div class="hl-subhead"><b>🔴 正在直播</b><span>点击卡片策划开播</span></div>' +
             '<div class="hl-broadcasts" id="hl-broadcasts"></div>' +
-            '<div class="hl-subhead"><b>✨ 我要开播</b><span>Char 来前排看你</span></div>' +
-            '<div class="hl-create"><div class="hl-ico">🎤</div><div><b>我的心动直播间</b><p>你是主播，可随时与 Char 连麦或播 ASMR</p></div><button type="button" class="hl-pinkbtn" id="hl-go-live">开播</button></div>' +
+            '<div class="hl-subhead"><b>✨ 我要开播</b><span>直接开播 · 可选邀 Char</span></div>' +
+            '<div class="hl-create"><div class="hl-ico">🎤</div><div><b>我的心动直播间</b><p>点击直接进入个人直播，播中可随时邀请 Char</p></div><button type="button" class="hl-pinkbtn" id="hl-go-live">开播</button></div>' +
             '<div class="hl-subhead"><b>💗 双人连线</b><span>仅你和 Char</span></div>' +
             '<div class="hl-create"><div class="hl-ico">💞</div><div><b>私人双人直播</b><p>闲聊 · ASMR · 睡前电台 · 云陪伴</p></div><button type="button" class="hl-pinkbtn" id="hl-private-start2">连线</button></div>' +
           '</div>' +
@@ -1841,36 +2010,51 @@
         // 2. 沉浸直播间
         '<section class="hl-view hl-view-room" id="hl-view-live" data-view="live">' +
           '<div class="hl-room cloud" id="hl-room">' +
-            '<div class="hl-roomtop">' +
-              '<div class="hl-host"><span class="hl-face" id="hl-host-face">🌸</span><span class="hl-hostinfo"><b id="hl-host-name">Char</b><small id="hl-host-status">正在直播</small></span></div>' +
-              '<button type="button" class="hl-follow" id="hl-follow">+ 关注</button>' +
-              '<button type="button" class="hl-top-pill" id="hl-connect-btn" title="连麦或视频">🎙 连麦</button>' +
-              '<button type="button" class="hl-top-pill" id="hl-callModeToggle" title="切换全屏或煲电话模式">📞 通话</button>' +
-              '<button type="button" class="hl-top-pill" id="hl-quick-program-switch" title="切换节目">☷ 切换</button>' +
-              '<span class="hl-audience" id="hl-audience">👁 模拟 1.2k</span>' +
-              '<button type="button" class="hl-close-room" id="hl-exit-room" aria-label="退出直播间">×</button>' +
-            '</div>' +
-            '<div class="hl-room-title" id="hl-room-title">直播间</div>' +
-            '<div class="hl-program-status" id="hl-program-status">💬 当前：闲聊直播</div>' +
-            '<div class="hl-modebar" id="hl-modebar">' +
-              '<button type="button" data-mode="chat" class="selected">💬 聊天</button>' +
-              '<button type="button" data-mode="game">🎮 游戏</button>' +
-              '<button type="button" data-mode="radio">📻 电台</button>' +
-              '<button type="button" data-mode="asmr">🎧 ASMR</button>' +
-            '</div>' +
             '<div class="hl-char-fullscreen-art" id="hl-charFullscreenArt" aria-hidden="true"></div>' +
             '<div class="hl-host-stage"><div class="hl-stage-halo"></div><div class="hl-bigavatar" id="hl-stageAvatar">🌸</div><div class="hl-stage-sign" id="hl-stage-caption">欢迎来到直播间 ♡</div></div>' +
 
-            // 连麦双布局浮层 (小窗 & 双人并列PK)
+            '<div class="hl-room-top-wrap">' +
+              '<div class="hl-roomtop">' +
+                '<div class="hl-host"><span class="hl-face" id="hl-host-face">🌸</span><span class="hl-hostinfo"><b id="hl-host-name">Char</b><small id="hl-host-status">正在直播</small></span></div>' +
+                '<button type="button" class="hl-follow" id="hl-follow">+ 关注</button>' +
+                '<button type="button" class="hl-invite-pill" id="hl-invite-btn" style="display:none">+ 邀请</button>' +
+                '<button type="button" class="hl-top-pill" id="hl-connect-btn" title="连麦或视频">🎙 连麦</button>' +
+                '<button type="button" class="hl-top-pill" id="hl-callModeToggle" title="切换全屏或煲电话模式">📞 通话</button>' +
+                '<button type="button" class="hl-top-pill" id="hl-quick-program-switch" title="切换节目">☷ 切换</button>' +
+                '<span class="hl-audience" id="hl-audience">👁 模拟 1.2k</span>' +
+                '<button type="button" class="hl-close-room" id="hl-exit-room" aria-label="退出直播间">×</button>' +
+              '</div>' +
+              '<div class="hl-room-title" id="hl-room-title">直播间</div>' +
+              '<div class="hl-program-status" id="hl-program-status">💬 当前：闲聊直播</div>' +
+            '</div>' +
+
+            // 连麦双布局浮层 (小窗 & 双人并列PK，纯图标操作栏)
             '<div class="hl-connection-overlay" id="hl-connection-overlay" hidden>' +
               '<div class="hl-connection-pair">' +
                 '<div class="hl-connection-tile hl-main-connection-tile"><div class="hl-connection-art" id="hl-main-conn-art">🌸</div><div class="hl-connection-label" id="hl-main-conn-label">主播</div></div>' +
                 '<div class="hl-connection-tile" id="hl-conn-tile"><div class="hl-connection-art" id="hl-conn-art">🎀</div><div class="hl-connection-label" id="hl-conn-label">连麦中</div><video class="hl-user-camera" id="hl-user-camera" autoplay playsinline muted hidden></video></div>' +
               '</div>' +
-              '<div class="hl-connection-controls">' +
-                '<button type="button" id="hl-layout-toggle">👥 切换并列</button>' +
-                '<button type="button" id="hl-swap-screens">⇄ 交换位置</button>' +
-                '<button type="button" id="hl-disconnect">✕ 挂断</button>' +
+              '<div class="hl-connection-controls" role="toolbar" aria-label="连麦画面控制">' +
+                '<button type="button" id="hl-layout-toggle" title="切换连麦布局" aria-label="切换连麦布局">' +
+                  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="7.5" height="16" rx="2"/><rect x="13.5" y="4" width="7.5" height="16" rx="2"/></svg>' +
+                '</button>' +
+                '<button type="button" id="hl-swap-screens" title="交换连麦位置" aria-label="交换连麦位置">' +
+                  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 7H4m0 0l3.5-3.5M4 7l3.5 3.5"/><path d="M8 17h12m0 0l-3.5-3.5M20 17l-3.5 3.5"/></svg>' +
+                '</button>' +
+                '<button type="button" class="hl-conn-hangup" id="hl-disconnect" title="挂断连麦" aria-label="挂断连麦">' +
+                  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 14.5c4.5-4.2 10.5-4.2 15 0"/><path d="M4.5 14.5l-1.5 2.2c-.3.5-.1 1.1.4 1.3l2.6 1c.5.2 1-.1 1.2-.6l.7-1.9"/><path d="M19.5 14.5l1.5 2.2c.3.5.1 1.1-.4 1.3l-2.6 1c-.5.2-1-.1-1.2-.6l-.7-1.9"/></svg>' +
+                '</button>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="hl-roomfooter">' +
+              '<div class="hl-footer-upper">' +
+                '<div class="hl-messages" id="hl-messages" aria-live="polite"></div>' +
+                '<div class="hl-sideactions">' +
+                  '<button type="button" id="hl-like" aria-label="点赞">♡</button><small id="hl-like-count">点赞</small>' +
+                  '<button type="button" id="hl-gift" aria-label="送礼">🎁</button><small>礼物</small>' +
+                  '<button type="button" id="hl-interact" aria-label="互动">🎮</button><small>互动</small>' +
+                '</div>' +
               '</div>' +
               '<div id="hl-text-call-composer" class="hl-text-call-composer" hidden>' +
                 '<input id="hl-text-call-input" maxlength="180" placeholder="在连麦席位对 Ta 说…" aria-label="文字连麦输入">' +
@@ -1887,16 +2071,6 @@
                   '<button type="button" id="hl-voice-text-send">发送</button>' +
                 '</div>' +
               '</div>' +
-            '</div>' +
-
-            '<div class="hl-sideactions">' +
-              '<button type="button" id="hl-like" aria-label="点赞">♡</button><small id="hl-like-count">点赞</small>' +
-              '<button type="button" id="hl-gift" aria-label="送礼">🎁</button><small>礼物</small>' +
-              '<button type="button" id="hl-interact" aria-label="互动">🎮</button><small>互动</small>' +
-            '</div>' +
-
-            '<div class="hl-roomfooter">' +
-              '<div class="hl-messages" id="hl-messages" aria-live="polite"></div>' +
               '<div class="hl-notice" id="hl-notice">真实 Char AI 互动</div>' +
               '<div class="hl-composer">' +
                 '<input id="hl-message-input" maxlength="160" placeholder="发一条弹幕…" aria-label="弹幕输入">' +
@@ -2147,15 +2321,21 @@
     var goLive = $('#hl-go-live');
     if (priv1) priv1.onclick = function() { openPlannerModal('private', false); };
     if (priv2) priv2.onclick = function() { openPlannerModal('private', false); };
-    if (goLive) goLive.onclick = function() { openUserHostPicker(); };
+    if (goLive) goLive.onclick = function() { startUserSoloLive(); };
 
     // 抽屉通用关闭
     $$('[data-close-modal]').forEach(function(btn) {
-      btn.onclick = closeModal;
+      btn.onclick = function() {
+        _state.pendingConnectAfterInvite = false;
+        closeModal();
+      };
     });
     $$('.hl-planner').forEach(function(backdrop) {
       backdrop.addEventListener('click', function(ev) {
-        if (ev.target === backdrop) closeModal();
+        if (ev.target === backdrop) {
+          _state.pendingConnectAfterInvite = false;
+          closeModal();
+        }
       });
     });
 
@@ -2237,7 +2417,7 @@
         } else {
           await startLiveRoom({
             hostMode: _state.plannerPendingMode,
-            charObj: getActiveChar(),
+            charObj: _state.plannerPendingMode === 'user' ? null : getActiveChar(),
             program: _state.plannerProgram,
             title: titleVal,
             style: styleVal,
@@ -2260,19 +2440,6 @@
       };
     }
 
-    $$('#hl-modebar [data-mode]').forEach(function(btn) {
-      btn.onclick = function() {
-        if (!_state.room) return;
-        var m = btn.dataset.mode;
-        if (m === 'asmr') {
-          _state.plannerProgram = 'asmr';
-          openPlannerModal(_state.room.hostMode, true);
-          return;
-        }
-        applyProgramToRoom(m, '', _state.room.style, {}, true);
-      };
-    });
-
     var callToggle = $('#hl-callModeToggle');
     if (callToggle) {
       callToggle.onclick = async function() {
@@ -2287,10 +2454,19 @@
       };
     }
 
+    var inviteBtn = $('#hl-invite-btn');
+    if (inviteBtn) {
+      inviteBtn.onclick = function() {
+        if (!_state.room || _state.room.hostMode !== 'user') return;
+        _state.pendingConnectAfterInvite = false;
+        openUserHostPicker();
+      };
+    }
+
     var followBtn = $('#hl-follow');
     if (followBtn) {
       followBtn.onclick = async function() {
-        if (!_state.room) return;
+        if (!_state.room || !_state.room.charObj) return;
         var followed = await storage().toggleFollowChar(_state.room.charObj.id);
         _state.followedChars[String(_state.room.charObj.id)] = followed;
         renderRoomIdentityChrome();
@@ -2338,7 +2514,11 @@
 
     // 连麦面板与操作
     var connectBtn = $('#hl-connect-btn');
-    if (connectBtn) connectBtn.onclick = function() { openModal('connect'); };
+    if (connectBtn) {
+      connectBtn.onclick = function() {
+        if (ensureCharBeforeConnect()) openModal('connect');
+      };
+    }
     var textConnBtn = $('#hl-text-connect');
     var voiceConnBtn = $('#hl-voice-connect');
     var videoConnBtn = $('#hl-video-connect');
@@ -2701,8 +2881,27 @@
     _state.pageHideHandler = function() {
       cleanupAllMedia();
     };
+    var baseHeight = Number((global.visualViewport && global.visualViewport.height) || global.innerHeight || 0);
     _state.viewportHandler = function() {
-      // Android 软键盘聚焦时确保直播间底部或弹窗输入框可见
+      var vv = global.visualViewport;
+      var winH = Number(global.innerHeight || 0);
+      var curH = Number((vv && vv.height) || winH || 0);
+      if (winH > baseHeight) baseHeight = winH;
+      var roomEl = $('#hl-room');
+      if (_state.pageEl && curH > 0) {
+        var vvShrank = Boolean(vv && winH > 0 && vv.height < winH - 90);
+        var winShrank = Boolean(baseHeight > 0 && curH < baseHeight - 110);
+        var kbLikely = vvShrank || winShrank;
+        if (vvShrank && vv.height > 180) {
+          var px = Math.round(vv.height) + 'px';
+          _state.pageEl.style.height = px;
+          _state.pageEl.style.maxHeight = px;
+        } else {
+          _state.pageEl.style.height = '';
+          _state.pageEl.style.maxHeight = '';
+        }
+        if (roomEl) roomEl.classList.toggle('hl-kb-open', kbLikely);
+      }
       var ae = global.document && global.document.activeElement;
       if (ae && _state.pageEl && _state.pageEl.contains(ae) && typeof ae.scrollIntoView === 'function') {
         setTimeout(function() {
@@ -2716,6 +2915,7 @@
     }
     global.addEventListener('focus', _state.visHandler);
     global.addEventListener('pagehide', _state.pageHideHandler);
+    global.addEventListener('resize', _state.viewportHandler);
     if (global.visualViewport) {
       global.visualViewport.addEventListener('resize', _state.viewportHandler);
     }
@@ -2759,8 +2959,11 @@
       global.removeEventListener('pagehide', _state.pageHideHandler);
       _state.pageHideHandler = null;
     }
-    if (_state.viewportHandler && global.visualViewport) {
-      global.visualViewport.removeEventListener('resize', _state.viewportHandler);
+    if (_state.viewportHandler) {
+      global.removeEventListener('resize', _state.viewportHandler);
+      if (global.visualViewport) {
+        global.visualViewport.removeEventListener('resize', _state.viewportHandler);
+      }
       _state.viewportHandler = null;
     }
     if (_state.popHandler) {
