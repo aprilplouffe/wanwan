@@ -1707,7 +1707,9 @@
   window.showLifeGamePage = showLifeGamePage;
   window.showHeartbeatMallPage = showHeartbeatMallPage;
   window.showFanCommunityPage = showFanCommunityPage;
-  window.showHeartbeatLivePage = showHeartbeatLivePage;
+  if (!window.HeartbeatLiveApp) {
+    window.showHeartbeatLivePage = showHeartbeatLivePage;
+  }
 
   // 别名兼容：window.showXxxApp
   window.showBrowserApp = showBrowserPage;
@@ -1723,7 +1725,9 @@
   window.showLifeGameApp = showLifeGamePage;
   window.showHeartbeatMallApp = showHeartbeatMallPage;
   window.showFanCommunityApp = showFanCommunityPage;
-  window.showHeartbeatLiveApp = showHeartbeatLivePage;
+  if (!window.HeartbeatLiveApp) {
+    window.showHeartbeatLiveApp = showHeartbeatLivePage;
+  }
 
   // 同时也挂载到 PlaceholderApps 命名空间方便集中调试或调用
   window.PlaceholderApps = {

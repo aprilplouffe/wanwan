@@ -17,8 +17,19 @@ var BACKUP_EXCLUDED_CONFIG_KEYS = [
   'memoryLastError'
 ]
 
+function isHeartbeatLiveAudioBackupExcluded(key) {
+  if (String(key).indexOf('heartbeat_live_audio_blob_') !== 0) return false
+  try {
+    return localStorage.getItem('wanwan_heart_live_backup_audio') !== '1'
+  } catch (e) {
+    return true
+  }
+}
+
 function isBackupConfigRow(row) {
-  return row && BACKUP_EXCLUDED_CONFIG_KEYS.indexOf(String(row.key)) < 0
+  return row &&
+    BACKUP_EXCLUDED_CONFIG_KEYS.indexOf(String(row.key)) < 0 &&
+    !isHeartbeatLiveAudioBackupExcluded(row.key)
 }
 
 function filterBackupConfigRows(rows) {
@@ -355,7 +366,8 @@ var APP_DATA_DEFS = [
   { id: 'terminal', name: '终端', icon: 'fa-solid fa-terminal', tables: ['mcpServers'], configPrefixes: ['mcpApi'], localPrefixes: ['wanwan_mcp_oauth_', 'wanwan_mcp_secret_'] },
   { id: 'iscreens', name: 'iScreens', icon: 'fa-solid fa-wand-magic-sparkles', configKeys: ['desktopIconCustomizations', 'desktopLabelColor', 'desktopWidgets', 'wallpaperData', 'topWidgetText'] },
   { id: 'message', name: '信息', icon: 'fa-solid fa-message', tables: ['smsConversations', 'smsMessages'] },
-  { id: 'wanxiang', name: '万象镜', icon: 'fa-solid fa-store', configPrefixes: ['wanxiang_mirror_'], localPrefixes: ['wanxiang_mirror_'] }
+  { id: 'wanxiang', name: '万象镜', icon: 'fa-solid fa-store', configPrefixes: ['wanxiang_mirror_'], localPrefixes: ['wanxiang_mirror_'] },
+  { id: 'heartbeatLive', name: '心动直播', icon: 'fa-solid fa-video', configPrefixes: ['heartbeat_live_'], localPrefixes: ['wanwan_heart_live_'] }
 ]
 
 function keyMatchesApp(key, def, type) {
