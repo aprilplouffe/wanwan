@@ -3849,16 +3849,15 @@
             '</button>' +
           '</div></div>' +
           '<div class="hl-home-content">' +
+            '<div class="hl-subhead"><b>🔴 正在直播</b><span>点击卡片策划开播</span></div>' +
+            '<div class="hl-broadcasts" id="hl-broadcasts"></div>' +
             '<div class="hl-subhead"><b>✨ 我要开播</b><span>直接开播 · 可选邀 Char / NPC</span></div>' +
             '<div class="hl-create"><div class="hl-ico">🎤</div><div><b>我的心动直播间</b><p>点击直接进入个人直播，播中可邀多人陪伴</p></div><button type="button" class="hl-pinkbtn" id="hl-go-live">开播</button></div>' +
             '<div class="hl-subhead"><b>💗 双人连线</b><span>仅你和 Char</span></div>' +
-            '<div class="hl-featured"><b>一键进入私人连线<br>和喜欢的 Char 见面</b><p>已接入真实 Char 档案、世界书、Minimax 语音与共享金币。</p><button type="button" class="hl-pinkbtn" id="hl-private-start">♡ 开始私人连线</button></div>' +
             '<div class="hl-create"><div class="hl-ico">💞</div><div><b>私人双人直播</b><p>闲聊 · ASMR · 睡前电台 · 云陪伴</p></div><button type="button" class="hl-pinkbtn" id="hl-private-start2">连线</button></div>' +
             '<div class="hl-subhead"><b>🎭 选择 Char 或 NPC</b><span>多角色独立开播</span></div>' +
             '<div class="hl-create"><div class="hl-ico">🌟</div><div><b>让 Char 或 NPC 来开播</b><p>支持全部 / Char / NPC 筛选，NPC 无需微信聊天即可独立开播</p></div><button type="button" class="hl-pinkbtn" id="hl-open-role-picker">选择 Char 或 NPC</button></div>' +
             '<div class="hl-char-picker-row" id="hl-char-picker"></div>' +
-            '<div class="hl-subhead"><b>🔴 正在直播</b><span>点击卡片策划开播</span></div>' +
-            '<div class="hl-broadcasts" id="hl-broadcasts"></div>' +
           '</div>' +
         '</section>' +
 
@@ -4255,11 +4254,9 @@
     });
 
     // 大厅快捷开播
-    var priv1 = $('#hl-private-start');
     var priv2 = $('#hl-private-start2');
     var goLive = $('#hl-go-live');
     var openRolePickerBtn = $('#hl-open-role-picker');
-    if (priv1) priv1.onclick = function() { openPlannerModal('private', false, getActiveChar()); };
     if (priv2) priv2.onclick = function() { openPlannerModal('private', false, getActiveChar()); };
     if (goLive) goLive.onclick = function() { startUserSoloLive(); };
     if (openRolePickerBtn) openRolePickerBtn.onclick = function() { openRolePickerModal(); };

@@ -917,23 +917,33 @@ async function main() {
   check(h.fakeTrackList.every(t => t.stopped === true), '退出心动直播时立即停止全部麦克风与摄像头轨道');
   check(h.revokedUrls.length > 0, '退出时回收所有临时 Blob URL');
 
-  // 9. V1.1.2 直播大厅入口顺序调整
-  console.log('\n9. V1.1.2 直播大厅入口顺序（我要开播 -> 双人连线 -> 选择 Char 或 NPC -> 正在直播）');
+  // 9. 直播大厅精简去重与顺序调整（正在直播 -> 我要开播 -> 双人连线 -> 选择 Char 或 NPC）
+  console.log('\n9. 直播大厅精简去重与模块顺序（正在直播 -> 我要开播 -> 双人连线 -> 选择 Char 或 NPC）');
   await app.open();
   const homeHtml = h.doc.getElementById('heartbeat-live-page').innerHTML;
+  const idxBroadcasts = homeHtml.indexOf('id="hl-broadcasts"');
   const idxUserLive = homeHtml.indexOf('id="hl-go-live"');
-  const idxPrivFeatured = homeHtml.indexOf('id="hl-private-start"');
   const idxPrivCard = homeHtml.indexOf('id="hl-private-start2"');
   const idxRolePickerBtn = homeHtml.indexOf('id="hl-open-role-picker"');
   const idxCharPicker = homeHtml.indexOf('id="hl-char-picker"');
-  const idxBroadcasts = homeHtml.indexOf('id="hl-broadcasts"');
   check(
-    idxUserLive > 0 && idxPrivFeatured > idxUserLive && idxPrivCard > idxPrivFeatured &&
-    idxRolePickerBtn > idxPrivCard && idxCharPicker > idxRolePickerBtn && idxBroadcasts > idxCharPicker,
-    '直播大厅按「我要开播 -> 双人连线 -> 选择 Char 或 NPC -> 正在直播」顺序渲染'
+    !h.doc.getElementById('hl-private-start') &&
+    !homeHtml.includes('一键进入私人连线') &&
+    !homeHtml.includes('hl-featured'),
+    '已彻底删除重复的旧版大型双人连线卡片与专属类名'
   );
-  h.doc.getElementById('hl-private-start').click();
-  check(app.getState().openModal === 'planner' && app.getState().plannerPendingMode === 'private', '调整顺序后「开始私人连线」仍正常进入私人连线企划');
+  check(
+    homeHtml.split('id="hl-broadcasts"').length === 2 &&
+    homeHtml.split('🔴 正在直播').length === 2,
+    '「正在直播」模块仅存在唯一一份，无重复渲染'
+  );
+  check(
+    idxBroadcasts > 0 && idxUserLive > idxBroadcasts && idxPrivCard > idxUserLive &&
+    idxRolePickerBtn > idxPrivCard && idxCharPicker > idxRolePickerBtn,
+    '直播大厅按「正在直播 -> 我要开播 -> 双人连线 -> 选择 Char 或 NPC」顺序渲染'
+  );
+  h.doc.getElementById('hl-private-start2').click();
+  check(app.getState().openModal === 'planner' && app.getState().plannerPendingMode === 'private', '保留的「私人双人直播」仍正常进入私人连线企划');
   h.doc.getElementById('hl-planner').querySelector('[data-close-modal]').click();
 
   // 10. V1.1 应用内可拖动悬浮小窗生命周期
@@ -1587,7 +1597,7 @@ async function main() {
   // 17.7 双人连线与 Char 选中隔离：选择 NPC 不会污染「双人连线」默认 Char
   await app.switchView('home');
   check(app.getState().selectedHostId === '201' && app.getState().selectedCharId !== '201', '选择 NPC 主播仅更新 selectedHostId，不会把 NPC 混入 selectedCharId');
-  h.doc.getElementById('hl-private-start').click();
+  h.doc.getElementById('hl-private-start2').click();
   check(
     app.getState().openModal === 'planner' &&
     app.getState().plannerPendingMode === 'private' &&
