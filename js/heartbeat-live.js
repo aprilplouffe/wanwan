@@ -2342,7 +2342,13 @@
           }
         };
         audio.addEventListener('ended', clearTts);
-        audio.addEventListener('error', clearTts);
+        audio.addEventListener('error', function() {
+          var decMsg = (global.WanWanTTS && typeof global.WanWanTTS.describeMediaError === 'function')
+            ? global.WanWanTTS.describeMediaError(audio.error)
+            : '语音音频解码或播放失败';
+          clearTts();
+          showToast(decMsg + '，已保留文字字幕');
+        });
         await audio.play().catch(clearTts);
       }
     } catch (_) {
@@ -4978,13 +4984,19 @@
             _previewAudioEl.volume = res.volume;
             _previewAudioEl.onended = function() { stopPreviewAudio(); };
             _previewAudioEl.onerror = function() {
+              var previewErrMsg = (global.WanWanTTS && typeof global.WanWanTTS.describeMediaError === 'function')
+                ? global.WanWanTTS.describeMediaError(_previewAudioEl && _previewAudioEl.error)
+                : '试听音频播放失败';
               stopPreviewAudio();
-              showToast('试听音频播放失败');
+              showToast(previewErrMsg);
             };
             syncRoleVoicePreviewButton();
-            _previewAudioEl.play().catch(function() {
+            _previewAudioEl.play().catch(function(playErr) {
+              var playMsg = (playErr && playErr.name === 'NotAllowedError')
+                ? '浏览器拦截了自动播放，请再次点击试听'
+                : '无法播放试听音频';
               stopPreviewAudio();
-              showToast('无法播放试听音频');
+              showToast(playMsg);
             });
           } else if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
             try { URL.revokeObjectURL(res.blobUrl); } catch (_) {}

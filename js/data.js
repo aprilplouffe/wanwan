@@ -14,7 +14,12 @@ function isProtectedLocalStorageKey(key) {
 // 只用于当前设备的诊断状态，不写入备份，也不计入备份数据总量。
 var BACKUP_EXCLUDED_CONFIG_KEYS = [
   'memoryEmbeddingStatus',
-  'memoryLastError'
+  'memoryLastError',
+  'fishAudioVaultKey',
+  'fishAudioSessionToken',
+  'fishAudioProxyToken',
+  'fishAudioApiKeyEnc',
+  'fishAudioApiKey'
 ]
 
 function isHeartbeatLiveAudioBackupExcluded(key) {

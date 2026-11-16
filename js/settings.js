@@ -190,12 +190,28 @@ function openFishAudioConfigPage() {
   }).join('')
   var html =
     '<div class="setting-section"><div class="api-form" id="fish-audio-form">' +
-      '<label class="form-label">API Key</label>' +
+      '<label class="form-label">凭据与代理模式</label>' +
+      '<select class="input-field" id="fish-audio-auth-mode">' +
+        '<option value="server_managed">服务端托管密钥（推荐 · 浏览器不存 API Key）</option>' +
+        '<option value="byok_session">个人密钥代理会话（本地 AES-GCM 加密 · 仅经 HTTPS 代理换取会话）</option>' +
+      '</select>' +
+      '<label class="form-label">代理端点 URL（HTTPS / 同源）</label>' +
+      '<input class="input-field" id="fish-audio-proxy-url" placeholder="默认同源 /api/tts/fish（App 打包请填 https://.../api/tts/fish）" autocomplete="off">' +
+      '<label class="form-label">代理访问令牌（可选 · X-Fish-Proxy-Token）</label>' +
       '<div class="input-with-toggle">' +
-        '<input class="input-field" id="fish-audio-api-key" type="text" placeholder="输入 Fish Audio API Key">' +
-        '<button class="btn-text-toggle" id="toggle-fish-audio-key-vis">隐藏</button>' +
+        '<input class="input-field" id="fish-audio-proxy-token" type="password" placeholder="若代理服务端未启用访问口令可留空" autocomplete="off">' +
+        '<button class="btn-text-toggle" id="toggle-fish-proxy-token-vis" type="button">显示</button>' +
       '</div>' +
-      '<label class="form-label">语音模型（HTTP Header: model）</label>' +
+      '<div id="fish-byok-key-wrap" style="display:none">' +
+        '<label class="form-label">个人 Fish Audio API Key（仅提交至代理会话接口）</label>' +
+        '<div class="input-with-toggle">' +
+          '<input class="input-field" id="fish-audio-api-key" type="password" placeholder="输入新的个人 API Key（留空表示保留已加密凭据）" autocomplete="off">' +
+          '<button class="btn-text-toggle" id="toggle-fish-audio-key-vis" type="button">显示</button>' +
+        '</div>' +
+        '<div class="section-desc" id="fish-byok-key-status" style="padding:4px 0 6px"></div>' +
+        '<button class="btn-ghost btn-sm" id="btn-clear-fish-key" type="button" style="margin-bottom:8px">清除本地已存个人密钥</button>' +
+      '</div>' +
+      '<label class="form-label">语音模型（代理透传 model 请求头）</label>' +
       '<select class="input-field" id="fish-audio-model">' +
         modelOptions +
       '</select>' +
@@ -204,10 +220,12 @@ function openFishAudioConfigPage() {
         formatOptions +
       '</select>' +
       '<div class="section-desc" style="padding:8px 0 0">' +
-        '接口地址：https://api.fish.audio/v1/tts<br>' +
-        '全局仅保存 API 凭据与默认编码格式；微信角色与心动直播角色的 Reference ID 各自独立配置。' +
+        'Fish Audio 官方接口（api.fish.audio/v1/tts）不开放浏览器 CORS 预检，前端统一经安全代理转发。<br>' +
+        '全局仅管理代理与编码格式；微信角色与心动直播角色的 Reference ID 各自独立配置。' +
       '</div>' +
-      '<button class="btn-pill btn-full" id="btn-save-fish-audio">保存</button>' +
+      '<div class="section-desc" id="fish-proxy-diag-result" style="padding:6px 0 0"></div>' +
+      '<button class="btn-ghost btn-full" id="btn-test-fish-proxy" type="button" style="margin-top:8px">检测代理与后端密钥状态</button>' +
+      '<button class="btn-pill btn-full" id="btn-save-fish-audio" style="margin-top:8px">保存</button>' +
     '</div></div>'
   var page = buildSubPage('sub-fish-audio-config', 'Fish Audio 语音配置', html)
   openSubPage(page)
@@ -215,17 +233,28 @@ function openFishAudioConfigPage() {
 }
 
 async function initFishAudioConfigPage(page) {
-  var results = await Promise.all([
-    db.config.get('fishAudioApiKey'),
-    db.config.get('fishAudioModel'),
-    db.config.get('fishAudioFormat')
-  ])
+  var ttsEngine = window.WanWanTTS
+  var cfg = ttsEngine && typeof ttsEngine.getFishAudioConfig === 'function'
+    ? await ttsEngine.getFishAudioConfig()
+    : { authMode: 'server_managed', proxyUrl: '', proxyToken: '', model: 's2.1-pro', format: 'mp3', hasPersonalKey: false }
+
+  var authModeEl = page.querySelector('#fish-audio-auth-mode')
+  var proxyUrlEl = page.querySelector('#fish-audio-proxy-url')
+  var proxyTokenEl = page.querySelector('#fish-audio-proxy-token')
+  var byokWrapEl = page.querySelector('#fish-byok-key-wrap')
+  var byokStatusEl = page.querySelector('#fish-byok-key-status')
   var apiKeyEl = page.querySelector('#fish-audio-api-key')
   var modelEl = page.querySelector('#fish-audio-model')
   var formatEl = page.querySelector('#fish-audio-format')
-  if (apiKeyEl && results[0]) apiKeyEl.value = results[0].value || ''
+  var diagEl = page.querySelector('#fish-proxy-diag-result')
+
+  if (authModeEl) authModeEl.value = cfg.authMode || 'server_managed'
+  if (proxyUrlEl) proxyUrlEl.value = cfg.proxyUrl || ''
+  if (proxyTokenEl) proxyTokenEl.value = cfg.proxyToken || ''
+  if (apiKeyEl) apiKeyEl.value = ''
+
   if (modelEl) {
-    var savedModel = (results[1] && results[1].value) ? String(results[1].value) : 's2.1-pro'
+    var savedModel = cfg.model || 's2.1-pro'
     if (savedModel && !Array.prototype.some.call(modelEl.options, function(o) { return o.value === savedModel })) {
       var opt = document.createElement('option')
       opt.value = savedModel
@@ -235,28 +264,124 @@ async function initFishAudioConfigPage(page) {
     modelEl.value = savedModel
   }
   if (formatEl) {
-    var savedFmt = (results[2] && results[2].value) ? String(results[2].value) : 'mp3'
-    formatEl.value = FISH_AUDIO_FORMATS.indexOf(savedFmt) >= 0 ? savedFmt : 'mp3'
+    formatEl.value = FISH_AUDIO_FORMATS.indexOf(cfg.format) >= 0 ? cfg.format : 'mp3'
   }
+
+  function syncAuthModeUi(hasKey) {
+    var mode = authModeEl ? authModeEl.value : 'server_managed'
+    if (byokWrapEl) byokWrapEl.style.display = mode === 'byok_session' ? '' : 'none'
+    if (byokStatusEl) {
+      byokStatusEl.textContent = hasKey
+        ? '状态：本地已加密保存个人密钥（已脱敏，不会明文出现在 TTS 请求中）'
+        : '状态：尚未保存个人 Fish Audio API Key'
+    }
+  }
+  syncAuthModeUi(Boolean(cfg.hasPersonalKey))
+  if (authModeEl) {
+    authModeEl.addEventListener('change', async function() {
+      var hasKey = ttsEngine && ttsEngine.hasStoredFishPersonalKey
+        ? await ttsEngine.hasStoredFishPersonalKey()
+        : Boolean(cfg.hasPersonalKey)
+      syncAuthModeUi(hasKey)
+    })
+  }
+
   bindKeyVisibilityText(page, 'toggle-fish-audio-key-vis', 'fish-audio-api-key')
+  bindKeyVisibilityText(page, 'toggle-fish-proxy-token-vis', 'fish-audio-proxy-token')
+
+  var clearKeyBtn = page.querySelector('#btn-clear-fish-key')
+  if (clearKeyBtn) {
+    clearKeyBtn.addEventListener('click', async function() {
+      if (ttsEngine && typeof ttsEngine.clearFishAudioPersonalKey === 'function') {
+        await ttsEngine.clearFishAudioPersonalKey()
+      }
+      if (apiKeyEl) apiKeyEl.value = ''
+      syncAuthModeUi(false)
+      var settingsPage = document.getElementById('settings-page')
+      if (settingsPage) await updateRowValues(settingsPage)
+      window.toast('已清除本地 Fish Audio 个人密钥')
+    })
+  }
+
+  var testBtn = page.querySelector('#btn-test-fish-proxy')
+  if (testBtn) {
+    testBtn.addEventListener('click', async function() {
+      if (!ttsEngine || typeof ttsEngine.probeFishProxyStatus !== 'function') return
+      testBtn.disabled = true
+      testBtn.textContent = '检测中…'
+      if (diagEl) diagEl.textContent = '正在向代理检测服务端配置与跨域连通性…'
+      try {
+        var res = await ttsEngine.probeFishProxyStatus({
+          proxyUrl: proxyUrlEl ? proxyUrlEl.value.trim() : '',
+          proxyToken: proxyTokenEl ? proxyTokenEl.value.trim() : ''
+        })
+        if (!res.ok) {
+          if (diagEl) diagEl.textContent = '检测未通过（' + (res.code || 'error') + '）：' + (res.message || '代理不可达')
+          return
+        }
+        var lines = ['代理已连通：' + res.endpoint]
+        lines.push(res.serverKeyConfigured ? '服务端已托管 FISH_AUDIO_API_KEY（无需客户端填 Key）' : '服务端尚未配置 FISH_AUDIO_API_KEY（需服务端环境变量或启用个人密钥会话）')
+        if (res.requiresAccessToken) lines.push('代理已开启访问令牌校验')
+        if (res.hasByokSession) lines.push('当前个人临时代理会话有效')
+        if (diagEl) diagEl.textContent = lines.join(' · ')
+      } finally {
+        testBtn.disabled = false
+        testBtn.textContent = '检测代理与后端密钥状态'
+      }
+    })
+  }
+
   page.querySelector('#btn-save-fish-audio').addEventListener('click', async function() {
+    var mode = authModeEl ? authModeEl.value : 'server_managed'
+    var rawProxyUrl = proxyUrlEl ? proxyUrlEl.value.trim() : ''
+    if (ttsEngine && typeof ttsEngine.resolveFishProxyEndpoint === 'function') {
+      var epCheck = ttsEngine.resolveFishProxyEndpoint(rawProxyUrl)
+      if (!epCheck.ok) {
+        window.toast(epCheck.message)
+        if (proxyUrlEl && proxyUrlEl.focus) proxyUrlEl.focus()
+        return
+      }
+    }
     var missing = findMissingSettingsFields([
-      { el: apiKeyEl, label: 'API Key' },
       { el: modelEl, label: '语音模型' },
       { el: formatEl, label: '音频格式' }
     ])
     if (showIncompleteSettingsSave(missing, 'Fish Audio 语音配置')) return
+
+    var newKeyInput = apiKeyEl ? apiKeyEl.value.trim() : ''
+    if (mode === 'byok_session' && !newKeyInput) {
+      var alreadyHas = ttsEngine && ttsEngine.hasStoredFishPersonalKey
+        ? await ttsEngine.hasStoredFishPersonalKey()
+        : false
+      if (!alreadyHas) {
+        window.toast('“个人密钥代理会话”模式需要填写 Fish Audio API Key')
+        if (apiKeyEl && apiKeyEl.focus) apiKeyEl.focus()
+        return
+      }
+    }
+
     try {
       await Promise.all([
-        db.config.put({ key: 'fishAudioApiKey', value: apiKeyEl.value.trim() }),
+        db.config.put({ key: 'fishAudioAuthMode', value: mode }),
+        db.config.put({ key: 'fishAudioProxyUrl', value: rawProxyUrl }),
+        db.config.put({ key: 'fishAudioProxyToken', value: proxyTokenEl ? proxyTokenEl.value.trim() : '' }),
         db.config.put({ key: 'fishAudioModel', value: modelEl.value }),
         db.config.put({ key: 'fishAudioFormat', value: formatEl.value })
       ])
+      if (newKeyInput && ttsEngine && typeof ttsEngine.saveFishAudioPersonalKey === 'function') {
+        await ttsEngine.saveFishAudioPersonalKey(newKeyInput)
+        if (apiKeyEl) apiKeyEl.value = ''
+      }
+      var hasKeyNow = ttsEngine && ttsEngine.hasStoredFishPersonalKey
+        ? await ttsEngine.hasStoredFishPersonalKey()
+        : false
+      syncAuthModeUi(hasKeyNow)
       var settingsPage = document.getElementById('settings-page')
       if (settingsPage) await updateRowValues(settingsPage)
-      window.toast('Fish Audio 语音配置已保存')
+      window.toast('Fish Audio 代理与语音配置已保存')
     } catch (error) {
-      window.toast('Fish Audio 语音配置保存失败：' + (error.message || error))
+      var safeErr = ttsEngine && ttsEngine.redactSecrets ? ttsEngine.redactSecrets(error && error.message || error) : (error && error.message || error)
+      window.toast('Fish Audio 语音配置保存失败：' + safeErr)
     }
   })
 }
@@ -3901,22 +4026,21 @@ async function updateRowValues(page) {
   if (valMinimax) {
     valMinimax.textContent = (minimaxModel && minimaxModel.value) ? minimaxModel.value : '未配置'
   }
-  var fishRows = await Promise.all([
-    db.config.get('fishAudioApiKey'),
-    db.config.get('fishAudioModel'),
-    db.config.get('fishAudioFormat'),
-    db.config.get('defaultTtsProvider')
-  ])
+  var defaultProviderRow = await db.config.get('defaultTtsProvider')
   var valFish = page.querySelector('#val-fish-audio-config')
   if (valFish) {
-    var fishKey = fishRows[0] && fishRows[0].value
-    var fishModel = fishRows[1] && fishRows[1].value
-    var fishFmt = (fishRows[2] && fishRows[2].value) || 'mp3'
-    valFish.textContent = (fishKey && fishModel) ? (fishModel + ' (' + fishFmt + ')') : '未配置'
+    if (window.WanWanTTS && typeof window.WanWanTTS.getProviderCredentialStatus === 'function') {
+      var fishStatus = await window.WanWanTTS.getProviderCredentialStatus('fish_audio')
+      valFish.textContent = fishStatus.apiReady
+        ? ((fishStatus.model || 's2.1-pro') + ' · 代理模式')
+        : '需配置代理'
+    } else {
+      valFish.textContent = '代理模式'
+    }
   }
   var valDefaultTts = page.querySelector('#val-default-tts-provider')
   if (valDefaultTts) {
-    valDefaultTts.textContent = (fishRows[3] && fishRows[3].value === 'fish_audio') ? 'Fish Audio' : 'Minimax'
+    valDefaultTts.textContent = (defaultProviderRow && defaultProviderRow.value === 'fish_audio') ? 'Fish Audio' : 'Minimax'
   }
   var imageGenModel = await db.config.get('imageGenModel')
   var valImageGen = page.querySelector('#val-image-gen-config')

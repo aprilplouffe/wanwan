@@ -19217,6 +19217,13 @@ function playVoiceAudio(src, voiceEl) {
   if (_voiceAudioPlayer) { _voiceAudioPlayer.pause(); _voiceAudioPlayer = null }
   const audio = new Audio(src)
   _voiceAudioPlayer = audio
+  audio.addEventListener('error', () => {
+    const msg = window.WanWanTTS?.describeMediaError
+      ? window.WanWanTTS.describeMediaError(audio.error)
+      : '语音音频解码或播放失败'
+    if (voiceEl) voiceEl.classList.remove('is-playing')
+    window.toast?.(msg)
+  })
   audio.play().catch(() => {})
   audio.addEventListener('ended', () => {
     _voiceAudioPlayer = null
@@ -20731,8 +20738,9 @@ async function tryPlayCallTTS(speechText, requestSeq) {
 
     await playCallAudioBlob(blobUrl)
   } catch (e) {
-    console.warn('通话 TTS 失败', e.message)
-    showCallTtsErrorBar(speechText, requestSeq, e.message, resolvedTarget)
+    const safeMsg = window.WanWanTTS?.redactSecrets ? window.WanWanTTS.redactSecrets(e?.message || '') : (e?.message || '')
+    console.warn('通话 TTS 失败', safeMsg)
+    showCallTtsErrorBar(speechText, requestSeq, safeMsg, resolvedTarget)
     scheduleCallTTSRetry(speechText, requestSeq)
   }
 }

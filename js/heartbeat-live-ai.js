@@ -233,18 +233,21 @@
     }
     if (p === 'fish_audio') {
       var fRows = await Promise.all([
-        global.db.config.get('fishAudioApiKey'),
-        global.db.config.get('fishAudioModel')
+        global.db.config.get('fishAudioAuthMode'),
+        global.db.config.get('fishAudioModel'),
+        global.db.config.get('fishAudioApiKeyEnc'),
+        global.db.config.get('fishAudioApiKey')
       ]);
-      var fKey = fRows[0] && fRows[0].value;
+      var authMode = (fRows[0] && fRows[0].value) || 'server_managed';
       var fModel = (fRows[1] && fRows[1].value) || 's2.1-pro';
-      var fReady = Boolean(fKey && fModel);
+      var hasPersonal = Boolean((fRows[2] && fRows[2].value && fRows[2].value.cipher) || (fRows[3] && fRows[3].value));
+      var fReady = authMode === 'byok_session' ? Boolean(hasPersonal && fModel) : Boolean(fModel);
       return {
         provider: 'fish_audio',
         label: 'Fish Audio',
         apiReady: fReady,
         model: fModel,
-        missingReason: fReady ? '' : 'Fish Audio API 未配置（请前往系统设置填写 API Key 与模型）'
+        missingReason: fReady ? '' : 'Fish Audio 代理未就绪（请前往系统设置检查代理地址或个人密钥）'
       };
     }
     var rows = await Promise.all([
@@ -382,12 +385,17 @@
         volume: Math.max(0, Math.min(1, Number(voiceVol == null ? 65 : voiceVol) / 100))
       };
     } catch (e) {
+      var rawErr = (e && e.message) || '语音合成失败';
+      var safeErr = (global.WanWanTTS && typeof global.WanWanTTS.redactSecrets === 'function')
+        ? global.WanWanTTS.redactSecrets(rawErr)
+        : rawErr;
       return {
         played: false,
         failed: true,
+        errorCode: (e && e.code) || '',
         provider: status.provider,
         providerLabel: status.providerLabel,
-        reason: (e && e.message) || '语音合成失败'
+        reason: safeErr
       };
     }
   }
@@ -428,11 +436,16 @@
         volume: Math.max(0, Math.min(1, Number(params.voiceVol == null ? 65 : params.voiceVol) / 100))
       };
     } catch (e) {
+      var rawPreviewErr = (e && e.message) || '试听请求失败';
+      var safePreviewErr = (global.WanWanTTS && typeof global.WanWanTTS.redactSecrets === 'function')
+        ? global.WanWanTTS.redactSecrets(rawPreviewErr)
+        : rawPreviewErr;
       return {
         ok: false,
+        errorCode: (e && e.code) || '',
         provider: status.provider,
         providerLabel: status.providerLabel,
-        reason: (e && e.message) || '试听请求失败'
+        reason: safePreviewErr
       };
     }
   }
