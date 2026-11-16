@@ -9,10 +9,14 @@
   var THEME_KEYS = ['cloud', 'moon', 'garden', 'cafe'];
   var THEME_LABELS = { cloud: '云朵粉紫', moon: '月夜星空', garden: '四季花园', cafe: '暖光咖啡' };
 
+  var REPLAY_PAGE_SIZE = 40;
+  var AI_QUEUE_LIMIT = 4;
+
   var _state = {
     pageEl: null,
-    activeView: 'home', // 'home' | 'live' | 'diary' | 'settings'
+    activeView: 'home', // 'home' | 'live' | 'diary' | 'replay' | 'settings'
     chars: [],
+    invitees: [], // Char + NPC 完整可邀请列表
     user: { id: 0, name: '我', avatar: '', description: '' },
     selectedCharId: '',
     selectedCharManageId: '',
@@ -21,10 +25,34 @@
     followedChars: {},
     charVoices: {},
     asmrTracks: [],
+    cloudCatalog: [],
+    cloudManifestUrl: '',
     journals: [],
     customBgSrc: '',
     // 当前直播间运行时状态
     room: null,
+    messagesAutoFollow: true,
+    unreadWhileScrolled: 0,
+    // 大音频导入与云端缓存任务状态
+    importBusy: false,
+    importProgressPct: 0,
+    importProgressText: '',
+    cloudSyncBusy: false,
+    cloudCachingIds: {},
+    // 悬浮小窗与回放状态
+    minimized: false,
+    miniEl: null,
+    miniPos: null,
+    replayJournal: null,
+    replayReturnView: 'diary',
+    replayIncludeSim: true,
+    replayOffset: 0,
+    replayLoaded: [],
+    replayMeta: null,
+    // 多人邀请与送礼筛选状态
+    inviteFilterType: 'all', // 'all' | 'char' | 'npc'
+    inviteSearchQuery: '',
+    selectedGiftRecipientId: '',
     // 抽屉与弹窗
     openModal: '', // '' | 'planner' | 'connect' | 'gift' | 'interact' | 'memory' | 'userHost' | 'summary'
     plannerPendingMode: 'char',
@@ -43,7 +71,10 @@
     cameraStream: null,
     recognition: null,
     recognizing: false,
-    // 定时器与请求防护
+    // AI 串行调度队列与定时器防竞态
+    aiQueue: [],
+    aiRunning: false,
+    aiEpoch: 0,
     sessionSeq: 0,
     aiRequestSeq: 0,
     ttsRequestSeq: 0,
@@ -63,6 +94,9 @@
   var _ttsBlobUrl = '';
   var _previewAudioEl = null;
   var _toastTimer = null;
+  var _logSaveTimer = null;
+  var _importAbortCtrl = null;
+  var _cloudAbortMap = {};
 
   function storage() { return global.HeartbeatLiveStorage; }
   function aiMod() { return global.HeartbeatLiveAI; }
@@ -121,14 +155,63 @@
 
   function getActiveChar() {
     if (!_state.chars.length) {
-      return { id: 'demo_char', rawId: null, name: '星野（示例）', avatar: '', emojiFallback: '🌸', gender: '', role: '陪伴者', description: '温柔陪伴型演示角色', status: '', isDemo: true };
+      return { id: 'demo_char', rawId: null, roleType: 'char', name: '星野（示例）', avatar: '', emojiFallback: '🌸', gender: '', role: '陪伴者', description: '温柔陪伴型演示角色', status: '', isDemo: true };
     }
     var found = _state.chars.find(function(c) { return String(c.id) === String(_state.selectedCharId); });
     return found || _state.chars[0];
   }
 
   function getCharById(charId) {
-    return _state.chars.find(function(c) { return String(c.id) === String(charId); }) || getActiveChar();
+    var cid = String(charId || '');
+    return _state.invitees.find(function(c) { return String(c.id) === cid; }) ||
+      _state.chars.find(function(c) { return String(c.id) === cid; }) ||
+      getActiveChar();
+  }
+
+  function syncRoomDerivedFields(r) {
+    if (!r) return;
+    if (!Array.isArray(r.invitedViewers)) r.invitedViewers = [];
+    if (r.hostMode === 'user') {
+      r.charObj = r.cohostCharObj ||
+        r.invitedViewers.find(function(v) { return v && v.roleType === 'char'; }) ||
+        r.invitedViewers[0] ||
+        null;
+    } else {
+      r.charObj = r.hostCharObj || r.charObj || null;
+    }
+  }
+
+  function getConnectionPartner(r) {
+    if (!r) return null;
+    if (r.hostMode === 'user') return r.cohostCharObj || null;
+    return r.hostCharObj || r.charObj || null;
+  }
+
+  function getAllRoomActors(r) {
+    if (!r) return [];
+    if (r.hostMode === 'user') return r.invitedViewers ? r.invitedViewers.slice() : [];
+    return r.hostCharObj ? [r.hostCharObj] : (r.charObj ? [r.charObj] : []);
+  }
+
+  function isActorActiveInRoom(r, actorId) {
+    if (!r || !actorId) return false;
+    var aid = String(actorId);
+    if (r.hostMode === 'user') {
+      return (Array.isArray(r.invitedViewers) && r.invitedViewers.some(function(v) { return v && String(v.id) === aid; })) ||
+        Boolean(r.cohostCharObj && String(r.cohostCharObj.id) === aid);
+    }
+    var host = r.hostCharObj || r.charObj;
+    return Boolean(host && String(host.id) === aid);
+  }
+
+  function getDefaultGiftRecipient(r) {
+    if (!r) return null;
+    if (r.hostMode !== 'user') return r.hostCharObj || r.charObj || null;
+    if (_state.selectedGiftRecipientId) {
+      var picked = (r.invitedViewers || []).find(function(v) { return String(v.id) === String(_state.selectedGiftRecipientId); });
+      if (picked) return picked;
+    }
+    return r.cohostCharObj || (r.invitedViewers && r.invitedViewers[0]) || null;
   }
 
   // ===== 音频与流式媒体清理 (硬要求：绝不残留轨道或内存泄漏) =====
@@ -212,7 +295,32 @@
     }
   }
 
+  function clearAiQueue() {
+    _state.aiEpoch++;
+    _state.aiQueue = [];
+    _state.aiRunning = false;
+  }
+
+  function abortAllAudioTransfers() {
+    if (_importAbortCtrl) {
+      try { _importAbortCtrl.abort(); } catch (_) {}
+      _importAbortCtrl = null;
+    }
+    _state.importBusy = false;
+    Object.keys(_cloudAbortMap).forEach(function(k) {
+      if (_cloudAbortMap[k]) {
+        try { _cloudAbortMap[k].abort(); } catch (_) {}
+      }
+      delete _cloudAbortMap[k];
+    });
+    _state.cloudCachingIds = {};
+  }
+
   function cleanupAllMedia() {
+    clearAiQueue();
+    clearTimeout(_logSaveTimer);
+    _logSaveTimer = null;
+    abortAllAudioTransfers();
     stopMediaTracks();
     stopTtsPlayback();
     stopAsmrPlayback();
@@ -226,10 +334,11 @@
       el.classList.toggle('active', el.dataset.view === viewName);
     });
     $$('.hl-nav').forEach(function(el) {
-      el.classList.toggle('sel', el.dataset.view === viewName);
+      var navView = viewName === 'replay' ? 'diary' : viewName;
+      el.classList.toggle('sel', el.dataset.view === navView);
     });
     var nav = $('#hl-nav');
-    if (nav) nav.classList.toggle('hidden', viewName === 'live');
+    if (nav) nav.classList.toggle('hidden', viewName === 'live' || viewName === 'replay');
     if (viewName === 'diary') refreshDiaryView();
     if (viewName === 'settings') refreshSettingsView();
     if (viewName === 'home') renderLobbyView();
@@ -347,51 +456,163 @@
     return startLiveRoom({
       hostMode: 'user',
       charObj: null,
+      invitedViewers: [],
       program: 'chat',
       title: '我的个人直播间'
     });
   }
 
-  async function inviteCharToUserRoom(charObj) {
+  function getFilteredInvitees() {
+    var list = (_state.invitees && _state.invitees.length) ? _state.invitees : (_state.chars || []);
+    var fType = _state.inviteFilterType || 'all';
+    var q = String(_state.inviteSearchQuery || '').trim().toLowerCase();
+    return list.filter(function(item) {
+      if (!item) return false;
+      var roleType = item.roleType === 'npc' ? 'npc' : 'char';
+      if (fType !== 'all' && roleType !== fType) return false;
+      if (q) {
+        var hay = (item.name + ' ' + (item.role || '') + ' ' + (item.group || '')).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  async function removeViewerFromUserRoom(actorId) {
     var r = _state.room;
-    if (!r || r.hostMode !== 'user' || !charObj || !charObj.id) return;
-    var sameChar = r.charObj && String(r.charObj.id) === String(charObj.id);
-    _state.selectedCharId = String(charObj.id);
-    if (!sameChar) {
-      _state.aiRequestSeq++;
-      stopTtsPlayback();
-      r.charObj = charObj;
+    if (!r || r.hostMode !== 'user') return;
+    var aid = String(actorId || '');
+    var idx = (r.invitedViewers || []).findIndex(function(v) { return String(v.id) === aid; });
+    if (idx < 0) return;
+    var removed = r.invitedViewers[idx];
+    r.invitedViewers.splice(idx, 1);
+
+    // 取消该角色的待发送队列并保护隐私不残留
+    _state.aiQueue = (_state.aiQueue || []).filter(function(task) {
+      return !task || !task.actor || String(task.actor.id) !== aid;
+    });
+
+    // 若该嘉宾正在连麦席位中，优雅断开连麦回到单人主播舞台
+    if (r.cohostCharObj && String(r.cohostCharObj.id) === aid) {
+      r.cohostCharObj = null;
+      if (_state.connectionType) {
+        disconnectCall(true);
+        appendRoomMessage({
+          senderRole: 'system',
+          sender: '连麦结束',
+          messageType: 'cohost_event',
+          source: 'cohost',
+          text: removed.name + ' 已离开直播间，连麦席位已自动关闭。'
+        });
+      }
+    }
+
+    syncRoomDerivedFields(r);
+    renderRoomIdentityChrome();
+    updateRoomProgramChrome();
+    await updateConnectionVisuals();
+    updateMiniWindowChrome();
+
+    appendRoomMessage({
+      senderRole: 'system',
+      sender: '嘉宾离开',
+      messageType: 'invite_event',
+      source: 'invite',
+      text: '已将 ' + removed.name + '（' + (removed.roleType === 'npc' ? 'NPC' : 'Char') + '）移出直播间观众席。'
+    });
+    showToast('已移除 ' + removed.name);
+    if (_state.openModal === 'userHost') renderUserHostModalBody();
+  }
+
+  async function inviteCharToUserRoom(actorObj) {
+    var r = _state.room;
+    if (!r || r.hostMode !== 'user' || !actorObj || !actorObj.id) return;
+    var aid = String(actorObj.id);
+    if (!Array.isArray(r.invitedViewers)) r.invitedViewers = [];
+    var already = r.invitedViewers.some(function(v) { return String(v.id) === aid; });
+    if (actorObj.roleType !== 'npc') _state.selectedCharId = aid;
+
+    if (!already) {
+      var normalized = Object.assign({ joinedAt: Date.now(), roleType: 'char' }, actorObj);
+      r.invitedViewers.push(normalized);
+      // 重要：受邀观看不等于上麦！绝不设置 r.cohostCharObj 或改变主播舞台！
+      syncRoomDerivedFields(r);
       renderRoomIdentityChrome();
       updateRoomProgramChrome();
-      await updateConnectionVisuals();
+      updateMiniWindowChrome();
+
+      var badgeText = normalized.roleType === 'npc' ? 'NPC' : 'Char';
       appendRoomMessage({
         senderRole: 'system',
-        sender: '嘉宾邀请',
-        text: '💌 已邀请 ' + charObj.name + ' 进入你的直播间！现在发送弹幕或开启连麦都会与 Ta 实时互动。'
+        sender: '嘉宾进场',
+        messageType: 'invite_event',
+        source: 'invite',
+        text: '💌 已邀请 ' + normalized.name + '（' + badgeText + '）进入观众席观看直播！（受邀观看暂不上麦，如需同台请点击「连麦」）'
       });
-      showToast('已邀请 ' + charObj.name + ' ♡');
+      showToast('已邀请 ' + normalized.name + ' ♡');
       var progInfo = (aiMod().PROGRAMS[r.program] || aiMod().PROGRAMS.chat);
-      triggerCharAiTurn({
+      enqueueAiTurn(normalized, {
         triggerType: 'opening',
-        userPrompt: _state.user.name + ' 正在开个人直播（节目：「' + progInfo.label + '」，标题：「' + r.title + '」），刚刚邀请你进来前排陪伴，请用贴合人设的语气自然打声招呼。'
+        userPrompt: _state.user.name + ' 正在开个人直播（节目：「' + progInfo.label + '」，标题：「' + r.title + '」），刚刚邀请你进入直播间前排观众席观看，请以观众视角自然打声招呼（此时你还在观众席，未上麦）。'
       });
     } else {
-      showToast(charObj.name + ' 已经在直播间里啦 ♡');
+      showToast(actorObj.name + ' 已经在直播间观众席里啦 ♡');
     }
+
     if (_state.pendingConnectAfterInvite) {
       _state.pendingConnectAfterInvite = false;
-      openModal('connect');
+      closeModal();
+      openConnectModal();
+    } else if (_state.openModal === 'userHost') {
+      renderUserHostModalBody();
     }
   }
 
-  function openUserHostPicker() {
+  function renderUserHostModalBody() {
+    var selectedBar = $('#hl-invite-selected-bar');
     var list = $('#hl-userhost-list');
     if (!list) return;
-    var chars = _state.chars || [];
-    var currentInvitedId = (_state.room && _state.room.charObj) ? String(_state.room.charObj.id) : '';
-    if (!chars.length) {
+
+    var invited = (_state.room && _state.room.hostMode === 'user' && Array.isArray(_state.room.invitedViewers))
+      ? _state.room.invitedViewers
+      : [];
+
+    if (selectedBar) {
+      if (!invited.length) {
+        selectedBar.innerHTML = '<div class="hl-help" style="margin:0">当前还没有受邀嘉宾（个人独自开播中）；可多选下方 Char 或 NPC。</div>';
+      } else {
+        selectedBar.innerHTML =
+          '<div class="hl-invite-sel-title"><b>已受邀在本场（' + invited.length + ' 人 · 观众席）</b><button type="button" class="hl-smallbtn" id="hl-invite-clear-all">全部移出</button></div>' +
+          '<div class="hl-invite-sel-chips">' +
+            invited.map(function(v) {
+              return '<span class="hl-invited-chip">' +
+                '<em>' + (v.roleType === 'npc' ? 'NPC' : 'Char') + '</em>' +
+                '<span>' + esc(v.name) + '</span>' +
+                '<button type="button" data-remove-invite="' + esc(v.id) + '" aria-label="移除 ' + esc(v.name) + '">×</button>' +
+              '</span>';
+            }).join('') +
+          '</div>';
+        var clearAllBtn = $('#hl-invite-clear-all');
+        if (clearAllBtn) {
+          clearAllBtn.onclick = async function() {
+            var copy = invited.slice();
+            for (var i = 0; i < copy.length; i++) {
+              await removeViewerFromUserRoom(copy[i].id);
+            }
+          };
+        }
+        $$('[data-remove-invite]').forEach(function(btn) {
+          btn.onclick = function() {
+            removeViewerFromUserRoom(btn.dataset.removeInvite);
+          };
+        });
+      }
+    }
+
+    var allRoles = (_state.invitees && _state.invitees.length) ? _state.invitees : (_state.chars || []);
+    if (!allRoles.length) {
       list.innerHTML =
-        '<div class="hl-note" style="width:100%">当前角色档案中尚未创建 Char，暂无法邀请角色互动；你可以继续独自使用个人直播间，或前往新建角色。' +
+        '<div class="hl-note" style="width:100%">当前角色档案中尚未创建 Char 或 NPC，暂无法邀请角色互动；你可以继续独自使用个人直播间，或前往新建角色。' +
         '<div style="margin-top:8px"><button type="button" class="hl-ghost" id="hl-invite-create-char" style="padding:6px 10px;font-size:11px">前往新建角色</button></div></div>';
       var goBtn = $('#hl-invite-create-char');
       if (goBtn) {
@@ -402,32 +623,94 @@
           if (typeof global.showCharacterPage === 'function') global.showCharacterPage();
         };
       }
-      openModal('userHost');
       return;
     }
 
-    list.innerHTML = chars.map(function(c) {
-      var sel = currentInvitedId && String(c.id) === currentInvitedId;
-      return '<button type="button" class="hl-char-chip' + (sel ? ' selected' : '') + '" data-invite-char="' + esc(c.id) + '">' +
+    var filtered = getFilteredInvitees();
+    if (!filtered.length) {
+      list.innerHTML = '<div class="hl-help" style="width:100%;padding:8px 0">没有匹配的 Char 或 NPC，请换个关键词或切换筛选标签。</div>';
+      return;
+    }
+
+    list.innerHTML = filtered.map(function(c) {
+      var isInvited = invited.some(function(v) { return String(v.id) === String(c.id); });
+      var typeBadge = c.roleType === 'npc' ? 'NPC' : 'Char';
+      return '<button type="button" class="hl-char-chip' + (isInvited ? ' selected' : '') + '" data-invite-char="' + esc(c.id) + '" data-role-type="' + esc(c.roleType) + '">' +
         '<span class="hl-chip-avatar">' + renderCharAvatarHtml(c) + '</span>' +
         '<span>' + esc(c.name) + '</span>' +
+        '<em class="hl-role-pill ' + esc(c.roleType) + '">' + typeBadge + '</em>' +
+        (isInvited ? '<small class="hl-chip-tick">✓</small>' : '') +
       '</button>';
     }).join('');
+
     $$('[data-invite-char]').forEach(function(btn) {
       btn.onclick = function() {
         var cid = btn.dataset.inviteChar;
-        var found = _state.chars.find(function(c) { return String(c.id) === String(cid); });
-        closeModal();
+        var found = allRoles.find(function(c) { return String(c.id) === String(cid); });
         if (!found) return;
         if (_state.room && _state.room.hostMode === 'user') {
-          inviteCharToUserRoom(found);
+          var already = (_state.room.invitedViewers || []).some(function(v) { return String(v.id) === String(found.id); });
+          if (already) {
+            removeViewerFromUserRoom(found.id);
+          } else {
+            inviteCharToUserRoom(found);
+          }
         } else {
-          _state.selectedCharId = String(found.id);
-          startLiveRoom({ hostMode: 'user', charObj: found, program: 'chat' });
+          closeModal();
+          if (found.roleType !== 'npc') _state.selectedCharId = String(found.id);
+          startLiveRoom({
+            hostMode: 'user',
+            charObj: null,
+            invitedViewers: [found],
+            program: 'chat'
+          });
         }
       };
     });
+  }
+
+  function openUserHostPicker() {
+    var searchEl = $('#hl-invite-search');
+    if (searchEl) searchEl.value = _state.inviteSearchQuery || '';
+    $$('[data-invite-filter]').forEach(function(tab) {
+      tab.classList.toggle('active', tab.dataset.inviteFilter === (_state.inviteFilterType || 'all'));
+    });
+    renderUserHostModalBody();
     openModal('userHost');
+  }
+
+  // ===== 直播消息独立滚动控制 (暂停自动跟随 + ↓最新消息) =====
+  function isMessagesAtBottom(box) {
+    if (!box) return true;
+    var sh = Number(box.scrollHeight) || 0;
+    var ch = Number(box.clientHeight) || 0;
+    var st = Number(box.scrollTop) || 0;
+    if (sh <= ch) return true;
+    return (sh - st - ch) <= 18;
+  }
+
+  function syncLatestMsgButton() {
+    var btn = $('#hl-latest-msg-btn');
+    if (!btn) return;
+    if (_state.messagesAutoFollow) {
+      btn.hidden = true;
+      btn.textContent = '↓ 最新消息';
+    } else {
+      btn.hidden = false;
+      btn.textContent = _state.unreadWhileScrolled > 0
+        ? ('↓ 最新消息 (' + _state.unreadWhileScrolled + ')')
+        : '↓ 最新消息';
+    }
+  }
+
+  function scrollMessagesToBottom() {
+    var box = $('#hl-messages');
+    _state.messagesAutoFollow = true;
+    _state.unreadWhileScrolled = 0;
+    if (box) {
+      box.scrollTop = Number(box.scrollHeight) || 0;
+    }
+    syncLatestMsgButton();
   }
 
   // ===== 直播企划抽屉 (开播前 + 直播中热切换) =====
@@ -440,17 +723,24 @@
     if (preview) preview.textContent = prog.icon + ' ' + prog.label + '：' + prog.desc;
 
     var asmrBox = $('#hl-asmr-config');
-    if (asmrBox) asmrBox.classList.toggle('visible', prog.id === 'asmr');
+    if (asmrBox) asmrBox.classList.toggle('visible', prog.id === 'asmr' || prog.id === 'radio');
 
     var trackSelect = $('#hl-plan-asmr-track');
     if (trackSelect) {
-      var tracks = _state.asmrTracks || [];
-      if (!tracks.length) {
-        trackSelect.innerHTML = '<option value="">尚未导入本地音频（仅定时静音陪伴）</option>';
+      var locals = _state.asmrTracks || [];
+      var cloudPlaylist = (_state.cloudCatalog || []).filter(function(c) { return c.inPlaylist; });
+      var allItems = locals.concat(cloudPlaylist);
+      if (!allItems.length) {
+        trackSelect.innerHTML = '<option value="">尚未导入或加入播放列表音频（仅定时静音陪伴）</option>';
       } else {
-        trackSelect.innerHTML = '<option value="">按播放模式自动选择（' + tracks.length + ' 首）</option>' +
-          tracks.map(function(t) {
-            return '<option value="' + esc(t.id) + '">' + esc(t.name) + ' (' + formatBytes(t.size) + ')</option>';
+        trackSelect.innerHTML = '<option value="">按播放顺序自动选择（共 ' + allItems.length + ' 首）</option>' +
+          allItems.map(function(t) {
+            var tag = t.sourceType === 'cloud'
+              ? (t.cachedLocally ? '[云端·已缓存] ' : '[云端] ')
+              : (t.missingBinary ? '[文件缺失·请重导] ' : '[本地] ');
+            var sizeNote = t.size ? (' (' + formatBytes(t.size) + ')') : '';
+            var dis = t.missingBinary ? ' disabled' : '';
+            return '<option value="' + esc(t.id) + '"' + dis + '>' + esc(tag + t.name + sizeNote) + '</option>';
           }).join('');
         trackSelect.value = (_state.settings && _state.settings.asmrSelectedTrackId) || '';
       }
@@ -489,7 +779,7 @@
       }
     }
     var headEl = $('#hl-planner-heading');
-    if (headEl) headEl.textContent = editing ? '☷ 切换当前节目（不断开直播）' : '📺 本场直播企划';
+    if (headEl) headEl.textContent = editing ? '切换当前节目（不断开直播）' : '📺 本场直播企划';
 
     var titleEl = $('#hl-plan-title');
     if (titleEl) {
@@ -536,39 +826,117 @@
     return Math.max(0, Number(kind) || 0) * 60000;
   }
 
-  // ===== 直播间 ASMR 播放与绝对时间戳定时 =====
-  async function startAsmrAudioIfAvailable(selectedTrackId) {
-    stopAsmrPlayback();
-    var tracks = _state.asmrTracks || [];
-    if (!tracks.length) {
-      appendRoomMessage({
-        senderRole: 'system',
-        sender: 'ASMR 提示',
-        text: '本地 ASMR 音频库暂无音轨，可在「直播设置 → 电台与 ASMR」导入音频；当前以静音文字陪伴与定时继续。'
-      });
+  // ===== 直播间 ASMR 与电台音频播放（本地 + 云端清单/缓存 + 自动回退） =====
+  function getOrderedPlayCandidates(playlist, preferredId, playMode, startIdx) {
+    if (!playlist.length) return [];
+    var idx = -1;
+    if (preferredId) {
+      idx = playlist.findIndex(function(item) { return item && item.id === preferredId; });
+    }
+    if (idx < 0) {
+      idx = playMode === 'random'
+        ? Math.floor(Math.random() * playlist.length)
+        : (Math.max(0, Number(startIdx) || 0) % playlist.length);
+    }
+    var ordered = [];
+    for (var i = 0; i < playlist.length; i++) {
+      var pos = (idx + i) % playlist.length;
+      ordered.push({ item: playlist[pos], index: pos });
+    }
+    return ordered;
+  }
+
+  async function resolveNextPlayableCandidate(ordered, triedSet, allowCloud) {
+    for (var i = 0; i < ordered.length; i++) {
+      var pair = ordered[i];
+      if (!pair || !pair.item || triedSet[pair.item.id]) continue;
+      if (!allowCloud && pair.item.sourceType === 'cloud' && !pair.item.cachedLocally) continue;
+      triedSet[pair.item.id] = true;
+      var res = await storage().resolveAudioTrackPlaySource(pair.item);
+      if (res && res.ok && res.url) {
+        return { item: pair.item, index: pair.index, resolved: res };
+      }
+      if (res && res.reason === 'missing_binary') {
+        appendRoomMessage({
+          senderRole: 'system',
+          sender: '音频缺失提醒',
+          text: '「' + pair.item.name + '」本地音频文件缺失，已跳过（请到设置中重新导入同名音频恢复）。'
+        });
+      }
+    }
+    return null;
+  }
+
+  async function startAsmrAudioIfAvailable(selectedTrackId, opts) {
+    opts = opts || {};
+    var prevEl = _asmrAudioEl;
+    _asmrAudioEl = null;
+    if (prevEl) {
+      try { prevEl.pause(); prevEl.src = ''; } catch (_) {}
+    }
+
+    var playlist = typeof storage().listPlayablePlaylistItems === 'function'
+      ? await storage().listPlayablePlaylistItems()
+      : await storage().listAsmrTracksWithStatus();
+
+    var clouds = typeof storage().listCloudCatalog === 'function' ? await storage().listCloudCatalog() : [];
+    var locals = playlist.filter(function(p) { return p && p.sourceType !== 'cloud'; });
+    _state.asmrTracks = locals;
+
+    if (selectedTrackId && !playlist.some(function(x) { return x && x.id === selectedTrackId; })) {
+      var directCloud = clouds.find(function(x) { return x && x.id === selectedTrackId; });
+      if (directCloud) playlist = [directCloud].concat(playlist);
+    }
+
+    var r = _state.room;
+    if (!r || (r.program !== 'asmr' && r.program !== 'radio')) return false;
+
+    if (!playlist.length) {
+      if (r.program === 'asmr' && !opts.silentEmpty) {
+        appendRoomMessage({
+          senderRole: 'system',
+          sender: 'ASMR 提示',
+          text: '本地与播放列表暂无音轨，可在「直播设置 → 电台与 ASMR 音频库」导入大文件或同步云端音库；当前以静音定时陪伴继续。'
+        });
+      }
       return false;
     }
 
     var playMode = (_state.settings && _state.settings.asmrPlayMode) || 'loop';
-    var track = null;
-    if (selectedTrackId) {
-      track = tracks.find(function(t) { return t.id === selectedTrackId; }) || null;
-    }
-    if (!track && _state.settings && _state.settings.asmrSelectedTrackId) {
-      track = tracks.find(function(t) { return t.id === _state.settings.asmrSelectedTrackId; }) || null;
-    }
-    if (!track) {
-      if (playMode === 'random') {
-        _state.asmrCurrentTrackIndex = Math.floor(Math.random() * tracks.length);
-      } else {
-        _state.asmrCurrentTrackIndex = _state.asmrCurrentTrackIndex % tracks.length;
-      }
-      track = tracks[_state.asmrCurrentTrackIndex];
-    }
-    if (!track) return false;
+    var preferredId = selectedTrackId || (_state.settings && _state.settings.asmrSelectedTrackId) || '';
+    var ordered = getOrderedPlayCandidates(playlist, preferredId, playMode, _state.asmrCurrentTrackIndex);
+    var tried = opts._triedIds || {};
+    var chosen = await resolveNextPlayableCandidate(ordered, tried, true);
 
-    var url = await storage().getAsmrTrackPlayUrl(track.id);
-    if (!url || !_state.room || _state.room.program !== 'asmr') return false;
+    if (!chosen && Object.keys(tried).length > 0) {
+      // 若云端不可用，再单独尝试回退本地可用音频
+      var localOrdered = getOrderedPlayCandidates(locals, '', playMode, 0);
+      chosen = await resolveNextPlayableCandidate(localOrdered, {}, false);
+    }
+
+    if (!chosen) {
+      if (r.program === 'asmr' || selectedTrackId) {
+        appendRoomMessage({
+          senderRole: 'system',
+          sender: '音频提醒',
+          text: '暂无可用的本地或在线音频（本地缺失或当前离线未缓存），已切换为静音陪伴，请重新导入音频或检查网络。'
+        });
+      }
+      return false;
+    }
+
+    if (!_state.room || _state.room.sessionId !== r.sessionId || (_state.room.program !== 'asmr' && _state.room.program !== 'radio')) {
+      return false;
+    }
+
+    _state.asmrCurrentTrackIndex = chosen.index;
+    var track = chosen.item;
+    var url = chosen.resolved.url;
+    var sourceBadge = chosen.resolved.sourceType === 'cloud_cached'
+      ? '云端·已缓存'
+      : chosen.resolved.sourceType === 'cloud_stream'
+        ? '云端在线'
+        : '本地';
 
     if (typeof Audio === 'undefined') return false;
     var audio = new Audio(url);
@@ -576,33 +944,84 @@
     audio.loop = playMode === 'single';
     syncAsmrVolume();
 
-    audio.addEventListener('ended', function() {
-      if (_asmrAudioEl !== audio || !_state.room || _state.room.program !== 'asmr') return;
-      if (playMode === 'single') return;
-      if (playMode === 'random' && _state.asmrTracks.length > 1) {
-        var nextIdx = Math.floor(Math.random() * _state.asmrTracks.length);
-        _state.asmrCurrentTrackIndex = nextIdx;
+    var triggerFallbackToLocal = function(reasonText) {
+      if (_asmrAudioEl !== audio) return;
+      _asmrAudioEl = null;
+      try { audio.pause(); audio.src = ''; } catch (_) {}
+      var localPlayable = locals.find(function(l) { return l && !l.missingBinary && !tried[l.id]; });
+      if (localPlayable) {
+        appendRoomMessage({
+          senderRole: 'system',
+          sender: '音频回退',
+          text: '「' + track.name + '」' + reasonText + '，已自动回退播放本地音轨「' + localPlayable.name + '」。'
+        });
+        showToast('云端播放失败，已回退本地音频');
+        startAsmrAudioIfAvailable(localPlayable.id, { _triedIds: tried, silentEmpty: true });
       } else {
-        _state.asmrCurrentTrackIndex = (_state.asmrCurrentTrackIndex + 1) % Math.max(1, _state.asmrTracks.length);
+        appendRoomMessage({
+          senderRole: 'system',
+          sender: '音频提示',
+          text: '「' + track.name + '」' + reasonText + '，且当前无可用本地音轨，已转为静音陪伴。'
+        });
+        showToast('音频加载失败，已停止播放');
       }
-      var nextTrack = _state.asmrTracks[_state.asmrCurrentTrackIndex];
-      if (nextTrack) startAsmrAudioIfAvailable(nextTrack.id);
-    });
+    };
+
+    if (typeof audio.addEventListener === 'function') {
+      audio.addEventListener('error', function() {
+        if (_asmrAudioEl !== audio || !_state.room) return;
+        triggerFallbackToLocal(chosen.resolved.sourceType === 'cloud_stream' ? '在线加载失败或处于离线状态' : '音频解码或读取失败');
+      });
+
+      audio.addEventListener('ended', function() {
+        if (_asmrAudioEl !== audio || !_state.room) return;
+        if (_state.room.program !== 'asmr' && _state.room.program !== 'radio') return;
+        if (playMode === 'single') return;
+
+        var curList = _state.asmrTracks.concat((_state.cloudCatalog || []).filter(function(c) { return c.inPlaylist; }));
+        if (!curList.length) return;
+        if (playMode === 'sequence') {
+          if (_state.asmrCurrentTrackIndex + 1 >= curList.length) {
+            stopAsmrPlayback();
+            appendRoomMessage({
+              senderRole: 'system',
+              sender: '顺序播放',
+              text: '本轮音频列表已全部顺序播放完毕 ♡'
+            });
+            updateMiniWindowChrome();
+            return;
+          }
+          _state.asmrCurrentTrackIndex = _state.asmrCurrentTrackIndex + 1;
+        } else if (playMode === 'random' && curList.length > 1) {
+          _state.asmrCurrentTrackIndex = Math.floor(Math.random() * curList.length);
+        } else {
+          _state.asmrCurrentTrackIndex = (_state.asmrCurrentTrackIndex + 1) % curList.length;
+        }
+        var nextItem = curList[_state.asmrCurrentTrackIndex];
+        if (nextItem) startAsmrAudioIfAvailable(nextItem.id, { silentEmpty: true });
+      });
+    }
 
     try {
       await audio.play();
       _state.room.asmrUsed = true;
+      var modeLabelMap = { loop: '列表循环', single: '单曲循环', random: '随机播放', sequence: '顺序播放' };
       appendRoomMessage({
         senderRole: 'system',
-        sender: 'ASMR 正在播放',
-        text: '🎵 ' + track.name + '（' + ({ loop: '列表循环', single: '单曲循环', random: '随机播放' }[playMode] || '循环') + '）'
+        sender: r.program === 'radio' ? '电台背景音' : 'ASMR 正在播放',
+        text: '🎵 ' + track.name + ' [' + sourceBadge + ']（' + (modeLabelMap[playMode] || '列表循环') + '）'
       });
+      updateMiniWindowChrome();
       return true;
-    } catch (e) {
+    } catch (_) {
+      if (chosen.resolved.sourceType === 'cloud_stream') {
+        triggerFallbackToLocal('在线播放受阻或网络异常');
+        return false;
+      }
       appendRoomMessage({
         senderRole: 'system',
-        sender: 'ASMR 提示',
-        text: '音频已准备（「' + track.name + '」），受浏览器自动播放限制影响请再次点击页面或手动重播。'
+        sender: '音频提示',
+        text: '音频已就绪（「' + track.name + '」[' + sourceBadge + ']），受浏览器自动播放策略影响请轻触页面后重试。'
       });
       return false;
     }
@@ -645,7 +1064,14 @@
         _state.room.program = 'chat';
         _state.room.title = aiMod().PROGRAMS.chat.defaultTitle;
         updateRoomProgramChrome();
-        appendRoomMessage({ senderRole: 'system', sender: 'ASMR 定时结束', text: '已平滑淡出停止 ASMR 音景，切换回闲聊陪伴模式 ♡' });
+        updateMiniWindowChrome();
+        appendRoomMessage({
+          senderRole: 'system',
+          sender: 'ASMR 定时结束',
+          messageType: 'program_switch',
+          source: 'program',
+          text: '已平滑淡出停止 ASMR 音景，切换回闲聊陪伴模式 ♡'
+        });
         showToast('🌙 ASMR 定时结束，已停止播放');
       }
       return;
@@ -654,29 +1080,49 @@
       var mins = Math.ceil(remaining / 60000);
       statusEl.textContent = '🎧 ASMR · 剩余 ' + mins + ' 分钟';
     }
+    updateMiniWindowChrome();
   }
 
   // ===== 直播间创建与热切换 =====
   async function startLiveRoom(opts) {
     opts = opts || {};
     cleanupAllMedia();
+    removeMiniWindow();
     closeModal();
     _state.sessionSeq++;
     _state.pendingConnectAfterInvite = false;
     var sid = _state.sessionSeq;
+    var startedAt = Date.now();
     var hostMode = opts.hostMode || 'char';
-    var charObj = opts.charObj !== undefined ? opts.charObj : (hostMode === 'user' ? null : getActiveChar());
     var progId = opts.program || 'chat';
     var progInfo = aiMod().PROGRAMS[progId] || aiMod().PROGRAMS.chat;
     var defaultTitle = (hostMode === 'user' && progId === 'chat') ? '我的个人直播间' : progInfo.defaultTitle;
     var title = (opts.title || '').trim() || defaultTitle;
     var style = opts.style || (_state.settings && _state.settings.initiative) || 'natural';
 
+    var hostCharObj = hostMode === 'user'
+      ? null
+      : (opts.charObj !== undefined ? opts.charObj : getActiveChar());
+    var initialInvited = [];
+    if (hostMode === 'user') {
+      if (Array.isArray(opts.invitedViewers) && opts.invitedViewers.length) {
+        initialInvited = opts.invitedViewers.filter(Boolean).map(function(v) {
+          return Object.assign({ joinedAt: startedAt, roleType: 'char' }, v);
+        });
+      } else if (opts.charObj && opts.charObj.id) {
+        initialInvited = [Object.assign({ joinedAt: startedAt, roleType: 'char' }, opts.charObj)];
+      }
+    }
+
     _state.room = {
       sessionId: sid,
-      startedAt: Date.now(),
+      logSessionId: 'hl_' + startedAt + '_' + sid + '_' + Math.random().toString(36).slice(2, 6),
+      startedAt: startedAt,
       hostMode: hostMode,
-      charObj: charObj,
+      hostCharObj: hostCharObj,
+      invitedViewers: initialInvited,
+      cohostCharObj: null,
+      charObj: null,
       program: progId,
       title: title,
       style: style,
@@ -688,12 +1134,19 @@
       cohostUsed: false,
       asmrUsed: false,
       lastAiAudienceAt: 0,
+      aiRoundRobinIndex: 0,
       messages: [],
+      fullMessages: [],
       gameSession: { round: 0, score: 0, prompt: '' }
     };
+    syncRoomDerivedFields(_state.room);
+    _state.selectedGiftRecipientId = '';
 
     var msgsBox = $('#hl-messages');
     if (msgsBox) msgsBox.innerHTML = '';
+    _state.messagesAutoFollow = true;
+    _state.unreadWhileScrolled = 0;
+    syncLatestMsgButton();
 
     renderRoomIdentityChrome();
     await applyRoomThemeAndBackground();
@@ -701,36 +1154,43 @@
     switchView('live');
     await applyProgramToRoom(progId, title, style, opts, false);
 
-    if (hostMode === 'user' && !charObj) {
+    if (hostMode === 'user' && initialInvited.length === 0) {
       appendRoomMessage({
         senderRole: 'system',
         sender: '个人开播',
-        text: '个人直播已开启 ♡ 可自由发消息、使用右上角「☷ 切换」更换节目或播放 ASMR；如需与 Char 互动或连麦，可随时点击顶部「+ 邀请」。'
+        messageType: 'system',
+        source: 'system',
+        text: '个人直播已开启 ♡ 可自由发消息、使用底部节目切换按钮更换节目或播放 ASMR；如需与 Char / NPC 互动或连麦，可随时点击顶部「+ 邀请」。'
       });
       return;
     }
 
     // 真实开场问候
-    var openingUserPrompt = hostMode === 'user'
-      ? ('我刚刚开启了我的直播间（节目：「' + progInfo.label + '」，标题：「' + title + '」），请作为刚进直播间的前排朋友兼特邀嘉宾自然打声招呼。')
-      : hostMode === 'private'
-        ? ('我刚刚进入我们的私人连线直播间（节目：「' + progInfo.label + '」，标题：「' + title + '」），请用贴合人设的语气跟我开场打个招呼。')
-        : ('你刚刚开启了直播（节目：「' + progInfo.label + '」，标题：「' + title + '」），请向刚进来的 ' + _state.user.name + ' 自然开场白。');
-
-    triggerCharAiTurn({
-      triggerType: 'opening',
-      userPrompt: openingUserPrompt
-    });
+    var actors = getAllRoomActors(_state.room);
+    for (var ai = 0; ai < actors.length; ai++) {
+      var act = actors[ai];
+      var openingUserPrompt = hostMode === 'user'
+        ? ('我刚刚开启了我的直播间（节目：「' + progInfo.label + '」，标题：「' + title + '」），邀请你进来前排观众席陪伴，请以观众视角自然打声招呼。')
+        : hostMode === 'private'
+          ? ('我刚刚进入我们的私人连线直播间（节目：「' + progInfo.label + '」，标题：「' + title + '」），请用贴合人设的语气跟我开场打个招呼。')
+          : ('你刚刚开启了直播（节目：「' + progInfo.label + '」，标题：「' + title + '」），请向刚进来的 ' + _state.user.name + ' 自然开场白。');
+      enqueueAiTurn(act, {
+        triggerType: 'opening',
+        userPrompt: openingUserPrompt
+      });
+    }
   }
 
   function renderRoomIdentityChrome() {
     var r = _state.room;
     if (!r) return;
+    syncRoomDerivedFields(r);
     var roomEl = $('#hl-room');
     if (roomEl) {
       roomEl.classList.toggle('private', r.hostMode === 'private');
     }
-    var c = r.charObj || null;
+    var c = r.hostMode === 'user' ? r.cohostCharObj : r.hostCharObj;
+    var invited = Array.isArray(r.invitedViewers) ? r.invitedViewers : [];
     var hostName = $('#hl-host-name');
     var hostStatus = $('#hl-host-status');
     var audience = $('#hl-audience');
@@ -740,17 +1200,26 @@
 
     if (hostName) hostName.textContent = r.hostMode === 'user' ? (_state.user.name + '（我）') : (c ? c.name : 'Char');
     if (hostStatus) {
-      hostStatus.textContent = r.hostMode === 'private'
-        ? '私人双人连线'
-        : r.hostMode === 'user'
-          ? (c ? ('已邀 ' + c.name) : '个人直播中')
-          : '正在直播';
+      if (r.hostMode === 'private') {
+        hostStatus.textContent = '私人双人连线';
+      } else if (r.hostMode === 'user') {
+        if (r.cohostCharObj) {
+          hostStatus.textContent = '与 ' + r.cohostCharObj.name + ' 连麦中 · 在席 ' + invited.length + ' 人';
+        } else if (invited.length > 0) {
+          hostStatus.textContent = invited.length === 1
+            ? ('在席：' + invited[0].name + (invited[0].roleType === 'npc' ? ' [NPC]' : ''))
+            : ('在席 ' + invited.length + ' 位嘉宾');
+        } else {
+          hostStatus.textContent = '个人直播中';
+        }
+      } else {
+        hostStatus.textContent = '正在直播';
+      }
     }
     if (audience) {
       if (r.hostMode === 'user') {
-        audience.textContent = c
-          ? ('👁 ' + c.name + (_state.settings && _state.settings.sim ? ' + AI观众' : ' 在看'))
-          : '👁 个人直播间';
+        var realCountText = invited.length > 0 ? ('受邀 ' + invited.length + ' 人') : '个人直播间';
+        audience.textContent = '👁 ' + realCountText + (_state.settings && _state.settings.sim && invited.length ? ' · 含AI观众' : '');
       } else {
         audience.textContent = _state.settings && _state.settings.sim ? '👁 模拟热度 1.2k' : '👁 仅你观看';
       }
@@ -765,24 +1234,26 @@
     }
     if (inviteBtn) {
       inviteBtn.style.display = r.hostMode === 'user' ? '' : 'none';
-      inviteBtn.textContent = c ? ('换邀 · ' + c.name) : '+ 邀请';
-      inviteBtn.classList.toggle('invited', Boolean(c));
+      inviteBtn.textContent = invited.length > 0 ? ('嘉宾 · ' + invited.length + '人') : '+ 邀请';
+      inviteBtn.classList.toggle('invited', invited.length > 0);
     }
     if (inputEl) {
       inputEl.placeholder = r.hostMode === 'private' && c
         ? ('和 ' + c.name + ' 说点什么…')
         : r.hostMode === 'user'
-          ? (c ? ('对直播间和 ' + c.name + ' 说点什么…') : '记录此刻或对观众说点什么…')
+          ? (invited.length > 0 ? ('对 ' + (invited.length === 1 ? invited[0].name : (invited.length + ' 位嘉宾')) + ' 和直播间说点什么…') : '记录此刻或对观众说点什么…')
           : '发一条弹幕…';
     }
     var likeEl = $('#hl-like-count');
     if (likeEl) likeEl.textContent = r.likes ? String(r.likes) : '点赞';
+    updateMiniWindowChrome();
   }
 
   function updateRoomProgramChrome() {
     var r = _state.room;
     if (!r) return;
-    var c = r.charObj || null;
+    var c = r.hostMode === 'user' ? r.cohostCharObj : r.hostCharObj;
+    var invited = Array.isArray(r.invitedViewers) ? r.invitedViewers : [];
     var prog = aiMod().PROGRAMS[r.program] || aiMod().PROGRAMS.chat;
     var statusEl = $('#hl-program-status');
     var roomTitleEl = $('#hl-room-title');
@@ -794,7 +1265,9 @@
     }
     if (roomTitleEl) {
       var prefix = r.hostMode === 'user'
-        ? (c ? ('🎤 我的直播间 · ' + c.name + '在看') : ('🎤 ' + _state.user.name + ' 的个人直播间'))
+        ? (invited.length > 0
+            ? ('🎤 我的直播间 · 已邀 ' + invited.map(function(v) { return v.name; }).slice(0, 2).join('、') + (invited.length > 2 ? ' 等' + invited.length + '人' : ''))
+            : ('🎤 ' + _state.user.name + ' 的个人直播间'))
         : r.hostMode === 'private'
           ? ('♡ 与 ' + (c ? c.name : 'Char') + ' 私人连线')
           : ((c ? c.name : 'Char') + ' 的直播间');
@@ -804,13 +1277,14 @@
       signEl.textContent = prog.icon + ' ' + r.title;
     }
     if (noticeEl) {
-      if (r.hostMode === 'user' && !c) {
-        noticeEl.textContent = prog.label + ' · 个人开播中（可随时点击顶部「+ 邀请」邀 Char 互动）';
+      if (r.hostMode === 'user' && invited.length === 0) {
+        noticeEl.textContent = prog.label + ' · 个人开播中（可点击顶部「+ 邀请」邀 Char / NPC 陪伴）';
       } else {
-        var simNote = (_state.settings && _state.settings.sim && r.hostMode !== 'private') ? '含 [AI观众] 气氛弹幕' : '无外部模拟观众';
-        noticeEl.textContent = prog.label + ' · 真实 Char AI 互动（' + simNote + '）';
+        var simNote = (_state.settings && _state.settings.sim && r.hostMode !== 'private') ? '含 [AI观众] 气氛弹幕' : '仅真实受邀互动';
+        noticeEl.textContent = prog.label + ' · 真实角色隔离互动（' + simNote + '）';
       }
     }
+    updateMiniWindowChrome();
   }
 
   async function applyProgramToRoom(progId, title, style, opts, isHotSwitch) {
@@ -830,11 +1304,13 @@
     appendRoomMessage({
       senderRole: 'system',
       sender: '节目切换',
+      messageType: 'program_switch',
+      source: 'program',
       text: prog.icon + ' ' + prog.label + '｜' + r.title + '（' + ({ natural: '自然主动', quiet: '安静陪伴', lively: '活跃互动' }[r.style] || '自然') + '）'
     });
 
-    if (prog.id === 'asmr') {
-      await startAsmrAudioIfAvailable(opts.asmrTrackId || '');
+    if (prog.id === 'asmr' || prog.id === 'radio') {
+      await startAsmrAudioIfAvailable(opts.asmrTrackId || '', { silentEmpty: prog.id === 'radio' });
       var durMs = Number(opts.asmrDurationMs) || 0;
       if (durMs > 0) {
         _state.asmrDeadlineMs = Date.now() + durMs;
@@ -843,24 +1319,31 @@
         var endStr = new Date(_state.asmrDeadlineMs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
         appendRoomMessage({
           senderRole: 'system',
-          sender: 'ASMR 定时',
-          text: '已设定本地时间 ' + endStr + (r.asmrEndAction === 'exit_room' ? ' 结束本场直播' : ' 平滑停止 ASMR 并切回闲聊')
+          sender: prog.id === 'radio' ? '电台定时' : 'ASMR 定时',
+          messageType: 'program_switch',
+          source: 'program',
+          text: '已设定本地时间 ' + endStr + (r.asmrEndAction === 'exit_room' ? ' 结束本场直播' : ' 平滑停止背景音景并切回闲聊')
         });
       }
     }
 
-    if (isHotSwitch && r.charObj) {
-      triggerCharAiTurn({
-        triggerType: 'program_switch',
-        userPrompt: '我们刚刚把直播节目切换到了「' + prog.label + '」（标题：「' + r.title + '」），请自然顺着这个新节目接一句。'
-      });
+    if (isHotSwitch) {
+      var responder = getConnectionPartner(r) || getAllRoomActors(r)[0] || null;
+      if (responder) {
+        enqueueAiTurn(responder, {
+          triggerType: 'program_switch',
+          userPrompt: '我们刚刚把直播节目切换到了「' + prog.label + '」（标题：「' + r.title + '」），请自然顺着这个新节目接一句。'
+        });
+      }
     }
   }
 
   // ===== 单人双视觉模式 (全屏 vs 煲电话) & 连麦画面 =====
   function getActiveStageTargetKey() {
     if (!_state.room) return String(getActiveChar().id);
-    return _state.room.hostMode === 'user' ? 'user' : String(_state.room.charObj.id);
+    if (_state.room.hostMode === 'user') return 'user';
+    var hc = _state.room.hostCharObj || _state.room.charObj;
+    return hc ? String(hc.id) : String(getActiveChar().id);
   }
 
   async function refreshRoomVisuals() {
@@ -937,9 +1420,10 @@
 
   // ===== 连麦双布局 (经典小窗 <-> 双人并列PK, 不断流热切换) =====
   async function updateConnectionVisuals() {
-    if (!_state.connectionType || !_state.room || !_state.room.charObj) return;
+    var partner = getConnectionPartner(_state.room);
+    if (!_state.connectionType || !_state.room || !partner) return;
     var r = _state.room;
-    var c = r.charObj;
+    var c = partner;
     var hostIsUser = r.hostMode === 'user';
 
     var hostKey = hostIsUser ? 'user' : String(c.id);
@@ -1005,6 +1489,12 @@
 
   function disconnectCall(silent) {
     stopMediaTracks();
+    var hadConn = Boolean(_state.connectionType);
+    var prevPartner = _state.room && _state.room.hostMode === 'user' ? _state.room.cohostCharObj : null;
+    if (_state.room && _state.room.hostMode === 'user') {
+      _state.room.cohostCharObj = null;
+      syncRoomDerivedFields(_state.room);
+    }
     _state.connectionType = '';
     var overlay = $('#hl-connection-overlay');
     if (overlay) overlay.hidden = true;
@@ -1022,27 +1512,86 @@
     if (roomEl) roomEl.classList.remove('hl-has-connection', 'hl-connection-active', 'hl-connection-swapped');
     var connBtn = $('#hl-connect-btn');
     if (connBtn) connBtn.classList.remove('active');
+    if (_state.room && hadConn && !silent) {
+      appendRoomMessage({
+        senderRole: 'system',
+        sender: '连麦结束',
+        messageType: 'cohost_event',
+        source: 'cohost',
+        text: prevPartner ? ('已挂断与 ' + prevPartner.name + ' 的连麦，Ta 已回到观众席。') : '已挂断当前连麦，恢复单人画面。'
+      });
+    }
+    if (_state.room) renderRoomIdentityChrome();
     if (!silent) showToast('已挂断连麦');
   }
 
-  function ensureCharBeforeConnect() {
+  function resolveConnectCandidate(explicitTarget) {
+    var r = _state.room;
+    if (!r) return null;
+    if (r.hostMode !== 'user') return r.hostCharObj || r.charObj || null;
+    if (explicitTarget && explicitTarget.id) return explicitTarget;
+    var selEl = $('#hl-connect-target');
+    if (selEl && selEl.value) {
+      var found = (r.invitedViewers || []).find(function(v) { return String(v.id) === String(selEl.value); });
+      if (found) return found;
+    }
+    if (r.cohostCharObj) return r.cohostCharObj;
+    if (r.invitedViewers && r.invitedViewers.length) return r.invitedViewers[0];
+    return null;
+  }
+
+  function ensureCharBeforeConnect(explicitTarget) {
     if (!_state.room) return false;
-    if (_state.room.charObj) return true;
+    if (_state.room.hostMode !== 'user') {
+      return Boolean(_state.room.hostCharObj || _state.room.charObj);
+    }
+    var hasInvited = Array.isArray(_state.room.invitedViewers) && _state.room.invitedViewers.length > 0;
+    if (explicitTarget || hasInvited) return true;
     _state.pendingConnectAfterInvite = true;
     closeModal();
     openUserHostPicker();
-    showToast('开启双人连麦前，请先选择要邀请的 Char ♡');
+    showToast('开启双人连麦前，请先选择要邀请的 Char 或 NPC ♡');
     return false;
   }
 
-  async function startConnection(type) {
-    if (!_state.room) return;
+  function openConnectModal() {
+    var r = _state.room;
+    if (!r) return;
     if (!ensureCharBeforeConnect()) return;
+    var targetWrap = $('#hl-connect-target-wrap');
+    var targetSel = $('#hl-connect-target');
+    if (targetWrap && targetSel) {
+      if (r.hostMode === 'user') {
+        var invited = r.invitedViewers || [];
+        targetWrap.style.display = 'block';
+        targetSel.innerHTML = invited.map(function(v) {
+          return '<option value="' + esc(v.id) + '">' + esc(v.name) + '（' + (v.roleType === 'npc' ? 'NPC' : 'Char') + '）</option>';
+        }).join('');
+        var curId = (r.cohostCharObj && r.cohostCharObj.id) || (invited[0] && invited[0].id) || '';
+        if (curId) targetSel.value = String(curId);
+      } else {
+        targetWrap.style.display = 'none';
+      }
+    }
+    openModal('connect');
+  }
+
+  async function startConnection(type, explicitTarget) {
+    if (!_state.room) return;
+    if (!ensureCharBeforeConnect(explicitTarget)) return;
+    var r = _state.room;
+    var partner = resolveConnectCandidate(explicitTarget);
+    if (!partner) return;
+
+    if (r.hostMode === 'user') {
+      r.cohostCharObj = partner;
+      syncRoomDerivedFields(r);
+    }
 
     // 若切换连麦类型，停止旧的麦克风/摄像头流（但切布局绝不调 startConnection）
     stopMediaTracks();
     _state.connectionType = type;
-    _state.room.cohostUsed = true;
+    r.cohostUsed = true;
     closeModal();
 
     var roomEl = $('#hl-room');
@@ -1061,10 +1610,17 @@
     var chosenLayout = (layoutSelect && layoutSelect.value) || (_state.settings && _state.settings.connectionLayout) || 'floating';
     applyConnectionLayout(chosenLayout);
     await updateConnectionVisuals();
+    renderRoomIdentityChrome();
 
-    var c = _state.room.charObj;
+    var c = partner;
     if (type === 'text') {
-      appendRoomMessage({ senderRole: 'system', sender: '文字连麦', text: '已接入连麦席位，在下方专属输入框发言将作为连麦对话传送给 ' + c.name + ' ♡' });
+      appendRoomMessage({
+        senderRole: 'system',
+        sender: '文字连麦',
+        messageType: 'cohost_event',
+        source: 'cohost',
+        text: '已邀请 ' + c.name + ' 上麦开启文字连麦席位，在下方专属输入框发言将直接传送给 ' + c.name + ' ♡'
+      });
     } else if (type === 'voice') {
       var hasAsr = Boolean(global.SpeechRecognition || global.webkitSpeechRecognition);
       var statusEl = $('#hl-voice-call-status');
@@ -1078,20 +1634,28 @@
       appendRoomMessage({
         senderRole: 'system',
         sender: '语音连麦',
+        messageType: 'cohost_event',
+        source: 'cohost',
         text: hasAsr
-          ? '已开启语音连麦面板，可授权本机麦克风并通过语音转写直接与 ' + c.name + ' 对话。'
-          : '当前浏览器/WebView 不支持网页实时语音识别，已保留麦克风授权状态与语音连麦文字补充输入。'
+          ? '已与 ' + c.name + ' 开启语音连麦面板，可授权本机麦克风并通过语音转写直接对话。'
+          : '当前浏览器/WebView 不支持网页实时语音识别，已与 ' + c.name + ' 保留麦克风授权状态与文字补充输入。'
       });
     } else if (type === 'video') {
-      appendRoomMessage({ senderRole: 'system', sender: '同框画面', text: '已开启虚拟形象同框画面（以双方设置图片展示，非远程摄像头传输）。' });
+      appendRoomMessage({
+        senderRole: 'system',
+        sender: '同框画面',
+        messageType: 'cohost_event',
+        source: 'cohost',
+        text: '已与 ' + c.name + ' 开启虚拟形象同框画面（以双方设置图片展示，非远程摄像头传输）。'
+      });
     } else if (type === 'camera') {
-      await enableLocalCamera();
+      await enableLocalCamera(partner);
       return;
     }
 
-    triggerCharAiTurn({
+    enqueueAiTurn(partner, {
       triggerType: 'cohost_join',
-      userPrompt: _state.user.name + ' 刚刚开启了「' + ({ text: '文字连麦', voice: '语音连麦', video: '同框连线' }[type] || '连麦') + '」走进连麦席位，请自然迎一句。'
+      userPrompt: _state.user.name + ' 刚刚邀请你上麦开启了「' + ({ text: '文字连麦', voice: '语音连麦', video: '同框连线' }[type] || '连麦') + '」，请自然迎一句。'
     });
   }
 
@@ -1195,16 +1759,22 @@
     }
   }
 
-  async function enableLocalCamera() {
+  async function enableLocalCamera(explicitTarget) {
     if (!_state.room) return;
-    if (!ensureCharBeforeConnect()) return;
+    if (!ensureCharBeforeConnect(explicitTarget)) return;
+    var partner = resolveConnectCandidate(explicitTarget);
+    if (!partner) return;
+    if (_state.room.hostMode === 'user') {
+      _state.room.cohostCharObj = partner;
+      syncRoomDerivedFields(_state.room);
+    }
     if (!global.navigator || !global.navigator.mediaDevices || typeof global.navigator.mediaDevices.getUserMedia !== 'function') {
       showToast('当前环境不支持摄像头预览，请使用 HTTPS 页面');
       return;
     }
     try {
       var stream = await global.navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
-      if (!_state.room || !_state.room.charObj) {
+      if (!_state.room || !isActorActiveInRoom(_state.room, partner.id)) {
         stream.getTracks().forEach(function(t) { t.stop(); });
         return;
       }
@@ -1236,9 +1806,16 @@
       var layoutSelect = $('#hl-connect-layout');
       applyConnectionLayout((layoutSelect && layoutSelect.value) || 'floating');
       await updateConnectionVisuals();
-      appendRoomMessage({ senderRole: 'system', sender: '本地摄像头', text: '仅本机画面预览，未向外部上传或发送任何视频流；挂断或退出即关闭摄像头。' });
+      renderRoomIdentityChrome();
+      appendRoomMessage({
+        senderRole: 'system',
+        sender: '本地摄像头',
+        messageType: 'cohost_event',
+        source: 'cohost',
+        text: '仅本机画面预览，未向外部上传或发送任何视频流；挂断或退出即关闭摄像头。'
+      });
       showToast('已开启本地摄像头预览');
-      triggerCharAiTurn({
+      enqueueAiTurn(partner, {
         triggerType: 'camera_on',
         userPrompt: _state.user.name + ' 打开了本地摄像头连麦画面，请自然温柔地打招呼（不要编造具体隐私细节）。'
       });
@@ -1247,23 +1824,79 @@
     }
   }
 
-  // ===== 弹幕流、AI 回复与 Minimax TTS =====
+  // ===== 弹幕流、完整聊天日志持久化、多人 AI 队列与 Minimax TTS =====
+  function filterLogMessagesForPersistence(fullMsgs) {
+    var list = Array.isArray(fullMsgs) ? fullMsgs : [];
+    var keepSim = !_state.settings || _state.settings.saveSimAudienceInLog !== false;
+    return keepSim
+      ? list
+      : list.filter(function(m) { return !m.isSimAudience && m.senderType !== 'ai_audience' && m.senderRole !== 'ai_audience'; });
+  }
+
+  function scheduleSaveSessionChatLog(room) {
+    if (!room || !room.logSessionId || !storage() || typeof storage().saveSessionChatLog !== 'function') return;
+    clearTimeout(_logSaveTimer);
+    var snapshotRoom = room;
+    _logSaveTimer = setTimeout(function() {
+      _logSaveTimer = null;
+      if (!snapshotRoom || !snapshotRoom.logSessionId) return;
+      storage().saveSessionChatLog(snapshotRoom.logSessionId, filterLogMessagesForPersistence(snapshotRoom.fullMessages)).catch(function() {});
+    }, 280);
+  }
+
+  async function flushSessionChatLog(room) {
+    clearTimeout(_logSaveTimer);
+    _logSaveTimer = null;
+    if (!room || !room.logSessionId || !storage() || typeof storage().saveSessionChatLog !== 'function') return null;
+    var cleanMsgs = filterLogMessagesForPersistence(room.fullMessages);
+    try {
+      await storage().saveSessionChatLog(room.logSessionId, cleanMsgs);
+      return cleanMsgs.length;
+    } catch (_) {
+      return cleanMsgs.length;
+    }
+  }
+
   function appendRoomMessage(msg) {
     if (!_state.room) return;
+    var r = _state.room;
+    var sRole = msg.senderRole || 'user';
+    var ts = Date.now();
+    var msgId = 'm_' + ts.toString(36) + '_' + Math.random().toString(36).slice(2, 5);
     var item = {
-      id: 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5),
-      senderRole: msg.senderRole || 'user', // 'user' | 'user_cohost' | 'char' | 'ai_audience' | 'system'
+      id: msgId,
+      messageId: msgId,
+      sessionId: r.logSessionId || String(r.sessionId || ''),
+      senderId: String(msg.senderId || ''),
+      senderRole: sRole, // 'user' | 'user_cohost' | 'char' | 'npc' | 'ai_audience' | 'system' | 'gift'
+      senderType: sRole,
       sender: String(msg.sender || '观众'),
+      senderNameSnapshot: String(msg.sender || '观众'),
+      messageType: msg.messageType || (sRole === 'gift' ? 'gift' : sRole === 'ai_audience' ? 'ai_audience' : sRole === 'system' ? 'system' : 'chat'),
       text: String(msg.text || ''),
-      ts: Date.now()
+      content: String(msg.text || ''),
+      source: msg.source || 'live_room',
+      isSimAudience: Boolean(msg.isSimAudience || sRole === 'ai_audience'),
+      ts: ts,
+      createdAt: ts,
+      schemaVersion: 2
     };
-    _state.room.messages.push(item);
-    if (_state.room.messages.length > 60) {
-      _state.room.messages = _state.room.messages.slice(-60);
+    r.messages.push(item);
+    if (r.messages.length > 120) {
+      r.messages = r.messages.slice(-120);
     }
+    if (!Array.isArray(r.fullMessages)) r.fullMessages = [];
+    r.fullMessages.push(item);
+    if (r.fullMessages.length > 1000) {
+      r.fullMessages = r.fullMessages.slice(-1000);
+    }
+    scheduleSaveSessionChatLog(r);
 
     var box = $('#hl-messages');
     if (!box) return;
+    var prevScrollTop = Number(box.scrollTop) || 0;
+    var shouldFollow = _state.messagesAutoFollow && isMessagesAtBottom(box);
+
     var row = document.createElement('div');
     row.className = 'hl-line role-' + item.senderRole;
 
@@ -1271,6 +1904,8 @@
       user: '我',
       user_cohost: '连麦',
       char: 'Char',
+      npc: 'NPC',
+      gift: '礼物',
       ai_audience: 'AI观众',
       system: '系统'
     };
@@ -1288,10 +1923,20 @@
     row.appendChild(bEl);
     row.appendChild(spanEl);
     box.appendChild(row);
-    while (box.children.length > 18) {
+    while (box.children.length > 120) {
       box.removeChild(box.firstChild);
     }
-    box.scrollTop = box.scrollHeight;
+
+    if (shouldFollow) {
+      box.scrollTop = box.scrollHeight;
+      _state.messagesAutoFollow = true;
+      _state.unreadWhileScrolled = 0;
+    } else {
+      box.scrollTop = prevScrollTop;
+      _state.messagesAutoFollow = false;
+      _state.unreadWhileScrolled = (_state.unreadWhileScrolled || 0) + 1;
+    }
+    syncLatestMsgButton();
   }
 
   async function maybePlayCharTts(text, charId, guard) {
@@ -1332,35 +1977,104 @@
     }
   }
 
-  async function triggerCharAiTurn(opts) {
+  function selectAiResponders(r, userText) {
+    var actors = getAllRoomActors(r);
+    if (!actors.length) return [];
+    if (actors.length === 1) return [actors[0]];
+
+    var lower = String(userText || '').toLowerCase();
+    var mentioned = actors.filter(function(a) {
+      return a && a.name && lower.indexOf(String(a.name).toLowerCase()) >= 0;
+    });
+    if (mentioned.length > 0) {
+      return mentioned.slice(0, 2);
+    }
+
+    var partner = getConnectionPartner(r);
+    if (partner) {
+      var others = actors.filter(function(a) { return String(a.id) !== String(partner.id); });
+      if (!others.length) return [partner];
+      var otherPick = others[r.aiRoundRobinIndex % others.length];
+      r.aiRoundRobinIndex = (r.aiRoundRobinIndex || 0) + 1;
+      return [partner, otherPick].slice(0, 2);
+    }
+
+    // 轮转挑选最多 2 位受邀角色回应，防止群聊式刷屏和无限并发
+    var count = Math.min(2, actors.length);
+    var picks = [];
+    var start = (r.aiRoundRobinIndex || 0) % actors.length;
+    for (var i = 0; i < count; i++) {
+      picks.push(actors[(start + i) % actors.length]);
+    }
+    r.aiRoundRobinIndex = (start + count) % actors.length;
+    return picks;
+  }
+
+  function enqueueAiTurn(actorObj, opts) {
     var r = _state.room;
-    if (!r || !r.charObj || !r.charObj.id) return;
+    if (!r || !actorObj || !actorObj.id) return;
+    if (!isActorActiveInRoom(r, actorObj.id)) return;
     opts = opts || {};
-    var mySession = r.sessionId;
-    var myCharId = String(r.charObj.id);
+
+    if (_state.aiQueue.length >= AI_QUEUE_LIMIT) {
+      // 保留高优先级开场/送礼/连麦事件，裁剪旧的非定向排队任务
+      var dropIdx = _state.aiQueue.findIndex(function(t) { return t && t.opts && t.opts.triggerType === 'chat'; });
+      if (dropIdx >= 0) _state.aiQueue.splice(dropIdx, 1);
+      else _state.aiQueue.shift();
+    }
+
+    _state.aiQueue.push({
+      epoch: _state.aiEpoch,
+      sessionId: r.sessionId,
+      actor: actorObj,
+      opts: opts
+    });
+    if (!_state.aiRunning) {
+      drainAiQueue();
+    }
+  }
+
+  async function runSingleAiTask(task) {
+    var r = _state.room;
+    if (!r || !task || !task.actor || !task.actor.id) return;
+    var actor = task.actor;
+    var opts = task.opts || {};
+    var mySession = task.sessionId;
+    var myEpoch = task.epoch;
+    var myActorId = String(actor.id);
     var myReqSeq = ++_state.aiRequestSeq;
 
     var guard = {
       isStale: function() {
         return !_state.room ||
+          _state.aiEpoch !== myEpoch ||
           _state.room.sessionId !== mySession ||
-          !_state.room.charObj ||
-          String(_state.room.charObj.id) !== myCharId;
+          !isActorActiveInRoom(_state.room, myActorId);
       },
       isLatest: function() {
         return !guard.isStale() && _state.aiRequestSeq === myReqSeq;
       }
     };
 
+    if (guard.isStale()) return;
+
+    var partner = getConnectionPartner(r);
+    var isCohost = Boolean(_state.connectionType && partner && String(partner.id) === myActorId);
+    var companionNames = getAllRoomActors(r)
+      .filter(function(a) { return a && String(a.id) !== myActorId; })
+      .map(function(a) { return a.name + (a.roleType === 'npc' ? '(NPC)' : '(Char)'); });
+
     var reply = await aiMod().generateCharLiveReply({
-      charObj: r.charObj,
+      charObj: actor,
       userObj: _state.user,
       hostMode: r.hostMode,
       program: r.program,
       programTitle: r.title,
       programStyle: r.style,
-      connectionType: _state.connectionType,
-      cameraActive: Boolean(_state.cameraStream),
+      connectionType: isCohost ? _state.connectionType : '',
+      isCohost: isCohost,
+      companionNames: companionNames,
+      cameraActive: Boolean(_state.cameraStream && isCohost),
       settings: _state.settings,
       recentLines: r.messages,
       triggerType: opts.triggerType || 'chat',
@@ -1371,25 +2085,46 @@
 
     if (!reply || reply.stale || reply.noChar || guard.isStale()) return;
 
+    var msgRole = actor.roleType === 'npc' ? 'npc' : 'char';
     if (reply.speech) {
       if (_state.settings && _state.settings.voice === 'audio' && !_state.settings.captions) {
-        // 语音为主且关闭字幕时，仅当确实能播语音才隐藏文字；否则回退文字显示以免无声无字
-        var ttsCheck = await aiMod().getMinimaxStatus(myCharId);
+        var ttsCheck = actor.roleType === 'npc' ? { apiReady: false, voiceId: '' } : await aiMod().getMinimaxStatus(myActorId);
         if (guard.isStale()) return;
         if (!ttsCheck.apiReady || !ttsCheck.voiceId) {
-          appendRoomMessage({ senderRole: 'char', sender: r.charObj.name, text: reply.speech });
+          appendRoomMessage({
+            senderRole: msgRole,
+            senderId: myActorId,
+            sender: actor.name,
+            messageType: 'chat',
+            source: msgRole,
+            text: reply.speech
+          });
         } else {
-          appendRoomMessage({ senderRole: 'char', sender: r.charObj.name + '（语音）', text: '🔊 ' + reply.speech });
+          appendRoomMessage({
+            senderRole: msgRole,
+            senderId: myActorId,
+            sender: actor.name + '（语音）',
+            messageType: 'chat',
+            source: msgRole,
+            text: '🔊 ' + reply.speech
+          });
         }
       } else {
-        appendRoomMessage({ senderRole: 'char', sender: r.charObj.name, text: reply.speech });
+        appendRoomMessage({
+          senderRole: msgRole,
+          senderId: myActorId,
+          sender: actor.name,
+          messageType: 'chat',
+          source: msgRole,
+          text: reply.speech
+        });
       }
-      if (guard.isLatest()) {
-        maybePlayCharTts(reply.speech, myCharId, guard);
+      if (guard.isLatest() && actor.roleType !== 'npc') {
+        maybePlayCharTts(reply.speech, myActorId, guard);
       }
     }
 
-    // 节制型 AI 观众气氛弹幕（绝不冒充真人，间隔 >= 12s）
+    // 节制型 AI 观众气氛弹幕（明确标注 isSimAudience，绝不冒充真人，间隔 >= 12s）
     if (reply.audience && _state.settings && _state.settings.sim && r.hostMode !== 'private') {
       var now = Date.now();
       if (now - (r.lastAiAudienceAt || 0) >= 12000) {
@@ -1397,10 +2132,34 @@
         appendRoomMessage({
           senderRole: 'ai_audience',
           sender: aiMod().pickAudienceName(),
+          messageType: 'ai_audience',
+          source: 'ai_sim',
+          isSimAudience: true,
           text: reply.audience
         });
       }
     }
+  }
+
+  async function drainAiQueue() {
+    if (_state.aiRunning) return;
+    _state.aiRunning = true;
+    try {
+      while (_state.aiQueue.length > 0) {
+        var task = _state.aiQueue.shift();
+        await runSingleAiTask(task);
+      }
+    } finally {
+      _state.aiRunning = false;
+    }
+  }
+
+  // 兼容旧单角色入口
+  function triggerCharAiTurn(opts) {
+    var r = _state.room;
+    if (!r) return;
+    var target = (opts && opts.targetActor) || getConnectionPartner(r) || getAllRoomActors(r)[0] || null;
+    if (target) enqueueAiTurn(target, opts);
   }
 
   function sendRoomMessage() {
@@ -1412,9 +2171,18 @@
     inputEl.value = '';
 
     var senderName = r.hostMode === 'user' ? (_state.user.name + '（主播）') : _state.user.name;
-    appendRoomMessage({ senderRole: 'user', sender: senderName, text: text });
-    if (r.charObj) {
-      triggerCharAiTurn({ triggerType: 'chat', userPrompt: '' });
+    appendRoomMessage({
+      senderRole: 'user',
+      senderId: _state.user.id,
+      sender: senderName,
+      messageType: 'chat',
+      source: 'danmaku',
+      text: text
+    });
+
+    var responders = selectAiResponders(r, text);
+    for (var i = 0; i < responders.length; i++) {
+      enqueueAiTurn(responders[i], { triggerType: 'chat', userPrompt: '' });
     }
   }
 
@@ -1422,10 +2190,19 @@
     var r = _state.room;
     var clean = String(text || '').trim();
     if (!r || !clean) return;
-    var senderName = _state.user.name + (sourceKind === 'voice' ? '（语音连麦）' : '（文字连麦）');
-    appendRoomMessage({ senderRole: 'user_cohost', sender: senderName, text: clean });
-    if (r.charObj) {
-      triggerCharAiTurn({ triggerType: 'cohost', userPrompt: '' });
+    var isVoice = sourceKind === 'voice';
+    var senderName = _state.user.name + (isVoice ? '（语音连麦）' : '（文字连麦）');
+    appendRoomMessage({
+      senderRole: 'user_cohost',
+      senderId: _state.user.id,
+      sender: senderName,
+      messageType: isVoice ? 'cohost_voice_asr' : 'cohost_text',
+      source: isVoice ? 'voice_asr' : 'text_call',
+      text: clean
+    });
+    var partner = getConnectionPartner(r) || getAllRoomActors(r)[0] || null;
+    if (partner) {
+      enqueueAiTurn(partner, { triggerType: 'cohost', userPrompt: '' });
     }
   }
 
@@ -1454,6 +2231,31 @@
       showToast('私人连线不展示公开礼物打赏');
       return;
     }
+    var r = _state.room;
+    var actors = getAllRoomActors(r);
+    if (!_state.selectedGiftRecipientId || !isActorActiveInRoom(r, _state.selectedGiftRecipientId)) {
+      var def = getDefaultGiftRecipient(r);
+      _state.selectedGiftRecipientId = def ? String(def.id) : '';
+    }
+    var recWrap = $('#hl-gift-recipient-wrap');
+    var recSel = $('#hl-gift-recipient');
+    if (recWrap && recSel) {
+      if (r.hostMode === 'user' && actors.length > 0) {
+        recWrap.style.display = 'block';
+        recSel.innerHTML = actors.map(function(a) {
+          return '<option value="' + esc(a.id) + '">' + esc(a.name) + '（' + (a.roleType === 'npc' ? 'NPC' : 'Char') + '）</option>';
+        }).join('');
+        recSel.value = _state.selectedGiftRecipientId || String(actors[0].id);
+        recSel.onchange = function() {
+          _state.selectedGiftRecipientId = recSel.value;
+          _state.giftConfirmPending = null;
+          updateGiftConfirmBar();
+        };
+      } else {
+        recWrap.style.display = 'none';
+      }
+    }
+
     _state.giftConfirmPending = null;
     var bal = await aiMod().getEconomyBalance();
     var balEl = $('#hl-gift-balance');
@@ -1489,14 +2291,15 @@
     var btn = $('#hl-gift-send-btn');
     var tip = $('#hl-gift-tip');
     if (!btn || !tip) return;
+    var rec = getDefaultGiftRecipient(_state.room);
     if (gift.free) {
       btn.textContent = '送出免费小心意 ' + gift.icon;
       tip.textContent = gift.desc;
-    } else if (_state.room && _state.room.hostMode === 'user' && !_state.room.charObj) {
-      btn.textContent = '需先邀请 Char 才可送金币礼物';
-      tip.textContent = '当前为个人独自开播，未邀请接收礼物的 Char；可发送免费小心意或先点击顶部「+ 邀请」。';
+    } else if (_state.room && _state.room.hostMode === 'user' && !rec) {
+      btn.textContent = '需先邀请嘉宾才可送金币礼物';
+      tip.textContent = '当前为个人独自开播，未邀请接收礼物的 Char / NPC；可发送免费小心意或先点击顶部「+ 邀请」。';
     } else if (_state.giftConfirmPending === gift.id) {
-      btn.textContent = '确认支付 ' + gift.price + ' 金币送出';
+      btn.textContent = '确认支付 ' + gift.price + ' 金币送给 ' + (rec ? rec.name : '对方');
       tip.textContent = '⚠️ 再次点击将通过官方共享经济扣除 ' + gift.price + ' 金币';
     } else {
       btn.textContent = '送出「' + gift.name + '」（' + gift.price + ' 金币）';
@@ -1507,8 +2310,9 @@
   async function submitGiftClick() {
     if (!_state.room || _state.giftSubmitting) return;
     var gift = aiMod().GIFT_CATALOG.find(function(g) { return g.id === _state.selectedGiftId; }) || aiMod().GIFT_CATALOG[0];
-    if (!gift.free && _state.room.hostMode === 'user' && !_state.room.charObj) {
-      showToast('当前尚未邀请 Char，请先邀请 Char 后再送出金币礼物');
+    var recipient = getDefaultGiftRecipient(_state.room);
+    if (!gift.free && _state.room.hostMode === 'user' && !recipient) {
+      showToast('当前尚未邀请嘉宾，请先邀请 Char / NPC 后再送出金币礼物');
       return;
     }
     if (!gift.free && _state.giftConfirmPending !== gift.id) {
@@ -1522,7 +2326,7 @@
     if (sendBtn) sendBtn.disabled = true;
 
     try {
-      var res = await aiMod().sendGiftTransaction({ gift: gift, charObj: _state.room.charObj });
+      var res = await aiMod().sendGiftTransaction({ gift: gift, charObj: recipient });
       if (!res.ok) {
         showToast(res.msg || '送礼失败');
         return;
@@ -1532,13 +2336,21 @@
         _state.room.giftsTotalCoins += Number(res.coinsSpent || 0);
       }
       closeModal();
-      var label = gift.icon + ' ' + _state.user.name + ' 送出了「' + gift.name + '」' + (res.free ? '（免费互动）' : '（-' + res.coinsSpent + ' 金币）');
-      spawnGiftBurst(gift.icon + (_state.room.charObj ? (' 感谢送出 ' + gift.name + '！') : (' 点亮了 ' + gift.name + '！')));
-      appendRoomMessage({ senderRole: 'system', sender: '礼物提醒', text: label });
+      var toText = recipient ? (' 给 ' + recipient.name) : '';
+      var label = gift.icon + ' ' + _state.user.name + ' 送出了「' + gift.name + '」' + toText + (res.free ? '（免费互动）' : '（-' + res.coinsSpent + ' 金币）');
+      spawnGiftBurst(gift.icon + (recipient ? (' ' + recipient.name + ' 收到 ' + gift.name + '！') : (' 点亮了 ' + gift.name + '！')));
+      appendRoomMessage({
+        senderRole: 'gift',
+        senderId: _state.user.id,
+        sender: '心意礼物',
+        messageType: 'gift',
+        source: 'gift',
+        text: label
+      });
       showToast(res.free ? '已送出免费小心意 ✨' : ('送礼成功！剩余金币：' + res.remaining));
 
-      if (_state.room.charObj) {
-        triggerCharAiTurn({
+      if (recipient) {
+        enqueueAiTurn(recipient, {
           triggerType: 'gift',
           giftName: gift.name,
           userPrompt: _state.user.name + ' 刚刚在直播间给你送出了「' + gift.name + '」，请开心又自然地道谢。'
@@ -1574,24 +2386,291 @@
 
   function triggerInteractRound(customText) {
     if (!_state.room) return;
-    var gs = _state.room.gameSession;
+    var r = _state.room;
+    var gs = r.gameSession;
     gs.round++;
     var msgText = customText && customText.trim() ? customText.trim() : gs.prompt;
     closeModal();
-    appendRoomMessage({ senderRole: 'user', sender: _state.user.name + ' · 互动点单', text: msgText });
-    if (_state.room.charObj) {
-      triggerCharAiTurn({
-        triggerType: 'interact_game',
-        userPrompt: _state.user.name + ' 在直播间「互动游戏」环节向你发起了第 ' + gs.round + ' 轮挑战：' + msgText + '。请直接配合参与游戏并有趣地回应！'
-      });
+    appendRoomMessage({
+      senderRole: 'user',
+      senderId: _state.user.id,
+      sender: _state.user.name + ' · 互动点单',
+      messageType: 'chat',
+      source: 'interact_game',
+      text: msgText
+    });
+    var responders = selectAiResponders(r, msgText);
+    if (responders.length) {
+      for (var i = 0; i < responders.length; i++) {
+        enqueueAiTurn(responders[i], {
+          triggerType: 'interact_game',
+          userPrompt: _state.user.name + ' 在直播间「互动游戏」环节向你发起了第 ' + gs.round + ' 轮挑战：' + msgText + '。请直接配合参与游戏并有趣地回应！'
+        });
+      }
     } else {
-      appendRoomMessage({ senderRole: 'system', sender: '互动提示', text: '已发布互动话题；点击顶部「+ 邀请」邀请 Char 后即可由 Ta 实时接招回应 ♡' });
+      appendRoomMessage({
+        senderRole: 'system',
+        sender: '互动提示',
+        messageType: 'system',
+        source: 'system',
+        text: '已发布互动话题；点击顶部「+ 邀请」邀请 Char 或 NPC 后即可由 Ta 实时接招回应 ♡'
+      });
     }
   }
 
-  // ===== 退出直播、直播手账与长期记忆手动确认 =====
-  async function finishAndLeaveRoom(autoFinished) {
+  // ===== 应用内可拖动悬浮小窗 (仅应用内部页面显示，严格保留会话与音频状态) =====
+  function getHostAppContainer() {
+    if (!global.document) return null;
+    return global.document.getElementById('app') || global.document.body;
+  }
+
+  function removeMiniWindow() {
+    _state.minimized = false;
+    if (_state.pageEl) _state.pageEl.classList.remove('hl-is-minimized');
+    if (_state.miniEl && _state.miniEl.parentNode) {
+      _state.miniEl.parentNode.removeChild(_state.miniEl);
+    }
+    _state.miniEl = null;
+    if (global.document) {
+      var stray = global.document.getElementById('hl-mini-window');
+      if (stray && stray.parentNode) stray.parentNode.removeChild(stray);
+    }
+  }
+
+  function clampMiniPosition(miniEl, left, top) {
+    var container = getHostAppContainer();
+    var cRect = container && typeof container.getBoundingClientRect === 'function' ? container.getBoundingClientRect() : null;
+    var cw = (container && container.clientWidth) || (cRect && cRect.width) || Number(global.innerWidth || 375);
+    var ch = (container && container.clientHeight) || (cRect && cRect.height) || Number(global.innerHeight || 667);
+    var mw = miniEl.offsetWidth || 168;
+    var mh = miniEl.offsetHeight || 96;
+    var maxL = Math.max(8, cw - mw - 8);
+    var maxT = Math.max(12, ch - mh - 14);
+    var nextL = Math.max(8, Math.min(maxL, left));
+    var nextT = Math.max(12, Math.min(maxT, top));
+    miniEl.style.left = Math.round(nextL) + 'px';
+    miniEl.style.top = Math.round(nextT) + 'px';
+    miniEl.style.right = 'auto';
+    miniEl.style.bottom = 'auto';
+    _state.miniPos = { left: Math.round(nextL), top: Math.round(nextT) };
+  }
+
+  function getMiniAudioLabel(r) {
+    var hasAsmrSound = Boolean(_asmrAudioEl && !_asmrAudioEl.paused && r && (r.program === 'asmr' || r.program === 'radio'));
+    var hasMic = Boolean(_state.micStream);
+    var ttsOn = Boolean(_state.settings && _state.settings.voice !== 'text');
+    if (hasMic && hasAsmrSound) return '🎙 麦开 · 🎧 背景音';
+    if (hasMic) return '🎙 麦已开启';
+    if (hasAsmrSound) return (r && r.program === 'radio') ? '📻 电台音频中' : '🎧 ASMR 播放中';
+    if (!ttsOn && !_state.cameraStream) return '🔇 静音字幕中';
+    if (r && r.program === 'asmr') return '🔇 定时静音陪伴';
+    return ttsOn ? '🔊 语音开' : '🔇 静音中';
+  }
+
+  function updateMiniWindowChrome() {
+    var mini = _state.miniEl;
     var r = _state.room;
+    if (!mini || !_state.minimized || !r) return;
+    var prog = (aiMod() && aiMod().PROGRAMS[r.program]) || { icon: '💬', label: '直播中' };
+    var titleEl = mini.querySelector('#hl-mini-title');
+    var statusEl = mini.querySelector('#hl-mini-status');
+    var audioEl = mini.querySelector('#hl-mini-audio');
+    var avatarEl = mini.querySelector('#hl-mini-avatar');
+
+    var hostLabel = r.hostMode === 'user'
+      ? (_state.user.name + '（我）')
+      : ((r.hostCharObj && r.hostCharObj.name) || 'Char');
+    if (titleEl) titleEl.textContent = hostLabel;
+
+    var statusText = prog.icon + ' ' + prog.label;
+    if (r.program === 'asmr' && _state.asmrDeadlineMs > Date.now()) {
+      statusText = '🎧 剩' + Math.ceil((_state.asmrDeadlineMs - Date.now()) / 60000) + '分';
+    } else if (r.hostMode === 'user' && r.cohostCharObj) {
+      statusText = '🎙 连麦 ' + r.cohostCharObj.name;
+    } else if (r.hostMode === 'user' && r.invitedViewers && r.invitedViewers.length > 0) {
+      statusText = prog.icon + ' ' + r.invitedViewers.length + '人观看';
+    }
+    if (statusEl) statusEl.textContent = statusText;
+    if (audioEl) audioEl.textContent = getMiniAudioLabel(r);
+
+    if (avatarEl) {
+      var hostActor = r.hostMode === 'user' ? _state.user : r.hostCharObj;
+      var src = (hostActor && hostActor.avatar) || '';
+      if (src) {
+        avatarEl.innerHTML = '<img src="' + esc(src) + '" alt="' + esc(hostLabel) + '">';
+      } else {
+        avatarEl.textContent = r.hostMode === 'user' ? '🎀' : ((hostActor && hostActor.emojiFallback) || '🌸');
+      }
+    }
+  }
+
+  function bindMiniWindowInteractions(mini) {
+    var startX = 0;
+    var startY = 0;
+    var originLeft = 0;
+    var originTop = 0;
+    var dragging = false;
+    var moved = false;
+
+    var getPoint = function(ev) {
+      if (ev.touches && ev.touches[0]) return { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+      return { x: Number(ev.clientX) || 0, y: Number(ev.clientY) || 0 };
+    };
+
+    var onStart = function(ev) {
+      var tgt = ev.target;
+      if (tgt && tgt.closest && tgt.closest('button')) return;
+      var pt = getPoint(ev);
+      dragging = true;
+      moved = false;
+      startX = pt.x;
+      startY = pt.y;
+      var parsedLeft = parseFloat(mini.style.left);
+      var parsedTop = parseFloat(mini.style.top);
+      originLeft = Number.isFinite(parsedLeft) ? parsedLeft : (mini.offsetLeft || 12);
+      originTop = Number.isFinite(parsedTop) ? parsedTop : (mini.offsetTop || 12);
+    };
+
+    var onMove = function(ev) {
+      if (!dragging) return;
+      var pt = getPoint(ev);
+      var dx = pt.x - startX;
+      var dy = pt.y - startY;
+      if (!moved && Math.hypot(dx, dy) > 6) moved = true;
+      if (moved) {
+        if (ev.cancelable) ev.preventDefault();
+        clampMiniPosition(mini, originLeft + dx, originTop + dy);
+      }
+    };
+
+    var onEnd = function() {
+      if (!dragging) return;
+      dragging = false;
+      if (!moved) {
+        restoreFromMiniWindow();
+      }
+    };
+
+    mini.addEventListener('pointerdown', onStart);
+    global.addEventListener('pointermove', onMove);
+    global.addEventListener('pointerup', onEnd);
+    mini.addEventListener('touchstart', onStart, { passive: true });
+    mini.addEventListener('touchmove', onMove, { passive: false });
+    mini.addEventListener('touchend', onEnd);
+
+    var restoreBtn = mini.querySelector('#hl-mini-restore');
+    var closeBtn = mini.querySelector('#hl-mini-close');
+    if (restoreBtn) {
+      restoreBtn.onclick = function(ev) {
+        ev.stopPropagation();
+        restoreFromMiniWindow();
+      };
+    }
+    if (closeBtn) {
+      closeBtn.onclick = async function(ev) {
+        ev.stopPropagation();
+        if (typeof global.confirm === 'function' && !global.confirm('关闭悬浮小窗并结束当前直播？（将自动保存直播手账与聊天记录）')) {
+          return;
+        }
+        await finishAndLeaveRoom(false, { closeAppIfMinimized: true });
+      };
+    }
+
+    mini._cleanupDrag = function() {
+      global.removeEventListener('pointermove', onMove);
+      global.removeEventListener('pointerup', onEnd);
+    };
+  }
+
+  function minimizeLiveRoom() {
+    if (!_state.room || !_state.pageEl) return;
+    if (_state.minimized && _state.miniEl) return;
+    closeModal();
+    removeMiniWindow();
+    _state.minimized = true;
+    _state.pageEl.classList.add('hl-is-minimized');
+
+    var container = getHostAppContainer();
+    if (!container || !global.document) return;
+    var mini = global.document.createElement('div');
+    mini.id = 'hl-mini-window';
+    mini.className = 'hl-mini-window';
+    mini.setAttribute('role', 'region');
+    mini.setAttribute('aria-label', '心动直播应用内悬浮小窗');
+    mini.innerHTML =
+      '<div class="hl-mini-head">' +
+        '<span class="hl-mini-live-dot">LIVE</span>' +
+        '<span class="hl-mini-scope">应用内小窗</span>' +
+        '<div class="hl-mini-btns">' +
+          '<button type="button" id="hl-mini-restore" class="hl-mini-btn" title="恢复全屏直播" aria-label="恢复直播间">⤢</button>' +
+          '<button type="button" id="hl-mini-close" class="hl-mini-btn close" title="结束直播并关闭小窗" aria-label="结束直播">×</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="hl-mini-body">' +
+        '<div class="hl-mini-avatar" id="hl-mini-avatar">🌸</div>' +
+        '<div class="hl-mini-info">' +
+          '<b id="hl-mini-title">直播中</b>' +
+          '<small id="hl-mini-status">💬 闲聊直播</small>' +
+          '<span id="hl-mini-audio" class="hl-mini-audio">🔊 语音开</span>' +
+        '</div>' +
+      '</div>';
+
+    container.appendChild(mini);
+    _state.miniEl = mini;
+
+    var cw = container.clientWidth || Number(global.innerWidth || 375);
+    var ch = container.clientHeight || Number(global.innerHeight || 667);
+    var defL = _state.miniPos ? _state.miniPos.left : Math.max(8, cw - 184);
+    var defT = _state.miniPos ? _state.miniPos.top : Math.max(16, ch - 190);
+    clampMiniPosition(mini, defL, defT);
+
+    bindMiniWindowInteractions(mini);
+    updateMiniWindowChrome();
+    showToast('已缩小为应用内悬浮小窗，可拖动或浏览其他页面');
+  }
+
+  function restoreFromMiniWindow() {
+    var mini = _state.miniEl;
+    if (mini && typeof mini._cleanupDrag === 'function') {
+      try { mini._cleanupDrag(); } catch (_) {}
+    }
+    removeMiniWindow();
+    if (_state.pageEl) {
+      _state.pageEl.classList.remove('hl-is-minimized');
+      _state.pageEl.classList.add('open');
+      // 若期间打开了其他高层全屏页面（如浏览器/时间页等），抬高本页层级到当前最高但低于全局弹窗(9000)
+      try {
+        var maxZ = 66;
+        var hostContainer = getHostAppContainer();
+        if (hostContainer && hostContainer.children && global.getComputedStyle) {
+          Array.from(hostContainer.children).forEach(function(el) {
+            if (!el || el === _state.pageEl || !el.classList || !el.classList.contains('full-page')) return;
+            var z = parseInt(global.getComputedStyle(el).zIndex, 10);
+            if (Number.isFinite(z) && z >= maxZ && z < 4000) maxZ = z + 1;
+          });
+        }
+        _state.pageEl.style.zIndex = String(maxZ);
+      } catch (_) {}
+    }
+    if (_state.room) {
+      switchView('live');
+      renderRoomIdentityChrome();
+      updateRoomProgramChrome();
+      checkAsmrTimer();
+    }
+  }
+
+  // ===== 退出直播、完整聊天日志落盘、手账与长期记忆手动确认 =====
+  async function finishAndLeaveRoom(autoFinished, leaveOpts) {
+    leaveOpts = leaveOpts || {};
+    var wasMinimized = Boolean(_state.minimized);
+    var r = _state.room;
+    var flushedCount = r ? await flushSessionChatLog(r) : 0;
+
+    if (_state.miniEl && typeof _state.miniEl._cleanupDrag === 'function') {
+      try { _state.miniEl._cleanupDrag(); } catch (_) {}
+    }
+    removeMiniWindow();
     cleanupAllMedia();
     _state.room = null;
     _state.connectionType = '';
@@ -1601,49 +2680,75 @@
     if (_state.pageEl) {
       _state.pageEl.style.height = '';
       _state.pageEl.style.maxHeight = '';
+      _state.pageEl.style.zIndex = '';
     }
 
-    if (r && r.messages.length > 0 && storage()) {
-      var hasChar = Boolean(r.charObj && r.charObj.id);
-      var cId = hasChar ? r.charObj.id : '';
-      var cName = hasChar ? r.charObj.name : '个人直播（未邀请 Char）';
+    var saved = null;
+    if (r && ((r.fullMessages && r.fullMessages.length > 0) || r.messages.length > 0) && storage()) {
+      var participants = getAllRoomActors(r).map(function(p) {
+        return { id: String(p.id), name: p.name, roleType: p.roleType === 'npc' ? 'npc' : 'char' };
+      });
+      var realChars = participants.filter(function(p) { return p.roleType === 'char'; });
+      var npcs = participants.filter(function(p) { return p.roleType === 'npc'; });
+      var primaryChar = realChars[0] || participants[0] || null;
+      var cId = primaryChar ? primaryChar.id : '';
+      var cName = participants.length > 1
+        ? (participants.map(function(p) { return p.name; }).slice(0, 3).join('、') + (participants.length > 3 ? '等' + participants.length + '人' : ''))
+        : (primaryChar ? primaryChar.name : '个人直播（未邀请嘉宾）');
+      var charType = realChars.length > 0 && npcs.length > 0
+        ? 'mixed'
+        : (realChars.length === 0 && npcs.length > 0) ? 'npc' : 'char';
+      var totalCount = Math.max(Number(flushedCount) || 0, (r.fullMessages && r.fullMessages.length) || r.messages.length);
+
       var draft = aiMod().buildJournalDraft({
         hostMode: r.hostMode,
         charId: cId,
         charName: cName,
+        invitedParticipants: participants,
         program: r.program,
         title: r.title,
         startedAt: r.startedAt,
         endedAt: Date.now(),
-        msgCount: r.messages.length,
+        msgCount: totalCount,
         giftsTotalCoins: r.giftsTotalCoins,
         cohostUsed: r.cohostUsed,
         asmrUsed: r.asmrUsed
       });
-      var saved = await storage().addJournalEntry({
+      saved = await storage().addJournalEntry({
         ownerUid: _state.user.id,
+        sessionId: r.logSessionId,
+        hasChatLog: true,
+        logMessageCount: totalCount,
         charId: cId,
         charName: cName,
+        charType: charType,
+        invitedParticipants: participants,
+        hasRealChar: realChars.length > 0,
         hostMode: r.hostMode,
         program: r.program,
         programLabel: (aiMod().PROGRAMS[r.program] || aiMod().PROGRAMS.chat).label,
         title: r.title,
         summary: draft.content,
         giftsTotalCoins: r.giftsTotalCoins,
-        msgCount: r.messages.length,
+        msgCount: totalCount,
         cohostUsed: r.cohostUsed,
         asmrUsed: r.asmrUsed,
         startedAt: r.startedAt,
         endedAt: Date.now()
       });
       _state.journals = await storage().loadJournals();
-      switchView('home');
-      if (saved && _state.settings && _state.settings.savePrompt) {
-        openSessionSummaryModal(saved, autoFinished);
-      }
+    }
+
+    if (wasMinimized && leaveOpts.closeAppIfMinimized) {
+      close(false);
+      if (saved) showToast('直播已结束，已保存手账与完整聊天记录 ♡');
       return;
     }
+
     switchView('home');
+    if (saved && _state.settings && _state.settings.savePrompt) {
+      openSessionSummaryModal(saved, autoFinished);
+    }
   }
 
   function leaveLiveRoomWithConfirm() {
@@ -1660,7 +2765,8 @@
   function openSessionSummaryModal(journal, autoFinished) {
     var box = $('#hl-summary-body');
     var rememberBtn = $('#hl-summary-remember');
-    var canWriteMem = Boolean(journal && journal.charId);
+    var replayBtn = $('#hl-summary-replay');
+    var canWriteMem = Boolean(journal && journal.charId && journal.hasRealChar !== false && journal.charType !== 'npc');
     if (box) {
       box.innerHTML =
         '<div class="hl-plan-preview">' +
@@ -1668,14 +2774,23 @@
           esc(journal.summary) +
         '</div>' +
         '<p class="hl-help">' +
-          (autoFinished ? 'ASMR 定时已圆满结束。' : '本场直播已记录到「直播手账」。') +
+          (autoFinished ? 'ASMR 定时已圆满结束。' : '本场直播已记录到「直播手账」，并保存了完整聊天记录。') +
           (canWriteMem
             ? '是否顺便将它写入「长期记忆」？（需您审阅确认，绝不自动写入）'
-            : '本场为未绑定 Char 的个人开播记录，将保存在手账中而不写入角色长期记忆。') +
+            : (journal && journal.charType === 'npc'
+                ? '本场仅含 NPC 嘉宾互动，将保存在手账与聊天回放中而不写入 Char 长期记忆。'
+                : '本场为未绑定 Char 的个人开播记录，将保存在手账与聊天回放中而不写入角色长期记忆。')) +
         '</p>';
     }
     if (rememberBtn) {
       rememberBtn.style.display = canWriteMem ? '' : 'none';
+    }
+    if (replayBtn) {
+      replayBtn.style.display = journal ? '' : 'none';
+      replayBtn.onclick = function() {
+        closeModal();
+        openReplayView(journal, 'diary');
+      };
     }
     _state.memoryDraft = journal;
     openModal('summary');
@@ -1684,6 +2799,23 @@
   function openMemoryConfirmModal(journal) {
     if (!journal) return;
     _state.memoryDraft = journal;
+    var charWrap = $('#hl-mem-char-wrap');
+    var charSel = $('#hl-mem-char-select');
+    var eligibleChars = Array.isArray(journal.invitedParticipants)
+      ? journal.invitedParticipants.filter(function(p) { return p && p.roleType === 'char' && p.id; })
+      : [];
+    if (charWrap && charSel) {
+      if (eligibleChars.length > 1) {
+        charWrap.style.display = 'block';
+        charSel.innerHTML = eligibleChars.map(function(c) {
+          return '<option value="' + esc(c.id) + '">' + esc(c.name) + '（Char）</option>';
+        }).join('');
+        charSel.value = String(journal.charId || eligibleChars[0].id);
+      } else {
+        charWrap.style.display = 'none';
+        charSel.innerHTML = '';
+      }
+    }
     var titleEl = $('#hl-mem-title');
     var contentEl = $('#hl-mem-content');
     var kwEl = $('#hl-mem-keywords');
@@ -1700,12 +2832,15 @@
     var content = ($('#hl-mem-content') || {}).value || '';
     var kwRaw = ($('#hl-mem-keywords') || {}).value || '';
     var keywords = kwRaw.split(/[,，\s]+/).map(function(s) { return s.trim(); }).filter(Boolean);
+    var charSel = $('#hl-mem-char-select');
+    var targetCharId = (charSel && charSel.value) || journal.charId || '';
 
     var btn = $('#hl-mem-confirm-btn');
     if (btn) btn.disabled = true;
     try {
       var res = await aiMod().saveJournalToLongMemory({
         journal: journal,
+        charId: targetCharId,
         title: title,
         content: content,
         keywords: keywords
@@ -1721,6 +2856,109 @@
     } finally {
       if (btn) btn.disabled = false;
     }
+  }
+
+  // ===== 直播回放 / 完整聊天记录查看页 =====
+  function renderReplayListHtml(messages) {
+    var tagLabels = {
+      user: '主播 我',
+      user_cohost: '连麦发言',
+      char: 'Char',
+      npc: 'NPC',
+      gift: '礼物互动',
+      system: '直播事件',
+      ai_audience: 'AI观众'
+    };
+    return messages.map(function(m) {
+      var timeStr = new Date(m.createdAt || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var sType = m.senderType || 'system';
+      return '<div class="hl-replay-msg role-' + esc(sType) + '">' +
+        '<div class="hl-replay-msg-head">' +
+          '<span class="hl-replay-badge role-' + esc(sType) + '">' + esc(tagLabels[sType] || '消息') + '</span>' +
+          '<b>' + esc(m.senderNameSnapshot || '未知') + '</b>' +
+          '<small>' + esc(timeStr) + '</small>' +
+        '</div>' +
+        '<div class="hl-replay-msg-body">' + esc(m.content || '') + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  async function renderReplayChunk(reset) {
+    var j = _state.replayJournal;
+    var bodyEl = $('#hl-replay-list');
+    var metaEl = $('#hl-replay-meta');
+    var simToggleWrap = $('#hl-replay-sim-wrap');
+    if (!bodyEl || !j) return;
+
+    if (reset) {
+      _state.replayOffset = 0;
+      _state.replayLoaded = [];
+      bodyEl.innerHTML = '<div class="hl-note">正在读取本场聊天记录…</div>';
+    }
+
+    var res = await storage().loadSessionChatLog(j.sessionId, {
+      offset: _state.replayOffset,
+      limit: REPLAY_PAGE_SIZE,
+      includeSimAudience: _state.replayIncludeSim
+    });
+    _state.replayMeta = res;
+
+    var dateStr = new Date(j.startedAt || Date.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    if (metaEl) {
+      metaEl.textContent = dateStr + ' · ' + (j.programLabel || '直播') + ' · ' + (j.charName || '个人直播') +
+        (res.exists ? (' · 共 ' + res.totalCount + ' 条记录') : '');
+    }
+    if (simToggleWrap) {
+      simToggleWrap.style.display = (res.exists && res.simAudienceCount > 0) ? 'flex' : 'none';
+    }
+
+    if (!res.exists) {
+      bodyEl.innerHTML =
+        '<div class="hl-diarycard">' +
+          '<b>📜 旧版未保存完整聊天记录</b>' +
+          '<p>本场手账由早期版本记录（仅保存了直播摘要与基础统计），无法回溯逐条弹幕与对话；绝不会 AI 补全或伪造历史对话。</p>' +
+          '<div class="hl-plan-preview">' + esc(j.summary || '') + '</div>' +
+        '</div>';
+      return;
+    }
+
+    _state.replayLoaded = _state.replayLoaded.concat(res.messages);
+    _state.replayOffset = _state.replayLoaded.length;
+
+    if (!_state.replayLoaded.length) {
+      bodyEl.innerHTML =
+        '<div class="hl-diarycard">' +
+          '<b>💬 暂无符合条件的聊天记录</b>' +
+          '<p>' + (res.simAudienceCount > 0 && !_state.replayIncludeSim ? '当前已隐藏 [AI观众] 气氛弹幕，开启上方开关可查看。' : '本场直播暂未产生已保存的聊天记录。') + '</p>' +
+        '</div>';
+      return;
+    }
+
+    var listHtml = renderReplayListHtml(_state.replayLoaded);
+    var moreHtml = res.hasMore
+      ? ('<div class="hl-replay-more"><button type="button" class="hl-plainbtn" id="hl-replay-load-more">加载更早记录（剩余 ' + (res.filteredCount - _state.replayLoaded.length) + ' 条）</button></div>')
+      : '<div class="hl-replay-end">—— 已显示全部 ' + _state.replayLoaded.length + ' 条记录 ——</div>';
+
+    bodyEl.innerHTML = listHtml + moreHtml;
+    var moreBtn = $('#hl-replay-load-more');
+    if (moreBtn) {
+      moreBtn.onclick = function() {
+        renderReplayChunk(false);
+      };
+    }
+  }
+
+  async function openReplayView(journal, returnView) {
+    if (!journal) return;
+    _state.replayJournal = journal;
+    _state.replayReturnView = returnView || 'diary';
+    _state.replayIncludeSim = true;
+    var simChk = $('#hl-replay-sim-toggle');
+    if (simChk) simChk.checked = true;
+    var headTitle = $('#hl-replay-title');
+    if (headTitle) headTitle.textContent = journal.title || '本场聊天记录';
+    switchView('replay');
+    await renderReplayChunk(true);
   }
 
   // ===== 直播手账页面 =====
@@ -1742,30 +2980,43 @@
       listEl.innerHTML =
         '<div class="hl-diarycard">' +
           '<b>📖 我的直播手账</b>' +
-          '<p>这里只记录你与 Char 真实完成过的直播时刻（包含节目、连麦与赠送心意），绝不伪造虚构记录。去大厅开一场直播吧 ♡</p>' +
+          '<p>这里只记录真实完成过的直播时刻（包含节目、多人陪伴、连麦、礼物与完整聊天回放），绝不伪造虚构记录。去大厅开一场直播吧 ♡</p>' +
         '</div>';
       return;
     }
 
     listEl.innerHTML = _state.journals.map(function(j) {
       var dateStr = new Date(j.startedAt || Date.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-      var memAlive = !!(j.memorySaved && j.memoryId && existingMemIds.has(Number(j.memoryId)));
-      var memBtnHtml = !j.charId
-        ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#8e7994">个人独播手账</span>'
+      var memAlive = Boolean(j.memoryId && existingMemIds.has(Number(j.memoryId)));
+      var hasEligibleChar = Boolean(j.charId && j.hasRealChar !== false && j.charType !== 'npc');
+      var memBtnHtml = !hasEligibleChar
+        ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#8e7994">' + (j.charType === 'npc' ? 'NPC陪伴·不写记忆' : '个人独播手账') + '</span>'
         : memAlive
           ? '<span class="hl-plainbtn" style="padding:6px 11px;font-size:11px;color:#3d8462;border-color:#bfe2cf">✓ 已写入长期记忆</span>'
           : '<button type="button" class="hl-pinkbtn" style="padding:7px 12px;font-size:11px" data-jnl-remember="' + esc(j.id) + '">记住这场直播</button>';
+      var typeBadge = j.charType === 'npc'
+        ? '<span class="hl-tag" style="background:#ede9fb;color:#6b529c">NPC</span>'
+        : j.charType === 'mixed'
+          ? '<span class="hl-tag" style="background:#eaf5ef;color:#3a7a5c">多人</span>'
+          : '';
       return '<div class="hl-diarycard">' +
-        '<div class="hl-diarycard-head"><b>' + esc(j.title) + '</b><span class="hl-tag" style="background:#f6e6ef;color:#935c7c">' + esc(j.programLabel) + '</span></div>' +
+        '<div class="hl-diarycard-head"><b>' + esc(j.title) + '</b><div>' + typeBadge + '<span class="hl-tag" style="background:#f6e6ef;color:#935c7c">' + esc(j.programLabel) + '</span></div></div>' +
         '<div class="hl-diarycard-meta">' + esc(dateStr) + ' · ' + esc(j.charName) + ' · ' + (j.msgCount || 0) + ' 条互动' + (j.giftsTotalCoins ? ' · 礼物 ' + j.giftsTotalCoins + ' 金币' : '') + '</div>' +
         '<p>' + esc(j.summary) + '</p>' +
         '<div class="hl-diarycard-actions">' +
+          '<button type="button" class="hl-plainbtn" style="padding:7px 12px;font-size:11px" data-jnl-replay="' + esc(j.id) + '">查看本场聊天记录</button>' +
           memBtnHtml +
           '<button type="button" class="hl-dangerbtn" data-jnl-del="' + esc(j.id) + '">删除手账</button>' +
         '</div>' +
       '</div>';
     }).join('');
 
+    $$('[data-jnl-replay]').forEach(function(btn) {
+      btn.onclick = function() {
+        var found = _state.journals.find(function(x) { return x.id === btn.dataset.jnlReplay; });
+        if (found) openReplayView(found, 'diary');
+      };
+    });
     $$('[data-jnl-remember]').forEach(function(btn) {
       btn.onclick = function() {
         var found = _state.journals.find(function(x) { return x.id === btn.dataset.jnlRemember; });
@@ -1774,8 +3025,11 @@
     });
     $$('[data-jnl-del]').forEach(function(btn) {
       btn.onclick = async function() {
+        if (typeof global.confirm === 'function' && !global.confirm('确定删除这条直播手账及对应的本场聊天记录吗？（删除后无法恢复）')) {
+          return;
+        }
         await storage().deleteJournalEntry(btn.dataset.jnlDel);
-        showToast('已删除该条手账');
+        showToast('已删除手账及本场聊天记录');
         refreshDiaryView();
       };
     });
@@ -1838,95 +3092,348 @@
     if (urlEl) urlEl.value = customSrc && customSrc.indexOf('https:') === 0 ? customSrc : '';
   }
 
-  async function refreshAsmrLibraryUi() {
-    _state.asmrTracks = await storage().listAsmrTracks();
-    var listEl = $('#hl-asmr-library-list');
-    var selEl = $('#hl-asmr-default-track');
-    var totalBytes = _state.asmrTracks.reduce(function(s, t) { return s + (Number(t.size) || 0); }, 0);
-    var countEl = $('#hl-asmr-quota');
-    if (countEl) {
-      countEl.textContent = '已导入 ' + _state.asmrTracks.length + ' 首音轨 · 占用 ' + formatBytes(totalBytes) + ' / 120 MB';
+  function renderImportProgressUi() {
+    var wrap = $('#hl-asmr-import-progress');
+    var textEl = $('#hl-asmr-progress-text');
+    var fillEl = $('#hl-asmr-progress-fill');
+    if (!wrap) return;
+    wrap.hidden = !_state.importBusy;
+    if (!_state.importBusy) return;
+    var pct = Math.max(0, Math.min(100, Math.round(Number(_state.importProgressPct) || 0)));
+    if (textEl) textEl.textContent = _state.importProgressText || ('正在导入… ' + pct + '%');
+    if (fillEl) fillEl.style.width = pct + '%';
+  }
+
+  async function runLocalAudioImportFiles(files, fromPlanner) {
+    if (!files || !files.length) return null;
+    if (_importAbortCtrl) {
+      try { _importAbortCtrl.abort(); } catch (_) {}
     }
-    if (selEl) {
-      selEl.innerHTML = '<option value="">跟随播放模式自动选择</option>' +
-        _state.asmrTracks.map(function(t) {
-          return '<option value="' + esc(t.id) + '">' + esc(t.name) + '</option>';
-        }).join('');
-      selEl.value = (_state.settings && _state.settings.asmrSelectedTrackId) || '';
+    var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : { signal: { aborted: false }, abort() { this.signal.aborted = true; } };
+    _importAbortCtrl = ctrl;
+    _state.importBusy = true;
+    _state.importProgressPct = 2;
+    _state.importProgressText = '准备校验音频文件…';
+    renderImportProgressUi();
+
+    var okCount = 0;
+    var dupCount = 0;
+    var lastAdded = null;
+    var lastErr = '';
+    var aborted = false;
+
+    try {
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        try {
+          lastAdded = await storage().addAsmrTrack(f, {
+            signal: ctrl.signal,
+            onProgress: function(p) {
+              var pct = Math.max(0, Math.min(100, Math.round(Number(p && p.percent) || 0)));
+              _state.importProgressPct = pct;
+              _state.importProgressText = '[' + (i + 1) + '/' + files.length + '] ' + (f.name || '音频') + ' · ' + ((p && p.phase) || '写入中') + ' ' + pct + '%';
+              renderImportProgressUi();
+            }
+          });
+          okCount++;
+        } catch (err) {
+          if (err && err.name === 'AbortError') {
+            aborted = true;
+            break;
+          }
+          lastErr = (err && err.message) || '导入失败';
+          if (lastErr.indexOf('已跳过重复导入') >= 0) dupCount++;
+        }
+      }
+    } finally {
+      if (_importAbortCtrl === ctrl) _importAbortCtrl = null;
+      _state.importBusy = false;
+      _state.importProgressPct = 0;
+      _state.importProgressText = '';
+      renderImportProgressUi();
     }
-    if (!listEl) return;
-    if (!_state.asmrTracks.length) {
-      listEl.innerHTML = '<div class="hl-help">尚未导入任何本地音频文件，点击上方按钮添加 MP3 / WAV / M4A / OGG / FLAC。</div>';
+
+    await refreshAsmrLibraryUi();
+    if (fromPlanner && lastAdded && _state.settings) {
+      _state.settings = await storage().saveSettings(Object.assign({}, _state.settings, { asmrSelectedTrackId: lastAdded.id }));
+      updatePlannerPreview();
+    }
+    if (aborted) {
+      showToast(okCount > 0 ? ('已取消剩余导入（此前已完成 ' + okCount + ' 首）') : '已取消音频导入并清理未完成文件');
+    } else if (okCount > 0) {
+      showToast(dupCount > 0 ? ('已导入 ' + okCount + ' 首本地音频，已跳过 ' + dupCount + ' 首重复音轨') : ('已导入 ' + okCount + ' 首本地音频 ♡'));
+    } else if (lastErr) {
+      showToast(lastErr);
+    }
+    return lastAdded;
+  }
+
+  async function startPreviewPlayback(id, resolverFn) {
+    if (_state.previewAudioId === id) {
+      stopPreviewAudio();
+      await refreshAsmrLibraryUi();
       return;
     }
-    listEl.innerHTML = _state.asmrTracks.map(function(t) {
-      var playing = _state.previewAudioId === t.id;
-      return '<div class="hl-asmr-item">' +
-        '<div class="hl-asmr-item-info"><b>' + esc(t.name) + '</b><small>' + formatDuration(t.durationSec) + ' · ' + formatBytes(t.size) + '</small></div>' +
+    stopPreviewAudio();
+    var res = await resolverFn();
+    if (!res || !res.ok || !res.url) {
+      if (res && res.reason === 'missing_binary') showToast('该本地音频文件缺失，请重新导入');
+      else if (res && res.reason === 'offline_uncached') showToast('当前离线且未下载缓存，无法试听');
+      else showToast('音频读取失败');
+      return;
+    }
+    if (typeof Audio === 'undefined') return;
+    _state.previewAudioId = id;
+    _previewAudioEl = new Audio(res.url);
+    _previewAudioEl.volume = Math.max(0, Math.min(1, Number((_state.settings && _state.settings.ambient) || 65) / 100));
+    _previewAudioEl.onended = function() {
+      stopPreviewAudio();
+      refreshAsmrLibraryUi();
+    };
+    _previewAudioEl.onerror = function() {
+      stopPreviewAudio();
+      showToast('无法播放该音频，请检查文件完整性或网络');
+      refreshAsmrLibraryUi();
+    };
+    _previewAudioEl.play().catch(function() {
+      stopPreviewAudio();
+      showToast('无法播放该音频');
+      refreshAsmrLibraryUi();
+    });
+    await refreshAsmrLibraryUi();
+  }
+
+  function renderCloudCatalogUi() {
+    var cloudListEl = $('#hl-cloud-catalog-list');
+    var urlEl = $('#hl-cloud-manifest-url');
+    if (urlEl && _state.cloudManifestUrl && !urlEl.value) {
+      urlEl.value = _state.cloudManifestUrl;
+    }
+    if (!cloudListEl) return;
+    var items = _state.cloudCatalog || [];
+    if (!items.length) {
+      cloudListEl.innerHTML = '<div class="hl-help">未配置云端音频清单（可选功能）；如需使用，请填入您的 HTTPS 清单 JSON 地址后同步。</div>';
+      return;
+    }
+    cloudListEl.innerHTML = items.map(function(item) {
+      var playing = _state.previewAudioId === item.id;
+      var caching = Boolean(_state.cloudCachingIds[item.id]);
+      var statusLabel = item.cachedLocally
+        ? '云端·已缓存'
+        : item.cacheMissing
+          ? '云端·缓存文件缺失'
+          : '云端在线';
+      var metaLine = statusLabel + ' · ' + item.category +
+        (item.durationSec ? (' · ' + formatDuration(item.durationSec)) : '') +
+        (item.size ? (' · ' + formatBytes(item.size)) : '');
+      var playlistLabel = item.inPlaylist ? '✓ 已在播放列表' : '+ 加入播放列表';
+      var cacheBtn = caching
+        ? '<button type="button" data-cloud-abort="' + esc(item.id) + '">取消下载</button>'
+        : item.cachedLocally
+          ? '<button type="button" data-cloud-uncache="' + esc(item.id) + '">删除缓存</button>'
+          : '<button type="button" data-cloud-cache="' + esc(item.id) + '">缓存离线</button>';
+
+      return '<div class="hl-asmr-item' + (item.cacheMissing ? ' is-missing' : '') + '">' +
+        '<div class="hl-asmr-item-info"><b>' + esc(item.name) + '</b><small>' + esc(metaLine) + '</small></div>' +
         '<div class="hl-asmr-item-actions">' +
-          '<button type="button" data-asmr-preview="' + esc(t.id) + '">' + (playing ? '⏹ 停止' : '▶ 试听') + '</button>' +
-          '<button type="button" data-asmr-rename="' + esc(t.id) + '">改名</button>' +
-          '<button type="button" data-asmr-del="' + esc(t.id) + '">删除</button>' +
+          '<button type="button" data-cloud-preview="' + esc(item.id) + '">' + (playing ? '⏹ 停止' : '▶ 试听') + '</button>' +
+          '<button type="button" data-cloud-playlist="' + esc(item.id) + '">' + playlistLabel + '</button>' +
+          cacheBtn +
         '</div>' +
       '</div>';
     }).join('');
 
-    $$('[data-asmr-preview]').forEach(function(btn) {
-      btn.onclick = async function() {
-        var tid = btn.dataset.asmrPreview;
-        if (_state.previewAudioId === tid) {
-          stopPreviewAudio();
-          refreshAsmrLibraryUi();
-          return;
-        }
-        stopPreviewAudio();
-        var url = await storage().getAsmrTrackPlayUrl(tid);
-        if (!url) {
-          showToast('音频读取失败');
-          return;
-        }
-        _state.previewAudioId = tid;
-        _previewAudioEl = new Audio(url);
-        _previewAudioEl.volume = Math.max(0, Math.min(1, Number((_state.settings && _state.settings.ambient) || 65) / 100));
-        _previewAudioEl.onended = function() {
-          stopPreviewAudio();
-          refreshAsmrLibraryUi();
-        };
-        _previewAudioEl.play().catch(function() {
-          stopPreviewAudio();
-          showToast('无法播放该音频');
-        });
-        refreshAsmrLibraryUi();
+    $$('[data-cloud-preview]').forEach(function(btn) {
+      btn.onclick = function() {
+        var cid = btn.dataset.cloudPreview;
+        var entry = (_state.cloudCatalog || []).find(function(x) { return x.id === cid; });
+        if (!entry) return;
+        startPreviewPlayback(cid, function() { return storage().resolveAudioTrackPlaySource(entry); });
       };
     });
-    $$('[data-asmr-rename]').forEach(function(btn) {
+
+    $$('[data-cloud-playlist]').forEach(function(btn) {
       btn.onclick = async function() {
-        var tid = btn.dataset.asmrRename;
-        var cur = _state.asmrTracks.find(function(x) { return x.id === tid; });
-        var nextName = typeof global.prompt === 'function' ? global.prompt('输入新的音轨名称：', (cur && cur.name) || '') : '';
-        if (!nextName || !nextName.trim()) return;
+        var cid = btn.dataset.cloudPlaylist;
+        var updated = await storage().toggleCloudTrackPlaylist(cid);
+        await refreshAsmrLibraryUi();
+        updatePlannerPreview();
+        if (updated) {
+          showToast(updated.inPlaylist ? ('已将「' + updated.name + '」加入播放列表') : ('已从播放列表移除「' + updated.name + '」'));
+        }
+      };
+    });
+
+    $$('[data-cloud-cache]').forEach(function(btn) {
+      btn.onclick = async function() {
+        var cid = btn.dataset.cloudCache;
+        var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : { signal: { aborted: false }, abort() { this.signal.aborted = true; } };
+        _cloudAbortMap[cid] = ctrl;
+        _state.cloudCachingIds[cid] = true;
+        renderCloudCatalogUi();
+        var stEl = $('#hl-cloud-status');
         try {
-          await storage().renameAsmrTrack(tid, nextName);
-          showToast('音轨名称已更新');
-          refreshAsmrLibraryUi();
+          var cached = await storage().cacheCloudAudioTrack(cid, {
+            signal: ctrl.signal,
+            onProgress: function(p) {
+              if (stEl) stEl.textContent = '正在下载缓存：' + Math.round(Number(p && p.percent) || 0) + '%';
+            }
+          });
+          if (stEl) stEl.textContent = '已缓存离线音频：「' + cached.name + '」';
+          showToast('已下载离线缓存：' + cached.name);
         } catch (err) {
-          showToast(err.message || '重命名失败');
+          if (err && err.name === 'AbortError') {
+            if (stEl) stEl.textContent = '已取消下载并清理半成品缓存';
+            showToast('已取消下载缓存');
+          } else {
+            if (stEl) stEl.textContent = (err && err.message) || '下载缓存失败';
+            showToast((err && err.message) || '下载缓存失败');
+          }
+        } finally {
+          delete _cloudAbortMap[cid];
+          delete _state.cloudCachingIds[cid];
+          await refreshAsmrLibraryUi();
+          updatePlannerPreview();
         }
       };
     });
-    $$('[data-asmr-del]').forEach(function(btn) {
+
+    $$('[data-cloud-abort]').forEach(function(btn) {
+      btn.onclick = function() {
+        var cid = btn.dataset.cloudAbort;
+        if (_cloudAbortMap[cid]) {
+          try { _cloudAbortMap[cid].abort(); } catch (_) {}
+        }
+      };
+    });
+
+    $$('[data-cloud-uncache]').forEach(function(btn) {
       btn.onclick = async function() {
-        var tid = btn.dataset.asmrDel;
-        if (_state.previewAudioId === tid) stopPreviewAudio();
-        await storage().deleteAsmrTrack(tid);
-        if (_state.settings && _state.settings.asmrSelectedTrackId === tid) {
-          _state.settings.asmrSelectedTrackId = '';
-          await storage().saveSettings(_state.settings);
-        }
-        showToast('已删除该音轨');
-        refreshAsmrLibraryUi();
+        var cid = btn.dataset.cloudUncache;
+        if (_state.previewAudioId === cid) stopPreviewAudio();
+        var res = await storage().uncacheCloudAudioTrack(cid);
+        await refreshAsmrLibraryUi();
+        updatePlannerPreview();
+        if (res) showToast('已清理离线缓存（保留云端条目）：' + res.name);
       };
     });
+  }
+
+  async function refreshAsmrLibraryUi() {
+    _state.asmrTracks = typeof storage().listAsmrTracksWithStatus === 'function'
+      ? await storage().listAsmrTracksWithStatus()
+      : await storage().listAsmrTracks();
+    _state.cloudCatalog = typeof storage().listCloudCatalog === 'function'
+      ? await storage().listCloudCatalog()
+      : [];
+    _state.cloudManifestUrl = typeof storage().getCloudManifestUrl === 'function'
+      ? await storage().getCloudManifestUrl()
+      : '';
+
+    var stats = typeof storage().getAudioStorageStats === 'function'
+      ? await storage().getAudioStorageStats()
+      : null;
+
+    var listEl = $('#hl-asmr-library-list');
+    var selEl = $('#hl-asmr-default-track');
+    var countEl = $('#hl-asmr-quota');
+    var missingEl = $('#hl-asmr-missing-warning');
+
+    if (countEl) {
+      if (stats) {
+        var quotaStr = (stats.quota && stats.quota.supported && stats.quota.availableBytes != null)
+          ? ('设备可配额剩余约 ' + formatBytes(stats.quota.availableBytes))
+          : '浏览器未上报实时配额（由真实写入校验）';
+        countEl.textContent = '本地 ' + stats.localCount + ' 首（' + formatBytes(stats.localBytes) + '）· 云端缓存 ' + stats.cloudCachedCount + ' 首（' + formatBytes(stats.cloudCacheBytes) + '）· 存储：' + stats.backendPreferred + ' · ' + quotaStr;
+      } else {
+        var totalBytes = _state.asmrTracks.reduce(function(s, t) { return s + (Number(t.size) || 0); }, 0);
+        countEl.textContent = '已导入 ' + _state.asmrTracks.length + ' 首音轨 · 占用 ' + formatBytes(totalBytes);
+      }
+    }
+
+    if (missingEl) {
+      var missCount = stats ? stats.missingLocalCount : _state.asmrTracks.filter(function(t) { return t.missingBinary; }).length;
+      missingEl.hidden = missCount === 0;
+      if (missCount > 0) {
+        missingEl.textContent = '⚠ 检测到 ' + missCount + ' 首本地音频仅保留元数据而缺少真实音频文件（可能源自跨设备恢复或清理缓存），播放时会自动跳过；重新导入同名同大小音频即可自动无损修复。';
+      }
+    }
+
+    renderImportProgressUi();
+
+    var allSelectable = _state.asmrTracks.concat(_state.cloudCatalog.filter(function(c) { return c.inPlaylist; }));
+    if (selEl) {
+      selEl.innerHTML = '<option value="">跟随播放顺序自动选择</option>' +
+        allSelectable.map(function(t) {
+          var prefix = t.sourceType === 'cloud'
+            ? (t.cachedLocally ? '[云端·已缓存] ' : '[云端] ')
+            : (t.missingBinary ? '[缺失·需重导] ' : '[本地] ');
+          return '<option value="' + esc(t.id) + '"' + (t.missingBinary ? ' disabled' : '') + '>' + esc(prefix + t.name) + '</option>';
+        }).join('');
+      selEl.value = (_state.settings && _state.settings.asmrSelectedTrackId) || '';
+    }
+
+    if (listEl) {
+      if (!_state.asmrTracks.length) {
+        listEl.innerHTML = '<div class="hl-help">尚未导入任何本地音频文件，点击上方按钮添加 MP3 / WAV / M4A / OGG / FLAC（不设硬编码体积上限，随设备空间而定）。</div>';
+      } else {
+        listEl.innerHTML = _state.asmrTracks.map(function(t) {
+          var playing = _state.previewAudioId === t.id;
+          var metaText = t.missingBinary
+            ? ('本地 · 文件缺失·请重新导入 · ' + formatBytes(t.size))
+            : ('本地' + (t.storageBackend === 'opfs' ? ' OPFS' : ' IDB') + ' · ' + formatDuration(t.durationSec) + ' · ' + formatBytes(t.size));
+          return '<div class="hl-asmr-item' + (t.missingBinary ? ' is-missing' : '') + '">' +
+            '<div class="hl-asmr-item-info"><b>' + esc(t.name) + '</b><small>' + esc(metaText) + '</small></div>' +
+            '<div class="hl-asmr-item-actions">' +
+              '<button type="button" data-asmr-preview="' + esc(t.id) + '">' + (t.missingBinary ? '缺失' : (playing ? '⏹ 停止' : '▶ 试听')) + '</button>' +
+              '<button type="button" data-asmr-rename="' + esc(t.id) + '">改名</button>' +
+              '<button type="button" data-asmr-del="' + esc(t.id) + '">删除</button>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+
+        $$('[data-asmr-preview]').forEach(function(btn) {
+          btn.onclick = function() {
+            var tid = btn.dataset.asmrPreview;
+            var track = _state.asmrTracks.find(function(x) { return x.id === tid; });
+            if (!track) return;
+            startPreviewPlayback(tid, function() { return storage().resolveAudioTrackPlaySource(track); });
+          };
+        });
+        $$('[data-asmr-rename]').forEach(function(btn) {
+          btn.onclick = async function() {
+            var tid = btn.dataset.asmrRename;
+            var cur = _state.asmrTracks.find(function(x) { return x.id === tid; });
+            var nextName = typeof global.prompt === 'function' ? global.prompt('输入新的音轨名称：', (cur && cur.name) || '') : '';
+            if (!nextName || !nextName.trim()) return;
+            try {
+              await storage().renameAsmrTrack(tid, nextName);
+              showToast('音轨名称已更新');
+              refreshAsmrLibraryUi();
+              updatePlannerPreview();
+            } catch (err) {
+              showToast(err.message || '重命名失败');
+            }
+          };
+        });
+        $$('[data-asmr-del]').forEach(function(btn) {
+          btn.onclick = async function() {
+            var tid = btn.dataset.asmrDel;
+            if (_state.previewAudioId === tid) stopPreviewAudio();
+            await storage().deleteAsmrTrack(tid);
+            if (_state.settings && _state.settings.asmrSelectedTrackId === tid) {
+              _state.settings.asmrSelectedTrackId = '';
+              await storage().saveSettings(_state.settings);
+            }
+            showToast('已删除该音轨');
+            refreshAsmrLibraryUi();
+            updatePlannerPreview();
+          };
+        });
+      }
+    }
+
+    renderCloudCatalogUi();
   }
 
   async function refreshSettingsView() {
@@ -1966,6 +3473,7 @@
     bindVal('hl-thinking', s.thinking, false);
     bindVal('hl-context', s.context, true);
     bindVal('hl-sim', s.sim, true);
+    bindVal('hl-save-sim-log', s.saveSimAudienceInLog, true);
     bindVal('hl-save-prompt', s.savePrompt, true);
 
     var vvLbl = $('#hl-voice-vol-label');
@@ -1995,14 +3503,14 @@
             '</button>' +
           '</div></div>' +
           '<div class="hl-home-content">' +
-            '<div class="hl-featured"><b>一键进入直播间<br>和喜欢的 Char 见面</b><p>已接入真实 Char 档案、世界书、Minimax 语音与共享金币。</p><button type="button" class="hl-pinkbtn" id="hl-private-start">♡ 开始私人连线</button></div>' +
             '<div class="hl-subhead"><b>✨ 选择 Char</b><span>当前同伴切换</span></div>' +
             '<div class="hl-char-picker-row" id="hl-char-picker"></div>' +
             '<div class="hl-subhead"><b>🔴 正在直播</b><span>点击卡片策划开播</span></div>' +
             '<div class="hl-broadcasts" id="hl-broadcasts"></div>' +
-            '<div class="hl-subhead"><b>✨ 我要开播</b><span>直接开播 · 可选邀 Char</span></div>' +
-            '<div class="hl-create"><div class="hl-ico">🎤</div><div><b>我的心动直播间</b><p>点击直接进入个人直播，播中可随时邀请 Char</p></div><button type="button" class="hl-pinkbtn" id="hl-go-live">开播</button></div>' +
+            '<div class="hl-subhead"><b>✨ 我要开播</b><span>直接开播 · 可选邀 Char / NPC</span></div>' +
+            '<div class="hl-create"><div class="hl-ico">🎤</div><div><b>我的心动直播间</b><p>点击直接进入个人直播，播中可邀多人陪伴</p></div><button type="button" class="hl-pinkbtn" id="hl-go-live">开播</button></div>' +
             '<div class="hl-subhead"><b>💗 双人连线</b><span>仅你和 Char</span></div>' +
+            '<div class="hl-featured"><b>一键进入私人连线<br>和喜欢的 Char 见面</b><p>已接入真实 Char 档案、世界书、Minimax 语音与共享金币。</p><button type="button" class="hl-pinkbtn" id="hl-private-start">♡ 开始私人连线</button></div>' +
             '<div class="hl-create"><div class="hl-ico">💞</div><div><b>私人双人直播</b><p>闲聊 · ASMR · 睡前电台 · 云陪伴</p></div><button type="button" class="hl-pinkbtn" id="hl-private-start2">连线</button></div>' +
           '</div>' +
         '</section>' +
@@ -2020,7 +3528,7 @@
                 '<button type="button" class="hl-invite-pill" id="hl-invite-btn" style="display:none">+ 邀请</button>' +
                 '<button type="button" class="hl-top-pill" id="hl-connect-btn" title="连麦或视频">🎙 连麦</button>' +
                 '<button type="button" class="hl-top-pill" id="hl-callModeToggle" title="切换全屏或煲电话模式">📞 通话</button>' +
-                '<button type="button" class="hl-top-pill" id="hl-quick-program-switch" title="切换节目">☷ 切换</button>' +
+                '<button type="button" class="hl-top-pill" id="hl-minimize-btn" title="缩小为应用内悬浮小窗" aria-label="缩小直播">↙ 缩小</button>' +
                 '<span class="hl-audience" id="hl-audience">👁 模拟 1.2k</span>' +
                 '<button type="button" class="hl-close-room" id="hl-exit-room" aria-label="退出直播间">×</button>' +
               '</div>' +
@@ -2049,7 +3557,10 @@
 
             '<div class="hl-roomfooter">' +
               '<div class="hl-footer-upper">' +
-                '<div class="hl-messages" id="hl-messages" aria-live="polite"></div>' +
+                '<div class="hl-messages-wrap" id="hl-messages-wrap">' +
+                  '<div class="hl-messages" id="hl-messages" aria-live="polite"></div>' +
+                  '<button type="button" class="hl-latest-msg-btn" id="hl-latest-msg-btn" hidden aria-label="回到底部查看最新消息">↓ 最新消息</button>' +
+                '</div>' +
                 '<div class="hl-sideactions">' +
                   '<button type="button" id="hl-like" aria-label="点赞">♡</button><small id="hl-like-count">点赞</small>' +
                   '<button type="button" id="hl-gift" aria-label="送礼">🎁</button><small>礼物</small>' +
@@ -2075,7 +3586,14 @@
               '<div class="hl-composer">' +
                 '<input id="hl-message-input" maxlength="160" placeholder="发一条弹幕…" aria-label="弹幕输入">' +
                 '<button type="button" class="hl-roundbtn" id="hl-send" aria-label="发送弹幕">➤</button>' +
-                '<button type="button" class="hl-roundbtn" id="hl-quick-heart" aria-label="点赞">♡</button>' +
+                '<button type="button" class="hl-roundbtn hl-composer-program-btn" id="hl-quick-program-switch" title="切换节目" aria-label="切换节目">' +
+                  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+                    '<rect x="3" y="4" width="7.5" height="7.5" rx="1.6"/>' +
+                    '<rect x="13.5" y="4" width="7.5" height="7.5" rx="1.6"/>' +
+                    '<rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/>' +
+                    '<rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/>' +
+                  '</svg>' +
+                '</button>' +
                 '<button type="button" class="hl-roundbtn" id="hl-quick-gift" aria-label="礼物">🎁</button>' +
               '</div>' +
             '</div>' +
@@ -2089,6 +3607,21 @@
             '<button type="button" class="hl-ghost" id="hl-back-from-diary">返回大厅</button>' +
           '</div></div>' +
           '<div class="hl-diary" id="hl-diary-list"></div>' +
+        '</section>' +
+
+        // 3.5 本场聊天记录回放
+        '<section class="hl-view" id="hl-view-replay" data-view="replay">' +
+          '<div class="hl-head"><div class="hl-hrow">' +
+            '<div><small>LIVE TRANSCRIPT</small><h1 id="hl-replay-title">本场聊天记录</h1><p id="hl-replay-meta">正在加载…</p></div>' +
+            '<button type="button" class="hl-ghost" id="hl-replay-back">返回手账</button>' +
+          '</div></div>' +
+          '<div class="hl-replay-wrap">' +
+            '<div class="hl-replay-filter" id="hl-replay-sim-wrap" style="display:none">' +
+              '<span>显示 [AI观众] 气氛弹幕</span>' +
+              '<input type="checkbox" id="hl-replay-sim-toggle" checked>' +
+            '</div>' +
+            '<div class="hl-replay-list" id="hl-replay-list"></div>' +
+          '</div>' +
         '</section>' +
 
         // 4. 直播设置
@@ -2156,15 +3689,27 @@
               '<div class="hl-custom-tools">' +
                 '<label for="hl-asmr-file">🎵 导入本地音频 (MP3/WAV/M4A/OGG/FLAC)<input type="file" id="hl-asmr-file" accept="audio/*" multiple></label>' +
               '</div>' +
-              '<p class="hl-help" id="hl-asmr-quota">正在加载本地音频库…</p>' +
+              '<div class="hl-asmr-progress-wrap" id="hl-asmr-import-progress" hidden>' +
+                '<div class="hl-asmr-progress-head"><span id="hl-asmr-progress-text">正在导入…</span><button type="button" class="hl-smallbtn" id="hl-asmr-cancel-import">取消导入</button></div>' +
+                '<div class="hl-asmr-progress-bar"><div class="hl-asmr-progress-fill" id="hl-asmr-progress-fill"></div></div>' +
+              '</div>' +
+              '<div class="hl-warning-box" id="hl-asmr-missing-warning" hidden></div>' +
+              '<p class="hl-help" id="hl-asmr-quota">正在读取本地存储配额…</p>' +
               '<div class="hl-asmr-list" id="hl-asmr-library-list"></div>' +
-              '<div class="hl-settingrow"><div><b>播放顺序</b></div><select id="hl-asmr-play-mode"><option value="loop">列表循环</option><option value="single">单曲循环</option><option value="random">随机播放</option></select></div>' +
+              '<div class="hl-cloud-subbox">' +
+                '<h3>☁ 可选云端音频素材（HTTPS 清单与离线缓存）</h3>' +
+                '<p class="hl-help">无内置云端地址或密钥；可填入您自己维护的 HTTPS 清单 JSON 链接（格式：[{ id, name, category, url, durationSec, size }]）。</p>' +
+                '<div class="hl-url-row"><input id="hl-cloud-manifest-url" type="url" placeholder="https://.../audio-manifest.json"><button type="button" id="hl-cloud-sync-btn">同步清单</button></div>' +
+                '<p class="hl-help" id="hl-cloud-status">云端音频条目按需在线试听或手动缓存，不会自动批量下载。</p>' +
+                '<div class="hl-asmr-list" id="hl-cloud-catalog-list"></div>' +
+              '</div>' +
+              '<div class="hl-settingrow"><div><b>播放顺序</b></div><select id="hl-asmr-play-mode"><option value="loop">列表循环</option><option value="sequence">顺序播放</option><option value="single">单曲循环</option><option value="random">随机播放</option></select></div>' +
               '<div class="hl-settingrow"><div><b>默认音轨</b></div><select id="hl-asmr-default-track"></select></div>' +
               '<div class="hl-settingrow"><div><b>环境音音量</b><small id="hl-ambient-label">65%</small></div><input type="range" id="hl-ambient" min="0" max="100"></div>' +
               '<div class="hl-settingrow"><div><b>语音时自动闪避降低环境音</b><small>防止人声与背景音打架</small></div><input type="checkbox" id="hl-duck"></div>' +
               '<div class="hl-settingrow"><div><b>默认 ASMR 定时</b></div><select id="hl-timer"><option value="off">手动停止</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select></div>' +
               '<div class="hl-settingrow"><div><b>定时到点动作</b></div><select id="hl-settings-end-action"><option value="stop_program">停止 ASMR 返回闲聊</option><option value="exit_room">自动结束本场直播</option></select></div>' +
-              '<div class="hl-settingrow"><div><b>整机备份包含 ASMR 音频文件</b><small>音频体积较大，默认仅备份清单以防移动端内存溢出</small></div><input type="checkbox" id="hl-backup-audio"></div>' +
+              '<div class="hl-settingrow"><div><b>整机 JSON 备份包含旧版小音频实体</b><small>常规备份默认仅保留音频元数据、播放清单与云端引用，不含大体积本地/云端缓存音频；跨设备恢复缺失时需重新导入或重新下载</small></div><input type="checkbox" id="hl-backup-audio"></div>' +
             '</div>' +
 
             '<h2>💕 互动与隐私</h2>' +
@@ -2173,6 +3718,7 @@
               '<div class="hl-settingrow"><div><b>游戏回应节奏</b></div><select id="hl-thinking"><option value="short">自然节奏</option><option value="immersive">沉浸思索</option><option value="fast">快速响应</option></select></div>' +
               '<div class="hl-settingrow"><div><b>联动真实经历上下文</b><small>只读参考长期记忆与万象镜经历，不篡改世界书</small></div><input type="checkbox" id="hl-context"></div>' +
               '<div class="hl-settingrow"><div><b>[AI观众] 气氛弹幕</b><small>明确标明 AI 观众，绝不冒充真人</small></div><input type="checkbox" id="hl-sim"></div>' +
+              '<div class="hl-settingrow"><div><b>手账记录保存 [AI观众] 弹幕</b><small>关闭后本场聊天记录仅保留你、Char、NPC、礼物与系统事件</small></div><input type="checkbox" id="hl-save-sim-log"></div>' +
               '<div class="hl-settingrow"><div><b>关播后手账与记忆提醒</b><small>仅由您主动确认后才写入长期记忆</small></div><input type="checkbox" id="hl-save-prompt"></div>' +
             '</div>' +
             '<button type="button" class="hl-ghost" id="hl-reset-settings" style="width:100%;margin-top:16px">恢复直播默认设置</button>' +
@@ -2227,6 +3773,10 @@
         '<div class="hl-planner" id="hl-connect-planner" data-modal="connect" role="dialog" aria-modal="true">' +
           '<div class="hl-planner-sheet">' +
             '<div class="hl-plan-head"><b>💗 直播连麦</b><button type="button" data-close-modal>×</button></div>' +
+            '<div id="hl-connect-target-wrap" style="display:none">' +
+              '<label class="hl-plan-label" for="hl-connect-target">选择上麦连麦嘉宾（受邀观众需点此才正式上麦）</label>' +
+              '<select class="hl-plan-select" id="hl-connect-target"></select>' +
+            '</div>' +
             '<label class="hl-plan-label" for="hl-connect-layout">连麦画面布局（直播中可随时无损切换）</label>' +
             '<select class="hl-plan-select" id="hl-connect-layout"><option value="floating">📺 主播大屏＋连麦小窗（经典版）</option><option value="split">👥 双人左右并列 PK（新版）</option></select>' +
             '<p class="hl-help">文字连麦无需麦克风；语音连麦支持授权本机麦克风、语音转写与 Minimax TTS；视频连麦默认以双方图片虚拟同框。</p>' +
@@ -2240,6 +3790,10 @@
           '<div class="hl-planner-sheet">' +
             '<div class="hl-plan-head"><b>🎁 送出心意礼物</b><button type="button" data-close-modal>×</button></div>' +
             '<p class="hl-help" id="hl-gift-balance">正在读取共享金币…</p>' +
+            '<div id="hl-gift-recipient-wrap" style="display:none;margin-bottom:8px">' +
+              '<label class="hl-plan-label" style="margin-top:4px" for="hl-gift-recipient">送给哪位嘉宾</label>' +
+              '<select class="hl-plan-select" id="hl-gift-recipient"></select>' +
+            '</div>' +
             '<div class="hl-gift-grid" id="hl-gift-grid"></div>' +
             '<p class="hl-help" id="hl-gift-tip"></p>' +
             '<div class="hl-plan-buttons"><button type="button" class="hl-pinkbtn" id="hl-gift-send-btn">送出礼物</button></div>' +
@@ -2260,11 +3814,19 @@
           '</div>' +
         '</div>' +
 
-        // 抽屉 5：User 开播邀请 Char
+        // 抽屉 5：User 开播多人邀请 (Char + NPC)
         '<div class="hl-planner" id="hl-userhost-planner" data-modal="userHost" role="dialog" aria-modal="true">' +
           '<div class="hl-planner-sheet">' +
-            '<div class="hl-plan-head"><b>🎤 选择要邀请来看你开播的 Char</b><button type="button" data-close-modal>×</button></div>' +
-            '<div class="hl-char-picker-row" id="hl-userhost-list" style="margin:14px 0;flex-wrap:wrap"></div>' +
+            '<div class="hl-plan-head"><b>🎤 邀请 Char / NPC 来直播间陪伴</b><button type="button" data-close-modal>×</button></div>' +
+            '<div class="hl-invite-selected-bar" id="hl-invite-selected-bar"></div>' +
+            '<input class="hl-plan-input hl-invite-search" id="hl-invite-search" maxlength="32" placeholder="搜索 Char 或 NPC 名称…">' +
+            '<div class="hl-invite-tabs">' +
+              '<button type="button" class="hl-invite-tab active" data-invite-filter="all">全部角色</button>' +
+              '<button type="button" class="hl-invite-tab" data-invite-filter="char">Char</button>' +
+              '<button type="button" class="hl-invite-tab" data-invite-filter="npc">NPC</button>' +
+            '</div>' +
+            '<div class="hl-char-picker-row" id="hl-userhost-list" style="margin:10px 0 12px;flex-wrap:wrap"></div>' +
+            '<div class="hl-plan-buttons"><button type="button" class="hl-pinkbtn" data-close-modal>完成邀请</button></div>' +
           '</div>' +
         '</div>' +
 
@@ -2275,6 +3837,7 @@
             '<div id="hl-summary-body"></div>' +
             '<div class="hl-plan-buttons">' +
               '<button type="button" class="hl-plainbtn" data-close-modal>先留在手账里</button>' +
+              '<button type="button" class="hl-plainbtn" id="hl-summary-replay">查看聊天记录</button>' +
               '<button type="button" class="hl-pinkbtn" id="hl-summary-remember">记住这场直播</button>' +
             '</div>' +
           '</div>' +
@@ -2284,13 +3847,17 @@
         '<div class="hl-planner" id="hl-memory-planner" data-modal="memory" role="dialog" aria-modal="true">' +
           '<div class="hl-planner-sheet">' +
             '<div class="hl-plan-head"><b>✨ 确认写入长期记忆</b><button type="button" data-close-modal>×</button></div>' +
+            '<div id="hl-mem-char-wrap" style="display:none">' +
+              '<label class="hl-plan-label" for="hl-mem-char-select">写入哪位 Char 的长期记忆</label>' +
+              '<select class="hl-plan-select" id="hl-mem-char-select"></select>' +
+            '</div>' +
             '<label class="hl-plan-label" for="hl-mem-title">记忆标题（最多 30 字）</label>' +
             '<input class="hl-plan-input" id="hl-mem-title" maxlength="30">' +
             '<label class="hl-plan-label" for="hl-mem-content">记忆摘要（最多 150 字）</label>' +
             '<textarea class="hl-plan-textarea" id="hl-mem-content" maxlength="150"></textarea>' +
             '<label class="hl-plan-label" for="hl-mem-keywords">关键词（逗号分隔）</label>' +
             '<input class="hl-plan-input" id="hl-mem-keywords" maxlength="60">' +
-            '<p class="hl-help">确认后才会存入 Char 的长期记忆库；您随时可在「记忆」App 中查看或删除。</p>' +
+            '<p class="hl-help">确认后才会存入 Char 的长期记忆库（绝不会写入 NPC）；您随时可在「记忆」App 中查看或删除。</p>' +
             '<div class="hl-plan-buttons">' +
               '<button type="button" class="hl-plainbtn" data-close-modal>取消</button>' +
               '<button type="button" class="hl-pinkbtn" id="hl-mem-confirm-btn">确认保存记忆</button>' +
@@ -2310,6 +3877,15 @@
     if (backSettings) backSettings.onclick = function() { switchView('home'); };
     var backDiary = $('#hl-back-from-diary');
     if (backDiary) backDiary.onclick = function() { switchView('home'); };
+    var replayBack = $('#hl-replay-back');
+    if (replayBack) replayBack.onclick = function() { switchView(_state.replayReturnView || 'diary'); };
+    var replaySimToggle = $('#hl-replay-sim-toggle');
+    if (replaySimToggle) {
+      replaySimToggle.onchange = function() {
+        _state.replayIncludeSim = Boolean(replaySimToggle.checked);
+        renderReplayChunk(true);
+      };
+    }
 
     $$('.hl-nav').forEach(function(btn) {
       btn.onclick = function() { switchView(btn.dataset.view); };
@@ -2364,22 +3940,7 @@
         var files = ev.target.files ? Array.from(ev.target.files) : [];
         ev.target.value = '';
         if (!files.length) return;
-        var lastAdded = null;
-        var lastErr = '';
-        for (var i = 0; i < files.length; i++) {
-          try {
-            lastAdded = await storage().addAsmrTrack(files[i]);
-          } catch (err) {
-            lastErr = err.message || '导入失败';
-          }
-        }
-        await refreshAsmrLibraryUi();
-        if (lastAdded && _state.settings) {
-          _state.settings = await storage().saveSettings(Object.assign({}, _state.settings, { asmrSelectedTrackId: lastAdded.id }));
-        }
-        updatePlannerPreview();
-        if (lastAdded) showToast('已导入并选中：' + lastAdded.name + ' ♡');
-        else if (lastErr) showToast(lastErr);
+        await runLocalAudioImportFiles(files, true);
       };
     }
     var planDefault = $('#hl-plan-default');
@@ -2462,6 +4023,28 @@
         openUserHostPicker();
       };
     }
+    var minBtn = $('#hl-minimize-btn');
+    if (minBtn) {
+      minBtn.onclick = function() {
+        minimizeLiveRoom();
+      };
+    }
+    var inviteSearch = $('#hl-invite-search');
+    if (inviteSearch) {
+      inviteSearch.oninput = function() {
+        _state.inviteSearchQuery = inviteSearch.value || '';
+        renderUserHostModalBody();
+      };
+    }
+    $$('[data-invite-filter]').forEach(function(tab) {
+      tab.onclick = function() {
+        _state.inviteFilterType = tab.dataset.inviteFilter || 'all';
+        $$('[data-invite-filter]').forEach(function(t) {
+          t.classList.toggle('active', t === tab);
+        });
+        renderUserHostModalBody();
+      };
+    });
 
     var followBtn = $('#hl-follow');
     if (followBtn) {
@@ -2471,6 +4054,35 @@
         _state.followedChars[String(_state.room.charObj.id)] = followed;
         renderRoomIdentityChrome();
         showToast(followed ? '已关注 ' + _state.room.charObj.name : '已取消关注');
+      };
+    }
+
+    // 弹幕流独立滑动与「↓ 最新消息」提示交互
+    var msgsBox = $('#hl-messages');
+    var latestBtn = $('#hl-latest-msg-btn');
+    if (msgsBox) {
+      msgsBox.addEventListener('scroll', function() {
+        var atBottom = isMessagesAtBottom(msgsBox);
+        if (atBottom) {
+          _state.messagesAutoFollow = true;
+          _state.unreadWhileScrolled = 0;
+        } else {
+          _state.messagesAutoFollow = false;
+        }
+        syncLatestMsgButton();
+      });
+      var markUserScrollIntent = function() {
+        if (!isMessagesAtBottom(msgsBox)) {
+          _state.messagesAutoFollow = false;
+          syncLatestMsgButton();
+        }
+      };
+      msgsBox.addEventListener('touchstart', markUserScrollIntent, { passive: true });
+      msgsBox.addEventListener('wheel', markUserScrollIntent, { passive: true });
+    }
+    if (latestBtn) {
+      latestBtn.onclick = function() {
+        scrollMessagesToBottom();
       };
     }
 
@@ -2484,9 +4096,7 @@
       };
     }
     var like1 = $('#hl-like');
-    var like2 = $('#hl-quick-heart');
     if (like1) like1.onclick = handleHeartClick;
-    if (like2) like2.onclick = handleHeartClick;
     var gift1 = $('#hl-gift');
     var gift2 = $('#hl-quick-gift');
     if (gift1) gift1.onclick = openGiftDrawer;
@@ -2515,9 +4125,7 @@
     // 连麦面板与操作
     var connectBtn = $('#hl-connect-btn');
     if (connectBtn) {
-      connectBtn.onclick = function() {
-        if (ensureCharBeforeConnect()) openModal('connect');
-      };
+      connectBtn.onclick = openConnectModal;
     }
     var textConnBtn = $('#hl-text-connect');
     var voiceConnBtn = $('#hl-voice-connect');
@@ -2788,26 +4396,57 @@
       };
     }
 
-    // ASMR 本地音频导入
+    // ASMR 本地大音频导入、取消导入与云端清单同步
     var asmrFile = $('#hl-asmr-file');
     if (asmrFile) {
       asmrFile.onchange = async function(ev) {
         var files = ev.target.files ? Array.from(ev.target.files) : [];
         ev.target.value = '';
         if (!files.length) return;
-        var okCount = 0;
-        var lastErr = '';
-        for (var i = 0; i < files.length; i++) {
-          try {
-            await storage().addAsmrTrack(files[i]);
-            okCount++;
-          } catch (err) {
-            lastErr = err.message || '导入失败';
-          }
+        await runLocalAudioImportFiles(files, false);
+      };
+    }
+    var cancelImportBtn = $('#hl-asmr-cancel-import');
+    if (cancelImportBtn) {
+      cancelImportBtn.onclick = function() {
+        if (_importAbortCtrl) {
+          try { _importAbortCtrl.abort(); } catch (_) {}
         }
-        await refreshAsmrLibraryUi();
-        if (okCount > 0) showToast('已导入 ' + okCount + ' 首本地 ASMR 音频 ♡');
-        else if (lastErr) showToast(lastErr);
+      };
+    }
+    var cloudSyncBtn = $('#hl-cloud-sync-btn');
+    if (cloudSyncBtn) {
+      cloudSyncBtn.onclick = async function() {
+        var urlInp = $('#hl-cloud-manifest-url');
+        var statusEl = $('#hl-cloud-status');
+        var rawUrl = ((urlInp && urlInp.value) || '').trim();
+        if (!rawUrl) {
+          await storage().setCloudManifestUrl('');
+          await storage().saveCloudCatalog([]);
+          _state.cloudManifestUrl = '';
+          _state.cloudCatalog = [];
+          await refreshAsmrLibraryUi();
+          updatePlannerPreview();
+          if (statusEl) statusEl.textContent = '已清空云端清单地址（已缓存条目已从清单移除）。';
+          showToast('已清空云端音频清单');
+          return;
+        }
+        cloudSyncBtn.disabled = true;
+        if (statusEl) statusEl.textContent = '正在请求云端 HTTPS 清单…';
+        try {
+          var items = await storage().fetchCloudManifest(rawUrl);
+          _state.cloudManifestUrl = rawUrl;
+          _state.cloudCatalog = items;
+          await refreshAsmrLibraryUi();
+          updatePlannerPreview();
+          if (statusEl) statusEl.textContent = '同步成功：共发现 ' + items.length + ' 首可选云端音频';
+          showToast('云端清单已同步（' + items.length + ' 首）♡');
+        } catch (err) {
+          if (statusEl) statusEl.textContent = (err && err.message) || '云端清单同步失败';
+          showToast((err && err.message) || '同步失败');
+        } finally {
+          cloudSyncBtn.disabled = false;
+        }
       };
     }
 
@@ -2854,6 +4493,7 @@
     bindControl('hl-thinking', 'thinking', false);
     bindControl('hl-context', 'context', true);
     bindControl('hl-sim', 'sim', true);
+    bindControl('hl-save-sim-log', 'saveSimAudienceInLog', true);
     bindControl('hl-save-prompt', 'savePrompt', true);
 
     var resetBtn = $('#hl-reset-settings');
@@ -2876,6 +4516,7 @@
     _state.visHandler = function() {
       if (global.document && global.document.visibilityState === 'visible') {
         checkAsmrTimer();
+        updateMiniWindowChrome();
       }
     };
     _state.pageHideHandler = function() {
@@ -2902,6 +4543,9 @@
         }
         if (roomEl) roomEl.classList.toggle('hl-kb-open', kbLikely);
       }
+      if (_state.minimized && _state.miniEl && _state.miniPos) {
+        clampMiniPosition(_state.miniEl, _state.miniPos.left, _state.miniPos.top);
+      }
       var ae = global.document && global.document.activeElement;
       if (ae && _state.pageEl && _state.pageEl.contains(ae) && typeof ae.scrollIntoView === 'function') {
         setTimeout(function() {
@@ -2926,8 +4570,14 @@
         _state.pushedHistory = true;
         _state.popHandler = function() {
           if (!_state.pageEl) return;
+          if (_state.minimized) return;
           if (_state.openModal) {
             closeModal();
+            try { global.history.pushState({ heartbeatLive: true }, ''); } catch (_) {}
+            return;
+          }
+          if (_state.activeView === 'replay') {
+            switchView(_state.replayReturnView || 'diary');
             try { global.history.pushState({ heartbeatLive: true }, ''); } catch (_) {}
             return;
           }
@@ -2974,17 +4624,38 @@
 
   async function open(opts) {
     opts = opts || {};
+    // 若当前存在应用内悬浮小窗缩小的活跃直播间，点击图标直接无损恢复而不重开或中断
+    if (_state.room && _state.pageEl && _state.minimized) {
+      restoreFromMiniWindow();
+      return _state.pageEl;
+    }
+
+    if (_state.miniEl && typeof _state.miniEl._cleanupDrag === 'function') {
+      try { _state.miniEl._cleanupDrag(); } catch (_) {}
+    }
+    removeMiniWindow();
     var existing = global.document && global.document.getElementById(PAGE_ID);
     if (existing) existing.remove();
     cleanupAllMedia();
 
     _state.chars = await aiMod().loadAvailableChars();
+    _state.invitees = typeof aiMod().loadAvailableInvitees === 'function'
+      ? await aiMod().loadAvailableInvitees()
+      : _state.chars.slice();
     _state.user = await aiMod().loadCurrentUserProfile();
     _state.settings = await storage().loadSettings();
     _state.portraitOptions = await storage().loadPortraitOptions();
     _state.followedChars = await storage().loadFollowedChars();
     _state.charVoices = await storage().loadCharVoices();
-    _state.asmrTracks = await storage().listAsmrTracks();
+    _state.asmrTracks = typeof storage().listAsmrTracksWithStatus === 'function'
+      ? await storage().listAsmrTracksWithStatus()
+      : await storage().listAsmrTracks();
+    _state.cloudCatalog = typeof storage().listCloudCatalog === 'function'
+      ? await storage().listCloudCatalog()
+      : [];
+    _state.cloudManifestUrl = typeof storage().getCloudManifestUrl === 'function'
+      ? await storage().getCloudManifestUrl()
+      : '';
     _state.journals = await storage().loadJournals();
     _state.room = null;
     _state.connectionType = '';
@@ -3018,6 +4689,11 @@
   function close(fromPopstate) {
     _state.sessionSeq++;
     _state.aiRequestSeq++;
+    clearAiQueue();
+    if (_state.miniEl && typeof _state.miniEl._cleanupDrag === 'function') {
+      try { _state.miniEl._cleanupDrag(); } catch (_) {}
+    }
+    removeMiniWindow();
     cleanupAllMedia();
     storage().revokeAllObjectUrls();
     unbindNavigationGuards();
@@ -3032,6 +4708,7 @@
       try { global.history.back(); } catch (_) {}
     }
     if (p) {
+      p.style.zIndex = '';
       if (typeof global.closePage === 'function') {
         global.closePage(PAGE_ID);
       } else {
@@ -3048,9 +4725,16 @@
     startLiveRoom: startLiveRoom,
     applyProgramToRoom: applyProgramToRoom,
     startConnection: startConnection,
+    openConnectModal: openConnectModal,
     disconnectCall: disconnectCall,
     applyConnectionLayout: applyConnectionLayout,
     checkAsmrTimer: checkAsmrTimer,
+    minimizeLiveRoom: minimizeLiveRoom,
+    restoreFromMiniWindow: restoreFromMiniWindow,
+    removeMiniWindow: removeMiniWindow,
+    inviteCharToUserRoom: inviteCharToUserRoom,
+    removeViewerFromUserRoom: removeViewerFromUserRoom,
+    openReplayView: openReplayView,
     getState: function() { return _state; }
   };
 

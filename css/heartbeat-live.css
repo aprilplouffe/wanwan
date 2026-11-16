@@ -26,6 +26,10 @@
   font-family: var(--font, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif);
 }
 
+#heartbeat-live-page.hl-is-minimized {
+  display: none !important;
+}
+
 #heartbeat-live-page *,
 #heartbeat-live-page *::before,
 #heartbeat-live-page *::after {
@@ -848,24 +852,63 @@
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
-.hl-messages {
+.hl-messages-wrap {
+  position: relative;
   flex: 1;
   min-width: 0;
-  max-height: clamp(72px, 19dvh, 146px);
-  overflow-y: auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+}
+
+.hl-messages {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: clamp(104px, 23dvh, 184px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
   scrollbar-width: none;
 }
 
+.hl-messages > :first-child {
+  margin-top: auto;
+}
+
 .hl-room.hl-has-connection .hl-messages {
-  max-height: clamp(54px, 14dvh, 106px);
+  max-height: clamp(64px, 15dvh, 120px);
 }
 
 .hl-messages::-webkit-scrollbar {
   display: none;
+}
+
+.hl-latest-msg-btn {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 4;
+  border: 1px solid rgba(255, 224, 240, 0.72);
+  border-radius: 999px;
+  background: rgba(54, 34, 68, 0.92);
+  color: #ffe3f1;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 11px;
+  min-height: 30px;
+  box-shadow: 0 4px 12px rgba(18, 10, 28, 0.42);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hl-latest-msg-btn[hidden] {
+  display: none !important;
 }
 
 .hl-line {
@@ -884,6 +927,16 @@
 .hl-line.role-char {
   background: rgba(242, 139, 182, 0.24);
   border: 1px solid rgba(255, 208, 229, 0.28);
+}
+
+.hl-line.role-npc {
+  background: rgba(162, 146, 232, 0.28);
+  border: 1px solid rgba(214, 203, 255, 0.34);
+}
+
+.hl-line.role-gift {
+  background: rgba(247, 178, 122, 0.26);
+  border: 1px solid rgba(255, 222, 180, 0.36);
 }
 
 .hl-line.role-user_cohost {
@@ -950,16 +1003,33 @@
 }
 
 .hl-roundbtn {
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   border: 0;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.24);
   color: #ffffff;
   font-size: 17px;
   flex-shrink: 0;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hl-composer-program-btn {
+  background: rgba(45, 31, 61, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.36);
+}
+
+.hl-composer-program-btn svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+  pointer-events: none;
 }
 
 /* ===== 连麦双布局 (经典小窗 & 双人并列PK，纯流式中间件防重叠) ===== */
@@ -1432,6 +1502,11 @@
   border-radius: 12px;
 }
 
+.hl-asmr-item.is-missing {
+  background: #fff4f6;
+  border-color: #f3c6d1;
+}
+
 .hl-asmr-item-info {
   min-width: 0;
   flex: 1;
@@ -1447,11 +1522,19 @@
 
 .hl-asmr-item-info small {
   font-size: 10px;
-  color: #9e8fa4;
+  color: #84728a;
+  display: block;
+  margin-top: 2px;
+}
+
+.hl-asmr-item.is-missing .hl-asmr-item-info small {
+  color: #b4425f;
 }
 
 .hl-asmr-item-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 5px;
   flex-shrink: 0;
 }
@@ -1459,10 +1542,66 @@
 .hl-asmr-item-actions button {
   border: 1px solid #ebd7e6;
   background: #ffffff;
-  color: #84627e;
+  color: #7d5b77;
   border-radius: 8px;
   padding: 5px 8px;
   font-size: 11px;
+}
+
+.hl-asmr-progress-wrap {
+  margin: 8px 0;
+  padding: 9px 11px;
+  border-radius: 12px;
+  background: #fff3f8;
+  border: 1px solid #f2d9e7;
+}
+
+.hl-asmr-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: #734f6e;
+  margin-bottom: 6px;
+}
+
+.hl-asmr-progress-bar {
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  background: #f0dfea;
+  overflow: hidden;
+}
+
+.hl-asmr-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #f28bb6, #c8a9e6);
+  transition: width 0.16s ease;
+}
+
+.hl-warning-box {
+  margin: 8px 0;
+  padding: 8px 11px;
+  border-radius: 11px;
+  background: #fff3f5;
+  border: 1px solid #f3c4cf;
+  color: #9e3954;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.hl-cloud-subbox {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed #eedce8;
+}
+
+.hl-cloud-subbox h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--hl-deep);
 }
 
 /* ===== 直播手账 ===== */
@@ -1773,7 +1912,13 @@
 }
 
 .hl-room.hl-kb-open .hl-messages {
-  max-height: 44px;
+  max-height: 52px;
+}
+
+.hl-room.hl-kb-open .hl-latest-msg-btn {
+  padding: 3px 8px;
+  min-height: 24px;
+  font-size: 10px;
 }
 
 .hl-room.hl-kb-open .hl-sideactions {
@@ -1817,7 +1962,7 @@
     height: min(28dvh, 180px);
   }
   .hl-messages {
-    max-height: 48px;
+    max-height: 56px;
   }
   .hl-sideactions {
     gap: 5px;
@@ -1881,6 +2026,12 @@
     padding-left: 8px;
     padding-right: 8px;
   }
+  .hl-composer {
+    gap: 5px;
+  }
+  .hl-composer input {
+    padding: 9px 10px;
+  }
   .hl-top-pill,
   .hl-follow,
   .hl-invite-pill {
@@ -1891,6 +2042,412 @@
 
 @media (prefers-reduced-motion: reduce) {
   #heartbeat-live-page * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ===== V1.1 多人邀请 (Char + NPC) 抽屉组件 ===== */
+.hl-invite-selected-bar {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border-radius: 13px;
+  background: #fff4fa;
+  border: 1px solid #f2deea;
+}
+
+.hl-invite-sel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: #7c5877;
+}
+
+.hl-smallbtn {
+  border: 1px solid #ead4e4;
+  background: #ffffff;
+  color: #845d7b;
+  border-radius: 9px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.hl-invite-sel-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hl-invited-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #ebcce0;
+  font-size: 11px;
+  color: #6a4c6b;
+}
+
+.hl-invited-chip em {
+  font-style: normal;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: #f5e6f3;
+  color: #8d5886;
+}
+
+.hl-invited-chip button {
+  border: 0;
+  background: transparent;
+  color: #a67896;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.hl-invite-search {
+  margin: 6px 0 8px;
+}
+
+.hl-invite-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.hl-invite-tab {
+  border: 1px solid #efe0ea;
+  background: #ffffff;
+  color: #7c6782;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.hl-invite-tab.active {
+  background: #f28bb6;
+  border-color: #f28bb6;
+  color: #ffffff;
+}
+
+.hl-role-pill {
+  font-style: normal;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-weight: 700;
+}
+
+.hl-role-pill.char {
+  background: #ffe6f2;
+  color: #b45585;
+}
+
+.hl-role-pill.npc {
+  background: #ece7fb;
+  color: #65519c;
+}
+
+.hl-chip-tick {
+  font-size: 11px;
+  color: #c25b8d;
+  font-weight: 700;
+}
+
+/* ===== V1.1 直播手账完整聊天记录回放页 ===== */
+.hl-replay-wrap {
+  padding: 14px 16px calc(92px + var(--hl-safe-bottom));
+}
+
+.hl-replay-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #ffffff;
+  border: 1px solid #f1e5ed;
+  border-radius: 13px;
+  padding: 10px 13px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #6b5370;
+}
+
+.hl-replay-filter input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #e68ab6;
+}
+
+.hl-replay-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hl-replay-msg {
+  background: #ffffff;
+  border: 1px solid #f2e6ee;
+  border-radius: 13px;
+  padding: 9px 12px;
+  box-shadow: 0 2px 8px rgba(130, 102, 130, 0.05);
+}
+
+.hl-replay-msg.role-char {
+  border-left: 3px solid #f08cb6;
+  background: #fffafd;
+}
+
+.hl-replay-msg.role-npc {
+  border-left: 3px solid #9d8be0;
+  background: #faf8ff;
+}
+
+.hl-replay-msg.role-user,
+.hl-replay-msg.role-user_cohost {
+  border-left: 3px solid #e593ba;
+}
+
+.hl-replay-msg.role-gift {
+  border-left: 3px solid #f0b27a;
+  background: #fffaf3;
+}
+
+.hl-replay-msg.role-system {
+  background: #f9f3fa;
+  border-style: dashed;
+}
+
+.hl-replay-msg.role-ai_audience {
+  background: #f7f4f9;
+  opacity: 0.92;
+}
+
+.hl-replay-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.hl-replay-msg-head b {
+  color: var(--hl-deep);
+  font-size: 12px;
+}
+
+.hl-replay-msg-head small {
+  margin-left: auto;
+  color: #a695ab;
+  font-size: 10px;
+}
+
+.hl-replay-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #f2e8f2;
+  color: #7c607f;
+  font-weight: 700;
+}
+
+.hl-replay-badge.role-char {
+  background: #ffe6f2;
+  color: #b45585;
+}
+
+.hl-replay-badge.role-npc {
+  background: #ebe6fa;
+  color: #65519c;
+}
+
+.hl-replay-badge.role-user_cohost {
+  background: #efe6fb;
+  color: #734ea3;
+}
+
+.hl-replay-badge.role-gift {
+  background: #fff0dd;
+  color: #b5682a;
+}
+
+.hl-replay-msg-body {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #5d4a64;
+  overflow-wrap: anywhere;
+}
+
+.hl-replay-more {
+  text-align: center;
+  padding: 10px 0 4px;
+}
+
+.hl-replay-end {
+  text-align: center;
+  font-size: 11px;
+  color: #a896ad;
+  padding: 12px 0 4px;
+}
+
+/* ===== V1.1 应用内可拖动悬浮小窗 (作用域独立于 #heartbeat-live-page，挂载在 #app 顶层) ===== */
+.hl-mini-window {
+  position: absolute;
+  z-index: 1500;
+  width: 172px;
+  background: linear-gradient(155deg, rgba(46, 33, 62, 0.96), rgba(84, 52, 92, 0.95));
+  color: #ffffff;
+  border: 1px solid rgba(255, 224, 239, 0.48);
+  border-radius: 16px;
+  box-shadow: 0 12px 30px rgba(20, 11, 34, 0.45);
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  cursor: grab;
+  font-family: var(--font, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif);
+}
+
+.hl-mini-window:active {
+  cursor: grabbing;
+}
+
+.hl-mini-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  background: rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.hl-mini-live-dot {
+  background: #ed6f9b;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 5px;
+  letter-spacing: 0.5px;
+}
+
+.hl-mini-scope {
+  font-size: 9px;
+  color: rgba(255, 230, 242, 0.88);
+  white-space: nowrap;
+}
+
+.hl-mini-btns {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hl-mini-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.hl-mini-btn.close {
+  background: rgba(255, 110, 145, 0.35);
+}
+
+.hl-mini-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 10px;
+}
+
+.hl-mini-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.18);
+  display: grid;
+  place-items: center;
+  font-size: 21px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.hl-mini-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hl-mini-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.hl-mini-info b {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hl-mini-info small {
+  display: block;
+  font-size: 10px;
+  color: #ffd9ea;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hl-mini-audio {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #f8eaf4;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 360px) {
+  .hl-mini-window {
+    width: 156px;
+  }
+  .hl-mini-avatar {
+    width: 34px;
+    height: 34px;
+    font-size: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hl-mini-window,
+  .hl-mini-window * {
     animation: none !important;
     transition: none !important;
   }

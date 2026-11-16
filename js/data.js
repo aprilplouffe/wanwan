@@ -18,7 +18,9 @@ var BACKUP_EXCLUDED_CONFIG_KEYS = [
 ]
 
 function isHeartbeatLiveAudioBackupExcluded(key) {
-  if (String(key).indexOf('heartbeat_live_audio_blob_') !== 0) return false
+  var k = String(key)
+  if (k.indexOf('heartbeat_live_audio_blob_') !== 0 &&
+      k.indexOf('heartbeat_live_cloud_cache_') !== 0) return false
   try {
     return localStorage.getItem('wanwan_heart_live_backup_audio') !== '1'
   } catch (e) {
@@ -462,6 +464,9 @@ async function deleteSelectedAppData(ids) {
     Object.keys(localStorage).forEach(function(key) {
       if (keyMatchesApp(key, def, 'local')) localStorage.removeItem(key)
     })
+    if (def.id === 'heartbeatLive' && window.HeartbeatLiveStorage && typeof window.HeartbeatLiveStorage.clearOpfsAudioDir === 'function') {
+      await window.HeartbeatLiveStorage.clearOpfsAudioDir()
+    }
   }
 }
 
@@ -968,6 +973,9 @@ async function clearAppDataForImport() {
     'callRecords', 'smsConversations', 'smsMessages', 'imageBlobs',
     'doorModules', 'doorResults', 'avgSaves', 'avgConfigs', 'mcpServers', 'mcpToolTraces']
   await Promise.all(tables.map(function(t) { return db[t] ? db[t].clear() : Promise.resolve() }))
+  if (window.HeartbeatLiveStorage && typeof window.HeartbeatLiveStorage.clearOpfsAudioDir === 'function') {
+    await window.HeartbeatLiveStorage.clearOpfsAudioDir()
+  }
   localStorage.clear()
 }
 
@@ -1432,5 +1440,8 @@ async function clearAllData() {
     'callRecords', 'smsConversations', 'smsMessages', 'imageBlobs',
     'doorModules', 'doorResults', 'avgSaves', 'avgConfigs', 'mcpServers', 'mcpToolTraces']
   await Promise.all(tables.map(function(t) { return db[t] ? db[t].clear() : Promise.resolve() }))
+  if (window.HeartbeatLiveStorage && typeof window.HeartbeatLiveStorage.clearOpfsAudioDir === 'function') {
+    await window.HeartbeatLiveStorage.clearOpfsAudioDir()
+  }
   localStorage.clear()
 }

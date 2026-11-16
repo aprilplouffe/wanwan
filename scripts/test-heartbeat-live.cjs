@@ -79,6 +79,21 @@ function createHarness() {
       srcObject: null,
       scrollTop: 0,
       scrollHeight: 200,
+      offsetWidth: 172,
+      offsetHeight: 96,
+      offsetLeft: 0,
+      offsetTop: 0,
+      clientWidth: 375,
+      clientHeight: 844,
+      getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth || 375, height: this.clientHeight || 844 }; },
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (matchChain(cur, sel)) return cur;
+          cur = cur.parentNode;
+        }
+        return null;
+      },
       setAttribute(k, v) {
         if (k === 'id') this.id = String(v);
         else if (k === 'class') this.className = String(v);
@@ -104,8 +119,8 @@ function createHarness() {
       },
       click() {
         if (this.disabled) return;
-        if (typeof this.onclick === 'function') this.onclick({ target: this, preventDefault() {} });
-        this.dispatchEvent({ type: 'click', target: this, preventDefault() {} });
+        if (typeof this.onclick === 'function') this.onclick({ target: this, preventDefault() {}, stopPropagation() {} });
+        this.dispatchEvent({ type: 'click', target: this, preventDefault() {}, stopPropagation() {} });
       },
       appendChild(child) {
         if (child) { child.parentNode = this; this.children.push(child); }
@@ -119,6 +134,14 @@ function createHarness() {
         if (this.parentNode) this.parentNode.removeChild(this);
       },
       scrollIntoView() {},
+      contains(target) {
+        let cur = target;
+        while (cur) {
+          if (cur === this) return true;
+          cur = cur.parentNode;
+        }
+        return false;
+      },
       querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
       querySelectorAll(sel) {
         const out = [];
@@ -245,6 +268,12 @@ function createHarness() {
       if (id === 'app') return appRoot;
       return appRoot.querySelector('#' + id) || doc.body.querySelector('#' + id);
     },
+    querySelector(sel) {
+      return appRoot.querySelector(sel) || doc.body.querySelector(sel);
+    },
+    querySelectorAll(sel) {
+      return appRoot.querySelectorAll(sel).concat(doc.body.querySelectorAll(sel));
+    },
     createElement(tag) { return makeElement(tag); },
     addEventListener(evt, fn) {
       if (!docListeners[evt]) docListeners[evt] = [];
@@ -267,16 +296,44 @@ function createHarness() {
 
   class FakeAudio {
     constructor(src) {
-      this.src = src || '';
+      this._src = '';
       this.volume = 1;
       this.loop = false;
       this.duration = 42;
       this.paused = true;
       this._events = {};
+      this.onloadedmetadata = null;
+      this.onerror = null;
+      this.onended = null;
       audioInstances.push(this);
+      if (src) this.src = src;
+    }
+    get src() { return this._src; }
+    set src(v) {
+      this._src = String(v || '');
+      if (!this._src) return;
+      setTimeout(() => {
+        if (!this._src) return;
+        if (this._src.includes('bad_audio')) {
+          if (typeof this.onerror === 'function') this.onerror(new Error('decode error'));
+          (this._events.error || []).forEach(fn => fn());
+        } else {
+          if (typeof this.onloadedmetadata === 'function') this.onloadedmetadata();
+          (this._events.loadedmetadata || []).forEach(fn => fn());
+        }
+      }, 1);
     }
     addEventListener(t, fn) { if (!this._events[t]) this._events[t] = []; this._events[t].push(fn); }
+    emit(t) {
+      if (t === 'ended' && typeof this.onended === 'function') this.onended();
+      if (t === 'error' && typeof this.onerror === 'function') this.onerror();
+      (this._events[t] || []).forEach(fn => fn());
+    }
     play() {
+      if (this._src.includes('cloud_fail')) {
+        this.paused = true;
+        return Promise.reject(new Error('network error'));
+      }
       this.paused = false;
       return Promise.resolve();
     }
@@ -295,12 +352,100 @@ function createHarness() {
     static revokeObjectURL(u) { revokedUrls.push(u); }
   }
 
-  const win = {
+  const lorebookCalls = [];
+  const memReadCalls = [];
+  const wxReadCalls = [];
+  const capturedAiCalls = [];
+
+  let quotaState = { quota: 2 * 1024 * 1024 * 1024, usage: 50 * 1024 * 1024 };
+  let onlineState = true;
+  let opfsEnabled = true;
+  const opfsFiles = new Map();
+  let fetchHandler = async () => ({ ok: false, status: 404, async json() { return {}; }, async blob() { return new FakeBlob([]); } });
+
+  function makeOpfsDir(prefix) {
+    return {
+      async getDirectoryHandle(sub) {
+        return makeOpfsDir((prefix ? prefix + '/' : '') + sub);
+      },
+      async getFileHandle(name, opts) {
+        const key = (prefix ? prefix + '/' : '') + name;
+        if (!opfsFiles.has(key) && !(opts && opts.create)) {
+          throw new Error('NotFoundError');
+        }
+        return {
+          async getFile() {
+            const val = opfsFiles.get(key);
+            if (!val) throw new Error('NotFoundError');
+            return val;
+          },
+          async createWritable() {
+            let writtenSize = 0;
+            let writtenType = 'audio/mpeg';
+            let aborted = false;
+            return {
+              async write(chunk) {
+                if (aborted) return;
+                if (chunk && typeof chunk === 'object') {
+                  writtenSize += Number(chunk.size || chunk.byteLength || chunk.length || 0);
+                  if (chunk.type) writtenType = chunk.type;
+                } else {
+                  writtenSize += String(chunk || '').length;
+                }
+              },
+              async abort() {
+                aborted = true;
+                opfsFiles.delete(key);
+              },
+              async close() {
+                if (!aborted) {
+                  opfsFiles.set(key, new FakeBlob([], { type: writtenType, _forceSize: writtenSize }));
+                }
+              }
+            };
+          }
+        };
+      },
+      async removeEntry(name, opts) {
+        const key = (prefix ? prefix + '/' : '') + name;
+        if (opts && opts.recursive) {
+          for (const k of Array.from(opfsFiles.keys())) {
+            if (k === key || k.startsWith(key + '/')) opfsFiles.delete(k);
+          }
+        } else {
+          opfsFiles.delete(key);
+        }
+      }
+    };
+  }
+
+    const navObj = {
+      get onLine() { return onlineState; },
+      mediaDevices: {
+        async getUserMedia(constraints) {
+          return createFakeStream(constraints.video ? 'video' : 'audio');
+        }
+      },
+      storage: {
+        async estimate() { return { quota: quotaState.quota, usage: quotaState.usage }; },
+        async getDirectory() {
+          if (!opfsEnabled) throw new Error('OPFS disabled');
+          return makeOpfsDir('');
+        }
+      }
+    };
+
+    const win = {
     document: doc,
+    innerWidth: 375,
     innerHeight: 844,
+    getComputedStyle(el) {
+      return { zIndex: (el && el.style && el.style.zIndex) || '0' };
+    },
     Blob: FakeBlob,
     Audio: FakeAudio,
     URL: MockURL,
+    fetch: async function(u, o) { return await fetchHandler(u, o); },
     localStorage: {
       getItem(k) { return storageMap.has(k) ? storageMap.get(k) : null; },
       setItem(k, v) { storageMap.set(k, String(v)); },
@@ -310,13 +455,7 @@ function createHarness() {
       pushState(s) { historyStack.push(s); },
       back() { historyStack.pop(); }
     },
-    navigator: {
-      mediaDevices: {
-        async getUserMedia(constraints) {
-          return createFakeStream(constraints.video ? 'video' : 'audio');
-        }
-      }
-    },
+    navigator: navObj,
     confirm() { return confirmResult; },
     prompt() { return promptResult; },
     addEventListener(evt, fn) {
@@ -379,15 +518,25 @@ function createHarness() {
       }
     },
     async getLorebookContext(charId) {
-      return charId === 101 ? '星野喜欢深夜看星空电台。' : '小屿住在海边小镇。';
+      lorebookCalls.push(charId);
+      if (charId === 101) return '星野喜欢深夜看星空电台。';
+      if (charId === 201) return '阿茶是小镇转角咖啡馆的值班店员。';
+      return '小屿住在海边小镇。';
     },
     WanWanMemory: {
-      async getMemoryContext() { return '过去记忆：一起去过月光海岸。'; }
+      async getMemoryContext(cid) {
+        memReadCalls.push(cid);
+        return 'Char_' + cid + '_私有秘密记忆：一起去过月光海岸。';
+      }
     },
     WanxiangMirrorBridge: {
-      async buildChatExperienceContext() { return { text: '- [今天｜午后咖啡馆] 一起喝过拿铁。' }; }
+      async buildChatExperienceContext(cid) {
+        wxReadCalls.push(cid);
+        return { text: '- [今天｜午后咖啡馆] 与 Char_' + cid + ' 喝过拿铁。' };
+      }
     },
     async callAI(msgs, opts) {
+      capturedAiCalls.push({ msgs, opts });
       if (aiQueue.length) return await aiQueue.shift()(msgs, opts);
       return JSON.stringify({ speech: '默认真实AI回应', audience: '氛围不错呀' });
     }
@@ -395,13 +544,19 @@ function createHarness() {
 
   charsMap.set(101, { id: 101, type: 'char', name: '星野', role: '电台主播', description: '温柔细腻', avatar: 'https://example.com/a1.png' });
   charsMap.set(102, { id: 102, type: 'char', name: '小屿', role: '海边画家', description: '安静直率', avatar: 'https://example.com/a2.png' });
+  charsMap.set(201, { id: 201, type: 'npc', name: '阿茶', role: '咖啡店员', description: '嘴硬心软的小镇店员', group: '小镇居民', avatar: 'https://example.com/npc1.png' });
   chatsMap.set(1, { id: 501, ownerUid: 1, charId: 101 });
 
   return {
-    win, doc, appRoot, storageMap, configMap, memoriesMap, ecoLogs, revokedUrls, audioInstances, fakeTrackList,
+    win, doc, appRoot, storageMap, configMap, memoriesMap, charsMap, ecoLogs, revokedUrls, audioInstances, fakeTrackList,
+    lorebookCalls, memReadCalls, wxReadCalls, capturedAiCalls, opfsFiles,
     setConfirm(v) { confirmResult = v; },
     setEcoCoins(v) { ecoCoins = v; },
     getEcoCoins() { return ecoCoins; },
+    setQuota(q, u) { quotaState = { quota: q, usage: u }; },
+    setOnline(v) { onlineState = Boolean(v); },
+    setOpfsEnabled(v) { opfsEnabled = Boolean(v); },
+    setFetchHandler(fn) { fetchHandler = fn; },
     pushAiHandler(fn) { aiQueue.push(fn); },
     clearAiQueue() { aiQueue.length = 0; }
   };
@@ -415,9 +570,11 @@ function loadScripts(h) {
     URL: h.win.URL,
     Blob: h.win.Blob,
     Audio: h.win.Audio,
+    fetch: h.win.fetch,
     localStorage: h.win.localStorage,
     history: h.win.history,
     navigator: h.win.navigator,
+    AbortController: globalThis.AbortController,
     console,
     setTimeout,
     clearTimeout,
@@ -464,6 +621,7 @@ async function main() {
   console.log('\n2. 存储隔离、HTTPS 校验与 ASMR 音频库');
   const h = createHarness();
   const ctx = loadScripts(h);
+  const FakeBlob = h.win.Blob;
   const store = ctx.HeartbeatLiveStorage;
 
   await store.savePortraitUrl('101', 'https://example.com/c101.png');
@@ -483,12 +641,29 @@ async function main() {
   await store.renameAsmrTrack(addedTrack.id, '深夜雨声');
   check((await store.listAsmrTracks())[0].name === '深夜雨声', 'ASMR 音轨支持重命名');
 
-  let oversizeCaught = false;
-  try { await store.addAsmrTrack({ name: 'huge.mp3', type: 'audio/mpeg', size: 26 * 1024 * 1024 }); } catch (_) { oversizeCaught = true; }
-  check(oversizeCaught, '拒绝超过 25MB 的单个音频文件');
+  const largeAudio = {
+    name: 'rain_long_35mb.mp3',
+    type: 'audio/mpeg',
+    size: 35 * 1024 * 1024,
+    lastModified: 1700000100000,
+    slice(s, e) { return new FakeBlob([], { type: 'audio/mpeg', _forceSize: e - s }); }
+  };
+  const addedLarge = await store.addAsmrTrack(largeAudio);
+  check(Boolean(addedLarge && addedLarge.id) && addedLarge.storageBackend === 'opfs' && h.opfsFiles.has('heartbeat_live_audio/' + addedLarge.opfsFileName), '解除 25MB/120MB 固定限制：大于 25MB 的本地音频可分块写入 OPFS 持久化');
+
+  h.setQuota(100 * 1024 * 1024, 90 * 1024 * 1024);
+  let quotaExceededCaught = false;
+  let quotaErrMsg = '';
+  try {
+    await store.addAsmrTrack({ name: 'too_big_for_disk.mp3', type: 'audio/mpeg', size: 60 * 1024 * 1024 });
+  } catch (err) {
+    quotaExceededCaught = true;
+    quotaErrMsg = err.message || '';
+  }
+  check(quotaExceededCaught && quotaErrMsg.includes('空间不足'), '当真实设备存储配额不足时，拦截导入并明确提示空间不足');
+  h.setQuota(2 * 1024 * 1024 * 1024, 50 * 1024 * 1024);
 
   // 备份排除校验
-  check(h.configMap.has(store.KEYS.AUDIO_BLOB_PREFIX + addedTrack.id), '音频 Blob 存入主库受控前缀');
   check((await store.loadSettings()).includeAudioInBackup === false, '默认关闭大音频进整机 JSON 备份以防移动端 OOM');
 
   // 3. 直播开播、热切节目、单人双视觉模式与双布局连麦不断流
@@ -741,6 +916,530 @@ async function main() {
   check(!h.doc.getElementById('heartbeat-live-page'), '点击「心动直播」标题已返回手机桌面');
   check(h.fakeTrackList.every(t => t.stopped === true), '退出心动直播时立即停止全部麦克风与摄像头轨道');
   check(h.revokedUrls.length > 0, '退出时回收所有临时 Blob URL');
+
+  // 9. V1.1 直播大厅入口顺序调整
+  console.log('\n9. V1.1 直播大厅入口顺序（Char / User 开播在双人连线之前）');
+  await app.open();
+  const homeHtml = h.doc.getElementById('heartbeat-live-page').innerHTML;
+  const idxCharPicker = homeHtml.indexOf('id="hl-char-picker"');
+  const idxBroadcasts = homeHtml.indexOf('id="hl-broadcasts"');
+  const idxUserLive = homeHtml.indexOf('id="hl-go-live"');
+  const idxPrivFeatured = homeHtml.indexOf('id="hl-private-start"');
+  const idxPrivCard = homeHtml.indexOf('id="hl-private-start2"');
+  check(
+    idxCharPicker > 0 && idxBroadcasts > idxCharPicker && idxUserLive > idxBroadcasts &&
+    idxPrivFeatured > idxUserLive && idxPrivCard > idxUserLive,
+    '直播大厅按「选择 Char / 正在直播 -> 我要开播 -> 双人连线」顺序渲染'
+  );
+  h.doc.getElementById('hl-private-start').click();
+  check(app.getState().openModal === 'planner' && app.getState().plannerPendingMode === 'private', '调整顺序后「开始私人连线」仍正常进入私人连线企划');
+  h.doc.getElementById('hl-planner').querySelector('[data-close-modal]').click();
+
+  // 10. V1.1 应用内可拖动悬浮小窗生命周期
+  console.log('\n10. V1.1 应用内可拖动悬浮小窗生命周期与状态保留');
+  h.clearAiQueue();
+  h.pushAiHandler(async () => JSON.stringify({ speech: '小窗测试欢迎！', audience: '' }));
+  await app.startLiveRoom({
+    hostMode: 'char',
+    charObj: chars[0],
+    program: 'asmr',
+    title: '小窗雨声测试',
+    style: 'quiet',
+    asmrTrackId: addedTrack.id,
+    asmrDurationMs: 120000,
+    asmrEndAction: 'stop_program'
+  });
+  await new Promise(r => setTimeout(r, 25));
+  const origSessionId = app.getState().room.sessionId;
+  const origLogSessionId = app.getState().room.logSessionId;
+  const origDeadline = app.getState().asmrDeadlineMs;
+  const origMsgLen = app.getState().room.messages.length;
+
+  h.doc.getElementById('hl-minimize-btn').click();
+  const miniEl = h.doc.getElementById('hl-mini-window');
+  const livePage = h.doc.getElementById('heartbeat-live-page');
+  check(Boolean(miniEl) && app.getState().minimized === true && livePage.classList.contains('hl-is-minimized'), '点击「缩小」后挂载应用内悬浮小窗并隐藏全屏直播页');
+  check(miniEl.parentNode === h.appRoot && miniEl.textContent.includes('应用内小窗') && !miniEl.querySelector('#hl-gift-grid'), '小窗挂载于 #app 顶层，标明应用内小窗且不含完整礼物/弹幕面板');
+  check(app.getState().room && app.getState().room.sessionId === origSessionId && app.getState().asmrDeadlineMs === origDeadline, '缩成小窗时完整保留 sessionId 与 ASMR 定时');
+
+  // 模拟拖动越界裁剪
+  miniEl.dispatchEvent({ type: 'pointerdown', clientX: 50, clientY: 50, target: miniEl });
+  h.win.dispatchEvent({ type: 'pointermove', clientX: 2500, clientY: -800, cancelable: true, preventDefault() {} });
+  h.win.dispatchEvent({ type: 'pointerup' });
+  const clampedLeft = parseInt(miniEl.style.left, 10);
+  const clampedTop = parseInt(miniEl.style.top, 10);
+  check(clampedLeft <= 375 - 172 && clampedTop >= 12, '悬浮小窗拖动范围被安全限制在应用视口内');
+
+  // 模拟打开了其他全屏页面（zIndex: 1000），再从桌面图标点击恢复
+  const otherPage = h.doc.createElement('div');
+  otherPage.className = 'full-page';
+  otherPage.style.zIndex = '1000';
+  h.appRoot.appendChild(otherPage);
+  h.win.dispatchEvent({ type: 'popstate' });
+  check(app.getState().minimized === true && Boolean(app.getState().room), '小窗态下按其他页返回键不会误关后台直播间');
+
+  h.clearAiQueue();
+  let reopenAiHits = 0;
+  h.pushAiHandler(async () => { reopenAiHits++; return JSON.stringify({ speech: '不应重复触发开场' }); });
+  await app.open();
+  check(!h.doc.getElementById('hl-mini-window') && !livePage.classList.contains('hl-is-minimized') && parseInt(livePage.style.zIndex, 10) > 1000, '点击心动直播入口无损恢复全屏并盖过期间打开的高层应用页');
+  check(app.getState().room.sessionId === origSessionId && app.getState().room.messages.length === origMsgLen && reopenAiHits === 0, '恢复全屏后保留原会话状态且不重复触发开场 AI');
+
+  // 再次缩小后点小窗关闭按钮：先测试取消、再测试确认关闭并落盘手账与聊天记录
+  h.doc.getElementById('hl-minimize-btn').click();
+  h.setConfirm(false);
+  await h.doc.getElementById('hl-mini-close').click();
+  check(Boolean(h.doc.getElementById('hl-mini-window')) && Boolean(app.getState().room), '关闭小窗弹窗点击取消后保持直播与小窗继续运行');
+  h.setConfirm(true);
+  await h.doc.getElementById('hl-mini-close').click();
+  await new Promise(r => setTimeout(r, 25));
+  check(!h.doc.getElementById('hl-mini-window') && !h.doc.getElementById('heartbeat-live-page') && !app.getState().room, '确认关闭悬浮小窗后结束本场直播并清理 DOM');
+  const afterMiniLog = await store.loadSessionChatLog(origLogSessionId);
+  check(afterMiniLog.exists && afterMiniLog.totalCount >= origMsgLen, '通过悬浮小窗结束直播仍完整保存本场手账聊天记录');
+  otherPage.remove();
+
+  // 11. V1.1 User 开播多人邀请 (Char + NPC)、观众 != 连麦、串行队列与隔离安全
+  console.log('\n11. V1.1 User 开播多人邀请 (Char + NPC)、观众与连麦分离及 NPC 严格隔离');
+  await app.open();
+  h.lorebookCalls.length = 0;
+  h.memReadCalls.length = 0;
+  h.wxReadCalls.length = 0;
+  h.capturedAiCalls.length = 0;
+  h.clearAiQueue();
+
+  h.doc.getElementById('hl-go-live').click();
+  await new Promise(r => setTimeout(r, 20));
+  h.doc.getElementById('hl-invite-btn').click();
+
+  const uhList = h.doc.getElementById('hl-userhost-list');
+  check(Boolean(uhList.querySelector('[data-invite-char="101"]')) && Boolean(uhList.querySelector('[data-invite-char="201"]')), '邀请列表同时展示 Char 与 NPC');
+  check(uhList.textContent.includes('NPC') && uhList.textContent.includes('Char'), '邀请列表清晰区分 Char 与 NPC 身份标签');
+
+  // 搜索与角色类型筛选
+  const searchInp = h.doc.getElementById('hl-invite-search');
+  searchInp.value = '阿茶';
+  if (typeof searchInp.oninput === 'function') searchInp.oninput();
+  check(Boolean(uhList.querySelector('[data-invite-char="201"]')) && !uhList.querySelector('[data-invite-char="101"]'), '搜索框可按名称实时筛选受邀角色');
+  searchInp.value = '';
+  if (typeof searchInp.oninput === 'function') searchInp.oninput();
+  h.doc.querySelector('[data-invite-filter="npc"]').click();
+  check(Boolean(uhList.querySelector('[data-invite-char="201"]')) && !uhList.querySelector('[data-invite-char="102"]'), '支持筛选仅看 NPC 角色');
+  h.doc.querySelector('[data-invite-filter="all"]').click();
+
+  // 依次邀请 Char 101、Char 102、NPC 201
+  h.pushAiHandler(async () => JSON.stringify({ speech: '星野坐前排来啦', audience: '星野来了！' }));
+  h.pushAiHandler(async () => JSON.stringify({ speech: '小屿也来蹲前排。', audience: '' }));
+  h.pushAiHandler(async () => JSON.stringify({ speech: '咖啡店忙完来逛逛你的直播间~', audience: '' }));
+  uhList.querySelector('[data-invite-char="101"]').click();
+  uhList.querySelector('[data-invite-char="102"]').click();
+  uhList.querySelector('[data-invite-char="201"]').click();
+  await new Promise(r => setTimeout(r, 50));
+
+  const multiRoom = app.getState().room;
+  check(multiRoom.invitedViewers.length === 3, '支持同时邀请多位嘉宾（含 Char 与 NPC）进入直播间');
+  check(multiRoom.cohostCharObj === null && app.getState().connectionType === '' && h.doc.getElementById('hl-connection-overlay').hidden === true, '受邀进入观众席绝不自动上麦或抢占 User 主播舞台');
+
+  // 校验 NPC 与 Char 严格上下文隔离
+  const npcCall = h.capturedAiCalls.find(c => c.opts && String(c.opts.system || '').includes('扮演 NPC 角色「阿茶」'));
+  const charCall = h.capturedAiCalls.find(c => c.opts && String(c.opts.system || '').includes('扮演角色「星野」'));
+  check(Boolean(npcCall) && !h.memReadCalls.includes('201') && !h.wxReadCalls.includes('201') && !JSON.stringify(npcCall).includes('私有秘密记忆'), 'NPC 发言绝不读取任何 Char 长期记忆与万象镜经历');
+  check(Boolean(charCall) && String(charCall.opts.system).includes('<char_persona>') && String(npcCall.opts.system).includes('<npc_persona>'), 'Char 使用 <char_persona> 且 NPC 使用独立 <npc_persona> 模板');
+
+  // User 发一条未指定角色的弹幕 -> 最多只选 2 名AI轮流串行回应，绝不三连轰炸或互相递归
+  const callsBeforeUserTurn = h.capturedAiCalls.length;
+  h.pushAiHandler(async () => JSON.stringify({ speech: '第一顺位回应', audience: '' }));
+  h.pushAiHandler(async () => JSON.stringify({ speech: '第二顺位回应', audience: '' }));
+  h.pushAiHandler(async () => JSON.stringify({ speech: '不该被触发的第三人', audience: '' }));
+  h.doc.getElementById('hl-message-input').value = '今晚大家都来玩呀';
+  h.doc.getElementById('hl-send').click();
+  await new Promise(r => setTimeout(r, 50));
+  check(h.capturedAiCalls.length - callsBeforeUserTurn === 2, '多人直播中单轮用户发言最多由 2 位受邀角色串行回应，防止刷屏与互相触发');
+
+  // 主动选择 NPC 201 上麦文字连麦，挂断后退回观众席但仍保留在受邀观众列表
+  h.doc.getElementById('hl-userhost-planner').querySelector('[data-close-modal]').click();
+  app.openConnectModal();
+  const targetSel = h.doc.getElementById('hl-connect-target');
+  targetSel.value = '201';
+  await app.startConnection('text');
+  check(multiRoom.cohostCharObj && multiRoom.cohostCharObj.id === '201' && h.doc.getElementById('hl-connection-overlay').hidden === false, 'User 可从受邀名单手动点选 NPC 或 Char 上麦连麦');
+  h.doc.getElementById('hl-text-call-input').value = '阿茶连麦测试句';
+  h.doc.getElementById('hl-text-call-send').click();
+  await new Promise(r => setTimeout(r, 30));
+  h.doc.getElementById('hl-disconnect').click();
+  check(multiRoom.cohostCharObj === null && multiRoom.invitedViewers.some(v => v.id === '201'), '挂断连麦后嘉宾仅下麦回到观众席，不丢失受邀观众身份');
+
+  // 移出嘉宾 / 角色被删时，队列与在途回复严格丢弃
+  h.clearAiQueue();
+  let resolveRemovedCharAi;
+  h.pushAiHandler(() => new Promise(res => { resolveRemovedCharAi = res; }));
+  h.doc.getElementById('hl-message-input').value = '叫一下小屿';
+  h.doc.getElementById('hl-send').click();
+  await new Promise(r => setTimeout(r, 15));
+  await app.removeViewerFromUserRoom('102');
+  if (resolveRemovedCharAi) resolveRemovedCharAi(JSON.stringify({ speech: '已经被移出的小屿违规消息' }));
+  await new Promise(r => setTimeout(r, 25));
+  check(!multiRoom.messages.some(m => m.text.includes('已经被移出的小屿违规消息')), '移出观众后正在返回的该角色 AI 回复被丢弃不写入直播间');
+
+  // 删除底层 db.characters 中的 NPC 记录，在途回复必须拦截
+  let resolveDeletedNpcAi;
+  h.clearAiQueue();
+  h.pushAiHandler(() => new Promise(res => { resolveDeletedNpcAi = res; }));
+  h.doc.getElementById('hl-message-input').value = '问问阿茶在吗';
+  h.doc.getElementById('hl-send').click();
+  await new Promise(r => setTimeout(r, 15));
+  h.charsMap.delete(201);
+  if (resolveDeletedNpcAi) resolveDeletedNpcAi(JSON.stringify({ speech: '已删除NPC的幽灵消息' }));
+  await new Promise(r => setTimeout(r, 25));
+  check(!multiRoom.messages.some(m => m.text.includes('已删除NPC的幽灵消息')), '底层角色库删除某角色后，未落地的 AI 回复被二次核验拦截');
+  h.charsMap.set(201, { id: 201, type: 'npc', name: '阿茶', role: '咖啡店员', description: '嘴硬心软的小镇店员', group: '小镇居民', avatar: 'https://example.com/npc1.png' });
+
+  // 送礼支持指定收礼人，并结束多人场次保存完整日志
+  h.setEcoCoins(200);
+  const giftTx = await ctx.HeartbeatLiveAI.sendGiftTransaction({
+    gift: ctx.HeartbeatLiveAI.GIFT_CATALOG.find(g => g.id === 'rose'),
+    charObj: multiRoom.invitedViewers[0]
+  });
+  check(giftTx.ok && h.getEcoCoins() === 190, '多人直播中可指定向受邀嘉宾送出共享金币礼物');
+  const multiLogId = multiRoom.logSessionId;
+  h.setConfirm(true);
+  h.doc.getElementById('hl-exit-room').click();
+  await new Promise(r => setTimeout(r, 30));
+
+  // 纯 NPC 场次严禁写入 db.memories
+  const memBeforeNpcOnly = h.memoriesMap.size;
+  await app.startLiveRoom({
+    hostMode: 'user',
+    charObj: null,
+    invitedViewers: [{ id: '201', roleType: 'npc', name: '阿茶', avatar: '' }],
+    program: 'chat',
+    title: '纯NPC闲聊测试'
+  });
+  await new Promise(r => setTimeout(r, 25));
+  h.doc.getElementById('hl-exit-room').click();
+  await new Promise(r => setTimeout(r, 25));
+  const npcOnlyJnl = (await store.loadJournals()).find(j => j.title === '纯NPC闲聊测试');
+  const npcMemAttempt = await ctx.HeartbeatLiveAI.saveJournalToLongMemory({ journal: npcOnlyJnl, title: '非法写入', content: '不应写入' });
+  check(Boolean(npcOnlyJnl) && npcOnlyJnl.charType === 'npc' && !npcMemAttempt.ok && h.memoriesMap.size === memBeforeNpcOnly, '纯 NPC 陪伴场次保存为 npc 手账，且严禁写入 Char db.memories');
+
+  // 12. V1.1 直播手账完整聊天记录回放、分页、旧档兼容与级联删除
+  console.log('\n12. V1.1 直播手账完整聊天记录持久化、分页回放、旧版兼容与级联删除');
+  const multiLogLoaded = await store.loadSessionChatLog(multiLogId, { includeSimAudience: true });
+  check(multiLogId !== origLogSessionId && multiLogLoaded.exists && h.configMap.has(store.KEYS.CHAT_LOG_PREFIX + multiLogId), '不同直播场次按独立 sessionId 持久化聊天日志，互不覆盖');
+  check(multiLogLoaded.messages.some(m => m.senderType === 'user_cohost' && m.content.includes('阿茶连麦测试句')), '完整日志包含连麦发言及结构化字段');
+
+  // 切换开关控制是否持久化 [AI观众] 弹幕
+  const curSets = await store.loadSettings();
+  await store.saveSettings(Object.assign({}, curSets, { saveSimAudienceInLog: false }));
+  const filteredSave = await store.saveSessionChatLog('sess_no_sim_test', [
+    { senderRole: 'user', senderId: '1', sender: '小弯', text: '真实弹幕', createdAt: 1000 },
+    { senderRole: 'ai_audience', senderId: 'ai_1', sender: 'AI观众A', isSimAudience: true, text: '模拟弹幕应被过滤', createdAt: 1001 }
+  ]);
+  const loadedNoSim = await store.loadSessionChatLog('sess_no_sim_test');
+  check(Boolean(filteredSave && filteredSave.messages.length === 1) && loadedNoSim.messages.length === 1 && loadedNoSim.messages[0].content === '真实弹幕', '关闭 saveSimAudienceInLog 开关时不持久化 [AI观众] 气氛弹幕');
+  await store.saveSettings(curSets);
+
+  // 分页回放验证 (55 条消息，每页 40)
+  const bulkMsgs = [];
+  for (let bi = 1; bi <= 55; bi++) {
+    bulkMsgs.push({
+      senderRole: bi % 5 === 0 ? 'ai_audience' : (bi % 2 === 0 ? 'npc' : 'char'),
+      senderId: bi % 2 === 0 ? '201' : '101',
+      sender: bi % 5 === 0 ? '路人AI' : (bi % 2 === 0 ? '阿茶' : '星野'),
+      isSimAudience: bi % 5 === 0,
+      text: '第' + bi + '条测试历史消息',
+      createdAt: 1000000 + bi * 1000
+    });
+  }
+  await store.saveSessionChatLog('sess_bulk_55', bulkMsgs);
+  const bulkJournal = await store.addJournalEntry({
+    ownerUid: 1,
+    sessionId: 'sess_bulk_55',
+    hasChatLog: true,
+    logMessageCount: 55,
+    charId: '101',
+    charName: '星野、阿茶',
+    charType: 'mixed',
+    hasRealChar: true,
+    hostMode: 'user',
+    program: 'chat',
+    programLabel: '闲聊直播',
+    title: '55条分页测试场次',
+    summary: '共55条测试消息。',
+    msgCount: 55,
+    startedAt: Date.now() - 50000,
+    endedAt: Date.now()
+  });
+
+  await app.switchView('diary');
+  await new Promise(r => setTimeout(r, 20));
+  const diaryBtns = h.doc.getElementById('hl-diary-list').querySelectorAll('[data-jnl-replay]');
+  check(diaryBtns.length > 0 && h.doc.getElementById('hl-diary-list').textContent.includes('查看本场聊天记录'), '直播手账卡片展示「查看本场聊天记录」入口');
+
+  await app.openReplayView(bulkJournal, 'diary');
+  await new Promise(r => setTimeout(r, 20));
+  const replayList = h.doc.getElementById('hl-replay-list');
+  check(replayList.querySelectorAll('.hl-replay-msg').length === 40 && Boolean(h.doc.getElementById('hl-replay-load-more')), '55 条日志首屏分页加载前 40 条并提供「加载更早记录」');
+  h.doc.getElementById('hl-replay-load-more').click();
+  await new Promise(r => setTimeout(r, 20));
+  check(replayList.querySelectorAll('.hl-replay-msg').length === 55 && replayList.textContent.includes('第55条测试历史消息'), '点击加载更多后按时间先后完整展现全部 55 条记录');
+
+  // 过滤 [AI观众] 开关
+  const replaySimChk = h.doc.getElementById('hl-replay-sim-toggle');
+  replaySimChk.checked = false;
+  if (typeof replaySimChk.onchange === 'function') replaySimChk.onchange();
+  await new Promise(r => setTimeout(r, 20));
+  check(replayList.querySelectorAll('.hl-replay-msg').length === 40 && !replayList.textContent.includes('AI观众'), '回放页切换隐藏 [AI观众] 开关生效');
+
+  // 旧版 V1.0 无完整日志手账诚实兜底
+  const legacyJournal = {
+    id: 'legacy_v10_jnl_1',
+    charId: '101',
+    charName: '星野',
+    programLabel: '闲聊直播',
+    title: '旧版手账记录',
+    summary: '早期V1.0记录的旧摘要',
+    msgCount: 12,
+    startedAt: Date.now() - 86400000
+  };
+  let legacyAiHits = 0;
+  h.clearAiQueue();
+  h.pushAiHandler(async () => { legacyAiHits++; return '不能AI补全'; });
+  await app.openReplayView(legacyJournal, 'diary');
+  await new Promise(r => setTimeout(r, 20));
+  check(h.doc.getElementById('hl-replay-list').textContent.includes('旧版未保存完整聊天记录') && legacyAiHits === 0, '旧版无聊天记录的手账诚实提示「旧版未保存完整聊天记录」且不 AI 编造');
+
+  // 删除手账先确认，确认后同步删除关联聊天记录
+  h.doc.getElementById('hl-replay-back').click();
+  await new Promise(r => setTimeout(r, 20));
+  const delBulkBtn = h.doc.getElementById('hl-diary-list').querySelector('[data-jnl-del="' + bulkJournal.id + '"]');
+  h.setConfirm(false);
+  await delBulkBtn.click();
+  check(h.configMap.has(store.KEYS.CHAT_LOG_PREFIX + 'sess_bulk_55'), '删除手账取消确认时保留手账及对应聊天记录');
+  h.setConfirm(true);
+  await delBulkBtn.click();
+  await new Promise(r => setTimeout(r, 25));
+  check(!h.configMap.has(store.KEYS.CHAT_LOG_PREFIX + 'sess_bulk_55') && !(await store.loadJournals()).some(j => j.id === bulkJournal.id), '确认删除手账后同步删除关联的本场聊天记录');
+
+  // 13. V1.1.1 底部纯图标节目切换按钮 & 点赞结构策略
+  console.log('\n13. V1.1.1 底部纯图标节目切换按钮与点赞入口策略');
+  await app.startLiveRoom({ hostMode: 'user', charObj: null, program: 'chat', title: 'UI位置验证' });
+  await new Promise(r => setTimeout(r, 20));
+  const roomTopEl = h.doc.querySelector('.hl-roomtop');
+  const composerEl = h.doc.querySelector('.hl-composer');
+  const composerBtnIds = Array.from(composerEl.querySelectorAll('button')).map(b => b.id);
+  const progSwitchBtns = h.doc.getElementById('heartbeat-live-page').querySelectorAll('#hl-quick-program-switch');
+  const switchBtn = h.doc.getElementById('hl-quick-program-switch');
+  check(!roomTopEl.querySelector('#hl-quick-program-switch'), '顶部 .hl-roomtop 已移除节目切换按钮');
+  check(!h.doc.getElementById('hl-quick-heart') && composerBtnIds.join(',') === 'hl-send,hl-quick-program-switch,hl-quick-gift', '底部操作栏移除点赞按钮，保留「发送 -> 节目切换 -> 礼物」顺序');
+  check(progSwitchBtns.length === 1 && switchBtn.textContent.trim() === '' && Boolean(switchBtn.querySelector('svg')), '全页仅保留唯一一个节目切换按钮，且为纯内联 SVG 图标不含“切换”文字');
+  check(Boolean(switchBtn.getAttribute('aria-label')) && Boolean(switchBtn.getAttribute('title')) && cssText.includes('.hl-roundbtn') && cssText.includes('min-width: 44px') && cssText.includes('min-height: 44px'), '底部节目切换图标满足 44x44px 点击热区并含无障碍提示');
+  const sideLikeBtn = h.doc.getElementById('hl-like');
+  const likesBefore = app.getState().room.likes;
+  sideLikeBtn.click();
+  check(Boolean(sideLikeBtn) && app.getState().room.likes === likesBefore + 1, '侧边栏原有免费点赞按钮与点赞计数逻辑完整保留');
+  switchBtn.click();
+  check(app.getState().openModal === 'planner' && h.doc.querySelectorAll('.hl-program').length === 7, '点击底部切换按钮可打开原 7 种节目切换抽屉');
+  h.doc.querySelector('[data-program="game"]').click();
+  await h.doc.getElementById('hl-plan-confirm').click();
+  await new Promise(r => setTimeout(r, 20));
+  check(app.getState().room.program === 'game' && app.getState().openModal === '', '通过底部按钮可在直播中直接热切换 7 种节目');
+
+  // 14. V1.1.1 直播消息独立上下滑动、暂停自动跟随与「↓ 最新消息」
+  console.log('\n14. V1.1.1 直播消息独立上下滚动、暂停跟随与最新消息提示');
+  check(!/\.hl-messages\s*\{[^}]*justify-content\s*:\s*flex-end/i.test(cssText), 'CSS .hl-messages 已移除阻断向上滚动的 justify-content: flex-end');
+  check(cssText.includes('overscroll-behavior: contain') && cssText.includes('touch-action: pan-y') && cssText.includes('.hl-messages > :first-child'), 'CSS 为 .hl-messages 配置独立滚动、滚动链隔离及 first-child margin-top: auto');
+
+  const msgBox = h.doc.getElementById('hl-messages');
+  const latestBtn = h.doc.getElementById('hl-latest-msg-btn');
+  const inputBox = h.doc.getElementById('hl-message-input');
+  let focusCalls = 0;
+  inputBox.focus = () => { focusCalls++; };
+  msgBox.clientHeight = 140;
+  msgBox.scrollHeight = 120;
+  msgBox.scrollTop = 0;
+  check(latestBtn.hidden === true, '处于底部跟随态时默认隐藏「↓ 最新消息」');
+
+  const origAppendMsg = msgBox.appendChild.bind(msgBox);
+  msgBox.appendChild = (child) => {
+    const res = origAppendMsg(child);
+    msgBox.scrollHeight += 28;
+    return res;
+  };
+  for (let mi = 1; mi <= 26; mi++) {
+    h.doc.getElementById('hl-message-input').value = '第' + mi + '条弹幕历史';
+    h.doc.getElementById('hl-send').click();
+  }
+  check(msgBox.children.length > 18 && app.getState().room.messages.length >= 26, '直播间 DOM 保留多于 18 条消息记录供向上滑动回顾');
+  check(msgBox.scrollTop === msgBox.scrollHeight && latestBtn.hidden === true, '停留在底部时新消息保持自动跟随');
+
+  // 模拟用户向上滑动查看早期消息
+  msgBox.scrollTop = 45;
+  msgBox.dispatchEvent({ type: 'scroll' });
+  check(app.getState().messagesAutoFollow === false && latestBtn.hidden === false, '向上滑动离开底部后暂停自动跟随并显示「↓ 最新消息」');
+
+  // 来新消息时不拉回底部，也不抢输入焦点
+  const stBeforeUnread = msgBox.scrollTop;
+  h.doc.getElementById('hl-message-input').value = '新来一条未读弹幕';
+  h.doc.getElementById('hl-send').click();
+  check(msgBox.scrollTop === stBeforeUnread && latestBtn.hidden === false && latestBtn.textContent.includes('(1)') && focusCalls === 0, '上划浏览时到达新消息不强行拉回底部、不抢输入框焦点并累计新消息提示');
+
+  // 点击「↓ 最新消息」回到底部恢复自动跟随
+  latestBtn.click();
+  check(app.getState().messagesAutoFollow === true && msgBox.scrollTop === msgBox.scrollHeight && latestBtn.hidden === true, '点击「↓ 最新消息」立即回到底部并隐藏按钮恢复跟随');
+
+  // 切小窗验证悬浮小窗不含消息滑动控制与礼物弹幕面板
+  h.doc.getElementById('hl-minimize-btn').click();
+  const miniNow = h.doc.getElementById('hl-mini-window');
+  check(Boolean(miniNow) && !miniNow.querySelector('#hl-latest-msg-btn') && !miniNow.querySelector('#hl-messages'), '悬浮小窗保持精简，不接入直播间消息滑动控件');
+  h.doc.getElementById('hl-mini-restore').click();
+  h.doc.getElementById('hl-exit-room').click();
+  await new Promise(r => setTimeout(r, 20));
+  if (app.getState().openModal) {
+    h.doc.getElementById('hl-summary-planner').querySelector('[data-close-modal]').click();
+  }
+
+  // 15. V1.1.1 大体积 OPFS 导入、取消清理、去重修复、旧 IDB 兼容与备份恢复缺失提示
+  console.log('\n15. V1.1.1 本地大文件音频库、取消导入清理、去重修复与备份缺失兜底');
+  const superLarge = {
+    name: 'forest_140mb.flac',
+    type: 'audio/flac',
+    size: 140 * 1024 * 1024,
+    lastModified: 1700000200000,
+    slice(s, e) { return new FakeBlob([], { type: 'audio/flac', _forceSize: e - s }); }
+  };
+  let lastProgressPct = 0;
+  const added140 = await store.addAsmrTrack(superLarge, {
+    onProgress(p) { if (p && typeof p.percent === 'number') lastProgressPct = p.percent; }
+  });
+  check(Boolean(added140 && added140.id) && added140.storageBackend === 'opfs' && lastProgressPct === 100, '支持导入超过 120MB 的超大本地音频至 OPFS 并上报完整进度');
+
+  // 去重检查：同一文件不可重复占位
+  let dupErrCaught = false;
+  try { await store.addAsmrTrack(superLarge); } catch (e) { dupErrCaught = String(e.message).includes('已跳过重复导入'); }
+  check(dupErrCaught, '重复导入已存在的同一音频文件时明确提示并跳过');
+
+  // 取消导入检查：中途 Abort 必须清理未完成 OPFS 文件且不插入列表
+  const cancelCtrl = new AbortController();
+  const opfsBeforeAbort = h.opfsFiles.size;
+  const listBeforeAbort = (await store.listAsmrTracks()).length;
+  let abortCaught = false;
+  try {
+    await store.addAsmrTrack({
+      name: 'cancel_me.wav',
+      type: 'audio/wav',
+      size: 40 * 1024 * 1024,
+      slice(s, e) {
+        if (s > 0) cancelCtrl.abort();
+        return new FakeBlob([], { type: 'audio/wav', _forceSize: e - s });
+      }
+    }, { signal: cancelCtrl.signal });
+  } catch (e) {
+    abortCaught = e && e.name === 'AbortError';
+  }
+  check(abortCaught && h.opfsFiles.size === opfsBeforeAbort && (await store.listAsmrTracks()).length === listBeforeAbort, '取消导入后立即中止写入、清理半成品 OPFS 文件且不污染音轨列表');
+
+  // 旧版 IndexedDB Blob 音频（不含 opfsFileName/storageBackend）兼容播放
+  const legacyTrackId = 'asmr_legacy_idb_1';
+  const curTracks = await store.listAsmrTracks();
+  curTracks.push({ id: legacyTrackId, name: '旧版雨夜IDB音轨', mime: 'audio/mpeg', size: 204800, createdAt: Date.now() - 100000 });
+  await h.win.db.config.put({ key: store.KEYS.ASMR_TRACKS, value: curTracks });
+  await h.win.db.config.put({ key: store.KEYS.AUDIO_BLOB_PREFIX + legacyTrackId, value: new FakeBlob([], { type: 'audio/mpeg', _forceSize: 204800 }) });
+  const legacyRes = await store.resolveAudioTrackPlaySource(legacyTrackId);
+  check(legacyRes.ok && legacyRes.sourceType === 'local' && legacyRes.url.startsWith('blob:'), '旧版 IndexedDB Blob 音频保持 100% 兼容可播');
+
+  // 跨设备恢复缺真实文件场景：清空 OPFS 二进制仅留元数据 -> 状态显式标 missingBinary 且自动修复
+  h.opfsFiles.delete('heartbeat_live_audio/' + added140.opfsFileName);
+  const statusList = await store.listAsmrTracksWithStatus();
+  const missingEntry = statusList.find(t => t.id === added140.id);
+  const missingPlayRes = await store.resolveAudioTrackPlaySource(added140.id);
+  check(Boolean(missingEntry && missingEntry.missingBinary) && !missingPlayRes.ok && missingPlayRes.reason === 'missing_binary', '备份恢复仅含元数据缺真实文件时显式标注缺失而非伪装可播');
+
+  // 重新导入同名同大小音频自动无损修复
+  const repaired = await store.addAsmrTrack(superLarge);
+  const repairedPlay = await store.resolveAudioTrackPlaySource(repaired.id);
+  check(repaired.id === added140.id && repairedPlay.ok && h.opfsFiles.has('heartbeat_live_audio/' + repaired.opfsFileName), '重新导入同名音频可自动无损修复缺失条目');
+
+  // 备份排除开关核验 (data.js 脚本静态 + 规则检查)
+  check(
+    dataJs.includes('heartbeat_live_audio_blob_') &&
+    dataJs.includes('heartbeat_live_cloud_cache_') &&
+    dataJs.includes('clearOpfsAudioDir'),
+    'data.js 常规备份排除本地/云端音频缓存，清理应用数据时同步清理 OPFS 音频目录'
+  );
+
+  // 16. V1.1.1 可选 HTTPS 云端清单、离线缓存、删除缓存保留条目与断网自动回退本地音轨
+  console.log('\n16. V1.1.1 可选云端音频清单、缓存清理与离线/异常自动回退本地');
+  h.setFetchHandler(async (url) => {
+    if (String(url).includes('manifest.json')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            tracks: [
+              { id: 'cloud_night_wind', name: '云端林间夜风', category: '自然风声', url: 'https://cdn.example.com/wind.mp3', durationSec: 180, size: 1200000 },
+              { id: 'cloud_stream_fail', name: '云端海浪', category: '白噪音', url: 'https://cdn.example.com/cloud_fail.mp3', durationSec: 95, size: 800000 }
+            ]
+          };
+        }
+      };
+    }
+    if (String(url).includes('wind.mp3')) {
+      return {
+        ok: true,
+        status: 200,
+        async blob() { return new FakeBlob([], { type: 'audio/mpeg', _forceSize: 1200000 }); }
+      };
+    }
+    return { ok: false, status: 404, async blob() { return new FakeBlob([]); } };
+  });
+
+  let badManifestRejected = false;
+  try { await store.fetchCloudManifest('http://insecure.example.com/manifest.json'); } catch (_) { badManifestRejected = true; }
+  check(badManifestRejected, '云端音频清单严格拒绝非 HTTPS 地址');
+
+  const cloudItems = await store.fetchCloudManifest('https://cdn.example.com/manifest.json');
+  check(cloudItems.length === 2 && cloudItems.every(c => !c.cachedLocally && !c.inPlaylist), '同步 HTTPS 云端清单仅拉取元数据，不自动批量下载音频');
+
+  await store.toggleCloudTrackPlaylist('cloud_night_wind', true);
+  await store.toggleCloudTrackPlaylist('cloud_stream_fail', true);
+  await store.cacheCloudAudioTrack('cloud_night_wind');
+  const afterCache = (await store.listCloudCatalog()).find(c => c.id === 'cloud_night_wind');
+  check(Boolean(afterCache && afterCache.cachedLocally && afterCache.storageBackend === 'opfs'), '主动下载缓存云端音频后真实落入 OPFS 本地缓存');
+
+  // 离线状态：已缓存云端音频仍可离线播放；未缓存云端音频不可直接在线播并自动回退本地可用音轨
+  h.setOnline(false);
+  const offlineCachedPlay = await store.resolveAudioTrackPlaySource('cloud_night_wind');
+  const offlineUncachedPlay = await store.resolveAudioTrackPlaySource('cloud_stream_fail');
+  check(offlineCachedPlay.ok && offlineCachedPlay.sourceType === 'cloud_cached', '离线状态下已缓存云端音轨可正常离网播放');
+  check(!offlineUncachedPlay.ok && offlineUncachedPlay.reason === 'offline_uncached', '离线状态下未缓存云端音轨明确阻止假播');
+
+  // 删除云端缓存后：仅清本地缓存，保留云端列表条目与在线链接
+  await store.uncacheCloudAudioTrack('cloud_night_wind');
+  const afterUncache = (await store.listCloudCatalog()).find(c => c.id === 'cloud_night_wind');
+  check(Boolean(afterUncache) && !afterUncache.cachedLocally && afterUncache.url === 'https://cdn.example.com/wind.mp3', '删除云端离线缓存后仅清理本地存储，仍保留云端条目');
+
+  // 在线云端音轨 play() 失败 -> 自动回退到本地可用音轨
+  h.setOnline(true);
+  await app.startLiveRoom({
+    hostMode: 'user',
+    charObj: null,
+    program: 'asmr',
+    title: '云端失败回退测试',
+    asmrTrackId: 'cloud_stream_fail'
+  });
+  await new Promise(r => setTimeout(r, 30));
+  const fallbackMsgs = app.getState().room.messages.map(m => m.text).join('\n');
+  check(fallbackMsgs.includes('自动回退播放本地音轨') && h.audioInstances.some(a => a.src.startsWith('blob:') && !a.paused), '在线云端音轨播放失败时自动回退至本地可用音轨并提示');
+
+  await app.switchView('settings');
+  await new Promise(r => setTimeout(r, 25));
+  const quotaTxt = h.doc.getElementById('hl-asmr-quota').textContent;
+  check(!quotaTxt.includes('/ 120 MB') && quotaTxt.includes('OPFS') && h.doc.getElementById('hl-cloud-catalog-list').textContent.includes('云端林间夜风'), '设置页正确展示真实存储配额及云端素材控制状态');
+
+  h.doc.getElementById('hl-back-settings').click();
+  await app.switchView('home');
+  app.close(false);
 
   console.log('\n=== 测试结果：通过 ' + passed + ' 项，失败 ' + failed + ' 项 ===');
   process.exit(failed > 0 ? 1 : 0);

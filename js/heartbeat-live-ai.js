@@ -48,7 +48,26 @@
     return c.avatar || '';
   }
 
-  async function loadAvailableChars() {
+  function normalizeParticipantRecord(c) {
+    if (!c) return null;
+    var roleType = c.type === 'npc' ? 'npc' : 'char';
+    return {
+      id: String(c.id),
+      rawId: c.id,
+      roleType: roleType,
+      name: getCharDisplayName(c),
+      avatar: getCharDisplayAvatar(c),
+      emojiFallback: roleType === 'npc' ? '🎭' : '🌸',
+      gender: c.gender || '',
+      role: c.role || '',
+      group: c.group || '',
+      status: c.status || '',
+      description: c.description || '',
+      raw: c
+    };
+  }
+
+  async function loadAllCharactersRaw() {
     var list = [];
     try {
       if (global.db && global.db.characters) {
@@ -59,22 +78,39 @@
     } catch (e) {
       console.warn('[HeartbeatLiveAI] load characters failed:', e);
     }
+    return Array.isArray(list) ? list : [];
+  }
+
+  async function loadAvailableChars() {
+    var list = await loadAllCharactersRaw();
     return list
       .filter(function(c) { return c && (c.type === 'char' || !c.type); })
-      .map(function(c) {
-        return {
-          id: String(c.id),
-          rawId: c.id,
-          name: getCharDisplayName(c),
-          avatar: getCharDisplayAvatar(c),
-          emojiFallback: '🌸',
-          gender: c.gender || '',
-          role: c.role || '',
-          status: c.status || '',
-          description: c.description || '',
-          raw: c
-        };
-      });
+      .map(normalizeParticipantRecord)
+      .filter(Boolean);
+  }
+
+  async function loadAvailableInvitees() {
+    var list = await loadAllCharactersRaw();
+    return list
+      .filter(function(c) { return c && (c.type === 'char' || c.type === 'npc' || !c.type); })
+      .map(normalizeParticipantRecord)
+      .filter(Boolean);
+  }
+
+  async function verifyParticipantExists(participantId) {
+    var pid = String(participantId || '');
+    if (!pid) return { exists: false, record: null };
+    if (pid === 'demo_char') return { exists: true, record: null };
+    try {
+      var list = await loadAllCharactersRaw();
+      if (!global.db || !global.db.characters) {
+        if (!list.length) return { exists: true, record: null };
+      }
+      var match = list.find(function(c) { return c && String(c.id) === pid && c.type !== 'user'; });
+      return { exists: Boolean(match), record: match ? normalizeParticipantRecord(match) : null };
+    } catch (_) {
+      return { exists: true, record: null };
+    }
   }
 
   async function loadCurrentUserProfile() {
@@ -210,10 +246,31 @@
   async function gatherCharContext(charObj, recentLines, settings) {
     var charId = charObj && (charObj.rawId != null ? charObj.rawId : charObj.id);
     var cidNum = Number(charId);
-    var chatInfo = await resolveCharChatInfo(charId);
+    var isNpc = Boolean(charObj && (charObj.roleType === 'npc' || (charObj.raw && charObj.raw.type === 'npc')));
     var recentMsgs = (recentLines || []).slice(-10).map(function(m) {
-      return { role: m.senderRole === 'char' ? 'assistant' : 'user', content: m.text || '' };
+      var isSelf = (m.senderRole === 'char' || m.senderRole === 'npc') && (!m.senderId || String(m.senderId) === String(charId));
+      return { role: isSelf ? 'assistant' : 'user', content: m.text || '' };
     });
+
+    // NPC 严格隔离：绝不读取 Char 的私聊记忆（WanWanMemory）、万象镜经历桥梁（WanxiangMirrorBridge）或其他角色私密配置
+    if (isNpc) {
+      var npcLoreCtx = '';
+      try {
+        if (typeof global.getLorebookContext === 'function') {
+          npcLoreCtx = await global.getLorebookContext(Number.isFinite(cidNum) ? cidNum : charId, recentMsgs);
+        }
+      } catch (_) {}
+      return {
+        isNpc: true,
+        chatInfo: { ownerUid: Number(global._wechatUid || 0), chatId: 0, charId: String(charId || '') },
+        loreCtx: npcLoreCtx || '',
+        memoryCtx: '',
+        bridgeCtx: '',
+        bilingual: null
+      };
+    }
+
+    var chatInfo = await resolveCharChatInfo(charId);
 
     var loreCtx = '';
     try {
@@ -250,6 +307,7 @@
     } catch (_) {}
 
     return {
+      isNpc: false,
       chatInfo: chatInfo,
       loreCtx: loreCtx,
       memoryCtx: memoryCtx,
@@ -269,9 +327,11 @@
     var style = params.programStyle || 'natural';
     var expression = (params.settings && params.settings.expression) || 'natural';
     var connectionType = params.connectionType || '';
+    var isCohost = params.isCohost !== undefined ? Boolean(params.isCohost) : Boolean(connectionType);
     var simAudience = Boolean(params.settings && params.settings.sim && hostMode !== 'private');
+    var isNpc = Boolean(ctx.isNpc || (charObj && (charObj.roleType === 'npc' || (charObj.raw && charObj.raw.type === 'npc'))));
 
-    var charName = charObj ? charObj.name : 'Char';
+    var charName = charObj ? charObj.name : (isNpc ? 'NPC' : 'Char');
     var raw = (charObj && charObj.raw) || {};
     var userName = userObj.name || '我';
     var relationText = '';
@@ -281,8 +341,13 @@
       }
     } catch (_) {}
 
+    var companions = Array.isArray(params.companionNames) ? params.companionNames.filter(Boolean) : [];
+    var companionLine = companions.length
+      ? ('当前直播间还有其他受邀观众/嘉宾：' + companions.join('、') + '（各有独立身份，请勿替他人发言或混淆彼此经历）。')
+      : '';
+
     var modeDesc = hostMode === 'user'
-      ? ('当前是【User 开播模式】：' + userName + ' 正在作为主播开播，你是特邀前排观众' + (connectionType ? '，并且已经接通了连麦，正在与主播实时同台互动。' : '，会在弹幕区和主播互动。'))
+      ? ('当前是【User 开播模式】：' + userName + ' 正在作为主播开播，你是受邀前排观众' + (isNpc ? '（NPC 嘉宾）' : '') + (isCohost && connectionType ? '，并且你已上麦连线，正在与主播实时同台互动。' : '，目前在观众席弹幕区观看并与主播互动，请勿自称已经上麦或占据主舞台。'))
       : hostMode === 'private'
         ? ('当前是【私人双人连线模式】：直播间没有外部公开观众，只有你（' + charName + '）和 ' + userName + ' 两个人。')
         : ('当前是【Char 开播模式】：你（' + charName + '）正在开个人直播，' + userName + (connectionType ? ' 已连麦进入你的直播同台互动。' : ' 正在直播间观看并发送弹幕。'));
@@ -299,53 +364,57 @@
       immersive: '更有临场陪伴氛围与情绪温度'
     }[expression] || '情感真实自然';
 
-    var connDesc = connectionType === 'voice'
-      ? '【实时语音连麦中】对方正在用语音和你对话，回复应简短自然、适合口头朗读。'
-      : connectionType === 'text'
-        ? '【实时文字连麦席位中】对方在连麦席直接对你说，请直接与对方连麦对话。'
-        : connectionType === 'video' || connectionType === 'camera'
-          ? '【视频同框连线中】双方处于同框画面状态，保持自然眼神与临场感（但不要编造看不到的现实物品）。'
-          : '【普通弹幕互动中】从弹幕或互动中看到了对方的消息。';
+    var connDesc = !isCohost || !connectionType
+      ? '【普通弹幕观众互动中】从弹幕或直播互动中看到了主播/大家的动态。'
+      : connectionType === 'voice'
+        ? '【实时语音连麦中】对方正在用语音和你对话，回复应简短自然、适合口头朗读。'
+        : connectionType === 'text'
+          ? '【实时文字连麦席位中】对方在连麦席直接对你说，请直接与对方连麦对话。'
+          : (connectionType === 'video' || connectionType === 'camera')
+            ? '【视频同框连线中】双方处于同框画面状态，保持自然眼神与临场感（但不要编造看不到的现实物品）。'
+            : '【普通弹幕互动中】从弹幕或互动中看到了对方的消息。';
 
     var sys = '';
-    sys += '你正在「心动直播」中扮演角色「' + charName + '」。用户称呼为「' + userName + '」。\n';
-    sys += '请严格忠于角色人设，禁止跳戏或变成通用客服。\n\n';
-    sys += '<char_persona>\n';
+    sys += '你正在「心动直播」中扮演' + (isNpc ? ' NPC 角色「' : '角色「') + charName + '」。用户称呼为「' + userName + '」。\n';
+    sys += '请严格忠于本角色自身人设，只以「' + charName + '」第一人称口吻回复，禁止代他人说话、跳戏或变成通用客服。\n\n';
+    sys += isNpc ? '<npc_persona>\n' : '<char_persona>\n';
     if (raw.gender) sys += '- 性别：' + raw.gender + '\n';
     if (raw.role) sys += '- 身份：' + raw.role + '\n';
+    if (raw.group) sys += '- 所属分组：' + raw.group + '\n';
     if (raw.status) sys += '- 当前状态：' + raw.status + '\n';
-    sys += (raw.description || '温柔、有主见的陪伴者，按普通自然逻辑说话。') + '\n';
+    sys += (raw.description || (isNpc ? '贴合自己 NPC 身份的自然直播观众。' : '温柔、有主见的陪伴者，按普通自然逻辑说话。')) + '\n';
     if (ctx.loreCtx) sys += '\n【世界观设定参考】\n' + ctx.loreCtx + '\n';
-    sys += '</char_persona>\n\n';
+    sys += isNpc ? '</npc_persona>\n\n' : '</char_persona>\n\n';
 
     if (userObj.description || relationText) {
       sys += '<user_context>\n';
-      if (userObj.description) sys += '用户设定：' + userObj.description + '\n';
+      if (userObj.description) sys += '主播/用户设定：' + userObj.description + '\n';
       if (relationText) sys += '你们的关系：' + relationText + '\n';
       sys += '</user_context>\n\n';
     }
 
-    if (ctx.memoryCtx) {
-      sys += '<long_term_memories>\n以下为真实长期记忆，可自然流露，不要生硬背诵：\n' + ctx.memoryCtx + '\n</long_term_memories>\n\n';
+    if (!isNpc && ctx.memoryCtx) {
+      sys += '<long_term_memories>\n以下为真实长期记忆（仅属于你和用户，不可泄露给其他角色），可自然流露，不要生硬背诵：\n' + ctx.memoryCtx + '\n</long_term_memories>\n\n';
     }
-    if (ctx.bridgeCtx) {
+    if (!isNpc && ctx.bridgeCtx) {
       sys += '<shared_town_experiences>\n' + ctx.bridgeCtx + '\n</shared_town_experiences>\n\n';
     }
 
     sys += '<live_room_state>\n';
     sys += '- 直播模式：' + modeDesc + '\n';
+    if (companionLine) sys += '- 同场成员：' + companionLine + '\n';
     sys += '- 当前节目：' + progInfo.label + '（标题：「' + programTitle + '」）\n';
     sys += '- 连麦状态：' + connDesc + '\n';
     sys += '- 互动节奏与风格：' + styleDesc + '；' + expDesc + '\n';
     if (programId === 'asmr') {
       sys += '- 【ASMR 特别提醒】正在播放本地环境音景，请保持极短、轻柔、低打扰的话语，不打断声音氛围。\n';
     }
-    if (params.cameraActive) {
+    if (params.cameraActive && isCohost) {
       sys += '- 对方已开启本地摄像头预览；请保持自然陪伴，不要伪造看到了具体衣物或隐私细节。\n';
     }
     sys += '</live_room_state>\n\n';
 
-    if (ctx.bilingual && ctx.bilingual.enabled && global._wechatCallHelpers) {
+    if (!isNpc && ctx.bilingual && ctx.bilingual.enabled && global._wechatCallHelpers) {
       var h = global._wechatCallHelpers;
       var srcLabel = (h.getChatBilingualLangLabel && h.getChatBilingualLangLabel(ctx.bilingual.sourceLang)) || ctx.bilingual.sourceLang;
       var tgtLabel = (h.getChatBilingualLangLabel && h.getChatBilingualLangLabel(ctx.bilingual.targetLang)) || ctx.bilingual.targetLang;
@@ -357,9 +426,9 @@
     sys += '【输出格式要求】\n';
     sys += '请严格只输出一个合法 JSON 对象，不要包含 Markdown 代码块或多余解释：\n';
     if (simAudience) {
-      sys += '{"speech":"Char的1~3句口语回应（贴合当前直播或连麦情境）","audience":"可选，0或1条简短直播间气氛弹幕（不超过16字，不带用户名，无必要可留空字符串）"}\n';
+      sys += '{"speech":"' + charName + '的1~3句口语回应（贴合当前直播或连麦情境）","audience":"可选，0或1条简短直播间气氛弹幕（不超过16字，不带用户名，无必要可留空字符串）"}\n';
     } else {
-      sys += '{"speech":"Char的1~3句口语回应（贴合当前直播或连麦情境）"}\n';
+      sys += '{"speech":"' + charName + '的1~3句口语回应（贴合当前直播或连麦情境）"}\n';
     }
     return sys;
   }
@@ -429,6 +498,12 @@
     if (!charObj || !charObj.id) {
       return { speech: '', audience: '', noChar: true };
     }
+    var actorId = String(charObj.id);
+    var existCheck = await verifyParticipantExists(actorId);
+    if (!existCheck.exists) {
+      return { stale: true, deleted: true };
+    }
+
     var userObj = params.userObj;
     var recentLines = params.recentLines || [];
     var settings = params.settings || {};
@@ -445,16 +520,22 @@
     var systemPrompt = buildLiveSystemPrompt(Object.assign({}, params, { ctx: ctx }));
 
     var historyMsgs = recentLines.slice(-12).map(function(item) {
-      if (item.senderRole === 'char') {
+      var isSelfTurn = (item.senderRole === 'char' || item.senderRole === 'npc') &&
+        (!item.senderId || String(item.senderId) === actorId);
+      if (isSelfTurn) {
         return { role: 'assistant', content: item.text };
       }
       var prefix = item.senderRole === 'user_cohost'
         ? '[连麦发言] '
-        : item.senderRole === 'ai_audience'
-          ? '[观众弹幕] '
-          : item.senderRole === 'system'
-            ? '[直播间事件] '
-            : '[弹幕] ';
+        : item.senderRole === 'npc'
+          ? '[NPC观众] '
+          : item.senderRole === 'char'
+            ? '[同场Char] '
+            : item.senderRole === 'ai_audience'
+              ? '[观众弹幕] '
+              : item.senderRole === 'system'
+                ? '[直播间事件] '
+                : '[弹幕] ';
       return { role: 'user', content: prefix + item.sender + '：' + item.text };
     });
 
@@ -469,6 +550,10 @@
       });
       if (typeof params.isStale === 'function' && params.isStale()) {
         return { stale: true };
+      }
+      var postExist = await verifyParticipantExists(actorId);
+      if (!postExist.exists) {
+        return { stale: true, deleted: true };
       }
       var parsed = parseLiveAiResponse(raw);
       if (!parsed.speech) {
@@ -537,11 +622,14 @@
 
   function buildJournalDraft(session) {
     var prog = PROGRAMS[session.program] || PROGRAMS.chat;
-    var hasChar = Boolean(session.charId);
-    var charName = hasChar ? (session.charName || 'Char') : '个人直播间';
+    var invitedList = Array.isArray(session.invitedParticipants) ? session.invitedParticipants : [];
+    var hasChar = Boolean(session.charId || invitedList.length);
+    var charName = invitedList.length > 1
+      ? invitedList.map(function(p) { return p.name; }).slice(0, 3).join('、') + (invitedList.length > 3 ? ' 等 ' + invitedList.length + ' 人' : '')
+      : (hasChar ? (session.charName || (invitedList[0] && invitedList[0].name) || '嘉宾') : '个人直播间');
     var dateStr = new Date(session.startedAt || Date.now()).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
     var modeText = session.hostMode === 'user'
-      ? (hasChar ? ('我开播、' + charName + ' 来看我') : '我独自开启的个人直播')
+      ? (hasChar ? ('我开播、邀请了 ' + charName + ' 观看陪伴') : '我独自开启的个人直播')
       : session.hostMode === 'private'
         ? ('与 ' + charName + ' 的私人连线')
         : (charName + ' 的直播间');
@@ -565,15 +653,23 @@
 
   async function saveJournalToLongMemory(params) {
     var journal = params.journal;
-    if (!journal || !journal.charId) {
-      return { ok: false, error: '缺少角色标识，无法写入长期记忆' };
+    var targetCharId = String((params && params.charId) || (journal && journal.charId) || '');
+    if (!journal || !targetCharId) {
+      return { ok: false, error: '缺少 Char 角色标识，无法写入长期记忆' };
+    }
+    var checkTarget = await verifyParticipantExists(targetCharId);
+    if (checkTarget.record && checkTarget.record.roleType === 'npc') {
+      return { ok: false, error: 'NPC 嘉宾不写入 Char 长期记忆（仅保存在直播手账与聊天回放）' };
+    }
+    if (journal.charType === 'npc' && !params.charId) {
+      return { ok: false, error: '仅 NPC 参与的直播不写入 Char 长期记忆' };
     }
     if (!global.db || !global.db.memories) {
       return { ok: false, error: '长期记忆数据库未就绪' };
     }
-    var info = await resolveCharChatInfo(journal.charId);
+    var info = await resolveCharChatInfo(targetCharId);
     if (!info.ownerUid || !info.chatId) {
-      return { ok: false, error: '该角色暂无微信私聊会话，请先在微信开启与 Ta 的聊天后再保存到长期记忆' };
+      return { ok: false, error: '该 Char 暂无微信私聊会话，请先在微信开启与 Ta 的聊天后再保存到长期记忆' };
     }
 
     var title = sanitizeText(params.title || journal.title, 30);
@@ -583,11 +679,13 @@
     // 防重复检查
     var existingRows = await global.db.memories.toArray();
     var dup = existingRows.find(function(m) {
-      return m && m.sourceType === 'heartbeat_live' && String(m.sourceEventId || '') === String(journal.id);
+      return m && m.sourceType === 'heartbeat_live' &&
+        String(m.sourceEventId || '') === String(journal.id) &&
+        String(m.charId || '') === String(targetCharId);
     });
     if (dup) {
       if (global.HeartbeatLiveStorage) {
-        await global.HeartbeatLiveStorage.markJournalMemorySaved(journal.id, dup.id);
+        await global.HeartbeatLiveStorage.markJournalMemorySaved(journal.id, dup.id, targetCharId);
       }
       return { ok: true, duplicate: true, memoryId: dup.id, memory: dup };
     }
@@ -599,7 +697,7 @@
 
     var row = {
       ownerUid: Number(info.ownerUid),
-      charId: Number(journal.charId) || journal.charId,
+      charId: Number(targetCharId) || targetCharId,
       chatId: Number(info.chatId),
       title: title,
       content: content,
@@ -623,7 +721,7 @@
     var newId = await global.db.memories.add(row);
     row.id = newId;
     if (global.HeartbeatLiveStorage) {
-      await global.HeartbeatLiveStorage.markJournalMemorySaved(journal.id, newId);
+      await global.HeartbeatLiveStorage.markJournalMemorySaved(journal.id, newId, targetCharId);
     }
     return { ok: true, duplicate: false, memoryId: newId, memory: row };
   }
@@ -632,11 +730,16 @@
     PROGRAMS: PROGRAMS,
     GIFT_CATALOG: GIFT_CATALOG,
     loadAvailableChars: loadAvailableChars,
+    loadAvailableInvitees: loadAvailableInvitees,
+    verifyParticipantExists: verifyParticipantExists,
     loadCurrentUserProfile: loadCurrentUserProfile,
     resolveCharChatInfo: resolveCharChatInfo,
+    gatherCharContext: gatherCharContext,
+    buildLiveSystemPrompt: buildLiveSystemPrompt,
     getMinimaxStatus: getMinimaxStatus,
     speakCharLine: speakCharLine,
     generateCharLiveReply: generateCharLiveReply,
+    generateParticipantLiveReply: generateCharLiveReply,
     parseLiveAiResponse: parseLiveAiResponse,
     pickAudienceName: pickAudienceName,
     sendGiftTransaction: sendGiftTransaction,
