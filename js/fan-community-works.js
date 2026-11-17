@@ -1,0 +1,458 @@
+// js/fan-community-works.js — 同好社区 · 捡手机文学多作品存储与安全迁移模块（任务 06）
+// 存储结构：
+//   1. 作品索引：wanwan-phone-works-index-v1
+//   2. 作品内容：wanwan-phone-work-data-v1:<workId>
+//   3. 旧版数据：wanwan-phone-messages-v3（仅只读迁移，绝不清空或覆盖）
+
+(function(global) {
+  'use strict';
+
+  var LEGACY_STORAGE_KEY = 'wanwan-phone-messages-v3';
+  var WORKS_INDEX_KEY = 'wanwan-phone-works-index-v1';
+  var WORK_DATA_PREFIX = 'wanwan-phone-work-data-v1:';
+  var LEGACY_WORK_ID = 'work_legacy_v3';
+
+  function clone(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  function storage() {
+    return global.localStorage || null;
+  }
+
+  function workDataKey(workId) {
+    return WORK_DATA_PREFIX + String(workId || '');
+  }
+
+  function generateWorkId() {
+    var store = storage();
+    for (var i = 0; i < 8; i++) {
+      var candidate = 'work_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      if (!store || store.getItem(workDataKey(candidate)) === null) {
+        return candidate;
+      }
+    }
+    return 'work_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  }
+
+  function normalizeWorkData(raw, fallbackMeta) {
+    var now = Date.now();
+    var meta = fallbackMeta || {};
+    var src = raw && typeof raw === 'object' ? raw : {};
+    return {
+      id: String(src.id || meta.id || ''),
+      title: String(src.title || meta.title || '未命名作品').trim() || '未命名作品',
+      char: String(src.char || meta.char || '对方'),
+      user: String(src.user || meta.user || '我'),
+      topic: typeof src.topic === 'string' ? src.topic : '',
+      join: src.join !== false,
+      showTools: Boolean(src.showTools),
+      isLegacy: Boolean(src.isLegacy || meta.isLegacy),
+      createdAt: typeof src.createdAt === 'number' ? src.createdAt : (typeof meta.createdAt === 'number' ? meta.createdAt : now),
+      updatedAt: typeof src.updatedAt === 'number' ? src.updatedAt : (typeof meta.updatedAt === 'number' ? meta.updatedAt : now),
+      items: Array.isArray(src.items) ? src.items : []
+    };
+  }
+
+  function toMeta(workData) {
+    return {
+      id: workData.id,
+      title: workData.title,
+      char: workData.char || '对方',
+      user: workData.user || '我',
+      messageCount: Array.isArray(workData.items) ? workData.items.length : 0,
+      createdAt: workData.createdAt,
+      updatedAt: workData.updatedAt,
+      isLegacy: Boolean(workData.isLegacy)
+    };
+  }
+
+  function sortWorks(works) {
+    return works.slice().sort(function(a, b) {
+      var diff = (b.updatedAt || 0) - (a.updatedAt || 0);
+      if (diff !== 0) return diff;
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+  }
+
+  function readIndexRaw() {
+    var store = storage();
+    if (!store) {
+      return { exists: false, data: { version: 1, migratedFromV3: false, activeWorkId: '', works: [] } };
+    }
+    var raw = store.getItem(WORKS_INDEX_KEY);
+    if (!raw) {
+      return { exists: false, data: { version: 1, migratedFromV3: false, activeWorkId: '', works: [] } };
+    }
+    var parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.works)) {
+      throw new Error('作品索引数据格式异常');
+    }
+    return {
+      exists: true,
+      data: {
+        version: parsed.version || 1,
+        migratedFromV3: Boolean(parsed.migratedFromV3),
+        activeWorkId: parsed.activeWorkId ? String(parsed.activeWorkId) : '',
+        works: parsed.works.slice()
+      }
+    };
+  }
+
+  function writeIndex(indexObj) {
+    var store = storage();
+    if (!store) return;
+    store.setItem(WORKS_INDEX_KEY, JSON.stringify({
+      version: 1,
+      migratedFromV3: Boolean(indexObj.migratedFromV3),
+      activeWorkId: indexObj.activeWorkId || '',
+      works: sortWorks(indexObj.works || [])
+    }));
+  }
+
+  function deriveLegacyTitle(legacyObj) {
+    var orig = legacyObj && typeof legacyObj.title === 'string' ? legacyObj.title.trim() : '';
+    if (orig && orig !== '捡手机文学' && orig !== '旧版作品') {
+      return '旧版作品 · ' + orig;
+    }
+    return '旧版作品';
+  }
+
+  // 安全、幂等的旧版数据迁移：
+  // - 仅当存在未迁移的 wanwan-phone-messages-v3 且索引内尚无旧版作品时执行
+  // - 绝不清除或修改 wanwan-phone-messages-v3 原键
+  // - 写入失败时回滚本次新建键，保留原始状态
+  function ensureInitialized() {
+    var store = storage();
+    if (!store) {
+      return { ok: true, index: { version: 1, migratedFromV3: true, activeWorkId: '', works: [] } };
+    }
+
+    var readRes;
+    try {
+      readRes = readIndexRaw();
+    } catch (err) {
+      return { ok: false, error: err && err.message ? err.message : '读取作品索引失败' };
+    }
+
+    var index = readRes.data;
+    var hasLegacyWork = index.works.some(function(w) {
+      return w && (w.id === LEGACY_WORK_ID || w.isLegacy === true);
+    });
+
+    if (index.migratedFromV3 || hasLegacyWork) {
+      if (!index.migratedFromV3 && hasLegacyWork) {
+        index.migratedFromV3 = true;
+        try { writeIndex(index); } catch (_) {}
+      }
+      return { ok: true, index: index };
+    }
+
+    var legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
+    if (!legacyRaw) {
+      index.migratedFromV3 = true;
+      if (readRes.exists) {
+        try { writeIndex(index); } catch (_) {}
+      }
+      return { ok: true, index: index };
+    }
+
+    var legacyObj;
+    try {
+      legacyObj = JSON.parse(legacyRaw);
+    } catch (err) {
+      return { ok: false, error: '旧版聊天记录格式解析失败，已保留原始数据' };
+    }
+
+    if (!legacyObj || typeof legacyObj !== 'object' || !Array.isArray(legacyObj.items)) {
+      index.migratedFromV3 = true;
+      if (readRes.exists) {
+        try { writeIndex(index); } catch (_) {}
+      }
+      return { ok: true, index: index };
+    }
+
+    // 只有旧记录非空时迁移为「旧版作品」
+    if (legacyObj.items.length === 0) {
+      index.migratedFromV3 = true;
+      if (readRes.exists) {
+        try { writeIndex(index); } catch (_) {}
+      }
+      return { ok: true, index: index };
+    }
+
+    var targetKey = workDataKey(LEGACY_WORK_ID);
+    var existingLegacyWorkRaw = store.getItem(targetKey);
+    var wroteLegacyDataHere = false;
+    var legacyData = null;
+
+    if (existingLegacyWorkRaw) {
+      try {
+        legacyData = normalizeWorkData(JSON.parse(existingLegacyWorkRaw), {
+          id: LEGACY_WORK_ID,
+          title: deriveLegacyTitle(legacyObj),
+          isLegacy: true
+        });
+      } catch (_) {
+        return { ok: false, error: '读取已迁移旧版作品失败，已终止写入' };
+      }
+    } else {
+      var now = Date.now();
+      legacyData = normalizeWorkData(clone(legacyObj), {
+        id: LEGACY_WORK_ID,
+        title: deriveLegacyTitle(legacyObj),
+        isLegacy: true,
+        createdAt: now,
+        updatedAt: now
+      });
+      legacyData.id = LEGACY_WORK_ID;
+      legacyData.title = deriveLegacyTitle(legacyObj);
+      legacyData.isLegacy = true;
+    }
+
+    try {
+      if (!existingLegacyWorkRaw) {
+        store.setItem(targetKey, JSON.stringify(legacyData));
+        wroteLegacyDataHere = true;
+      }
+      index.works.push(toMeta(legacyData));
+      index.migratedFromV3 = true;
+      if (!index.activeWorkId) {
+        index.activeWorkId = legacyData.id;
+      }
+      writeIndex(index);
+      return { ok: true, index: index, migrated: true };
+    } catch (err) {
+      if (wroteLegacyDataHere) {
+        try { store.removeItem(targetKey); } catch (_) {}
+      }
+      return { ok: false, error: err && err.message ? err.message : '迁移存储失败，已保留原始数据' };
+    }
+  }
+
+  function listWorks() {
+    var res = ensureInitialized();
+    if (!res.ok) {
+      return { ok: false, error: res.error, works: [] };
+    }
+    return {
+      ok: true,
+      works: sortWorks(res.index.works || []),
+      activeWorkId: res.index.activeWorkId || ''
+    };
+  }
+
+  function createWork(title) {
+    var cleanTitle = String(title || '').trim();
+    if (!cleanTitle) {
+      return { ok: false, error: '请输入作品名称' };
+    }
+    var initRes = ensureInitialized();
+    if (!initRes.ok) {
+      return { ok: false, error: initRes.error };
+    }
+
+    var store = storage();
+    var index = initRes.index;
+    var now = Date.now();
+    var workId = generateWorkId();
+    var workData = {
+      id: workId,
+      title: cleanTitle,
+      char: '对方',
+      user: '我',
+      topic: '',
+      join: true,
+      showTools: false,
+      isLegacy: false,
+      createdAt: now,
+      updatedAt: now,
+      items: []
+    };
+
+    var key = workDataKey(workId);
+    var wroteWorkData = false;
+    try {
+      if (store) {
+        store.setItem(key, JSON.stringify(workData));
+        wroteWorkData = true;
+      }
+      index.works.push(toMeta(workData));
+      index.activeWorkId = workId;
+      writeIndex(index);
+      return { ok: true, work: toMeta(workData), data: workData };
+    } catch (err) {
+      if (store && wroteWorkData) {
+        try { store.removeItem(key); } catch (_) {}
+      }
+      return { ok: false, error: '存储空间不足，新建作品失败' };
+    }
+  }
+
+  function getWorkData(workId) {
+    if (!workId) return null;
+    var initRes = ensureInitialized();
+    if (!initRes.ok) return null;
+
+    var meta = null;
+    var works = initRes.index.works || [];
+    for (var i = 0; i < works.length; i++) {
+      if (works[i] && works[i].id === workId) {
+        meta = works[i];
+        break;
+      }
+    }
+
+    var store = storage();
+    if (!store) return meta ? normalizeWorkData({}, meta) : null;
+    try {
+      var raw = store.getItem(workDataKey(workId));
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return normalizeWorkData(parsed, meta);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function setActiveWorkId(workId) {
+    var initRes = ensureInitialized();
+    if (!initRes.ok) return false;
+    initRes.index.activeWorkId = workId || '';
+    try {
+      writeIndex(initRes.index);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function saveWorkData(workId, stateObj, options) {
+    if (!workId || !stateObj) return false;
+    options = options || {};
+    var touchUpdatedAt = options.touchUpdatedAt !== false;
+
+    var initRes = ensureInitialized();
+    if (!initRes.ok) return false;
+
+    var store = storage();
+    var index = initRes.index;
+    var metaIdx = -1;
+    for (var i = 0; i < index.works.length; i++) {
+      if (index.works[i] && index.works[i].id === workId) {
+        metaIdx = i;
+        break;
+      }
+    }
+
+    var existingMeta = metaIdx >= 0 ? index.works[metaIdx] : null;
+    var now = Date.now();
+    var payload = normalizeWorkData(stateObj, existingMeta || { id: workId });
+    payload.id = workId;
+    if (touchUpdatedAt) {
+      payload.updatedAt = now;
+    }
+
+    try {
+      if (store) {
+        store.setItem(workDataKey(workId), JSON.stringify(payload));
+      }
+      var nextMeta = toMeta(payload);
+      if (metaIdx >= 0) {
+        index.works[metaIdx] = nextMeta;
+      } else {
+        index.works.push(nextMeta);
+      }
+      index.activeWorkId = workId;
+      writeIndex(index);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function renameWork(workId, nextTitle) {
+    var cleanTitle = String(nextTitle || '').trim();
+    if (!workId || !cleanTitle) {
+      return { ok: false, error: '作品名称不能为空' };
+    }
+    var data = getWorkData(workId);
+    if (!data) {
+      return { ok: false, error: '未找到对应作品' };
+    }
+    data.title = cleanTitle;
+    var ok = saveWorkData(workId, data, { touchUpdatedAt: true });
+    if (!ok) {
+      return { ok: false, error: '保存重命名失败' };
+    }
+    return { ok: true, work: toMeta(data) };
+  }
+
+  // 收集所有作品的消息项，供素材引用安全检查使用
+  function getAllReferencedItems() {
+    var listed = listWorks();
+    if (!listed.ok) return [];
+    var store = storage();
+    if (!store) return [];
+
+    var combined = [];
+    listed.works.forEach(function(w) {
+      if (!w || !w.id) return;
+      try {
+        var raw = store.getItem(workDataKey(w.id));
+        if (!raw) return;
+        var parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.items)) {
+          for (var i = 0; i < parsed.items.length; i++) {
+            combined.push(parsed.items[i]);
+          }
+        }
+      } catch (_) {}
+    });
+    return combined;
+  }
+
+  function isAssetReferencedInOtherWorks(assetId, excludeWorkId) {
+    if (!assetId) return false;
+    var listed = listWorks();
+    if (!listed.ok) return true; // 读取索引失败时保守返回 true，绝不误删素材
+    var store = storage();
+    if (!store) return false;
+
+    for (var i = 0; i < listed.works.length; i++) {
+      var w = listed.works[i];
+      if (!w || !w.id || w.id === excludeWorkId) continue;
+      try {
+        var raw = store.getItem(workDataKey(w.id));
+        if (!raw) continue;
+        var parsed = JSON.parse(raw);
+        var items = parsed && Array.isArray(parsed.items) ? parsed.items : [];
+        for (var j = 0; j < items.length; j++) {
+          var m = items[j];
+          if (!m) continue;
+          if (m.assetId === assetId) return true;
+          if (m.original && m.original.assetId === assetId) return true;
+        }
+      } catch (_) {
+        return true; // 任意作品解析异常时保守保护素材
+      }
+    }
+    return false;
+  }
+
+  global.FanCommunityWorks = {
+    LEGACY_STORAGE_KEY: LEGACY_STORAGE_KEY,
+    WORKS_INDEX_KEY: WORKS_INDEX_KEY,
+    WORK_DATA_PREFIX: WORK_DATA_PREFIX,
+    LEGACY_WORK_ID: LEGACY_WORK_ID,
+    ensureInitialized: ensureInitialized,
+    listWorks: listWorks,
+    createWork: createWork,
+    getWorkData: getWorkData,
+    saveWorkData: saveWorkData,
+    setActiveWorkId: setActiveWorkId,
+    renameWork: renameWork,
+    getAllReferencedItems: getAllReferencedItems,
+    isAssetReferencedInOtherWorks: isAssetReferencedInOtherWorks
+  };
+})(window);

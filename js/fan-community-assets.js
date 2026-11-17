@@ -175,6 +175,34 @@
     });
   }
 
+  function readAudioFile(file, maxMb) {
+    var limitMb = maxMb || 12;
+    return new Promise(function(resolve, reject) {
+      if (!file) {
+        reject(new Error('未选择音频文件'));
+        return;
+      }
+      var hasAudioMime = file.type && file.type.indexOf('audio/') === 0;
+      var hasAudioExt = /\.(mp3|wav|m4a|ogg|aac|flac|webm|opus)$/i.test(file.name || '');
+      if (!hasAudioMime && !hasAudioExt) {
+        reject(new Error('请选择音频文件（如 mp3 / wav / m4a / ogg）'));
+        return;
+      }
+      if (file.size > limitMb * 1024 * 1024) {
+        reject(new Error('音频文件请小于 ' + limitMb + 'MB'));
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function() {
+        resolve(String(reader.result || ''));
+      };
+      reader.onerror = function() {
+        reject(new Error('音频读取失败'));
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   global.FanCommunityAssets = {
     DB_NAME: DB_NAME,
     uid: uid,
@@ -185,6 +213,7 @@
     removeStickerSafely: removeStickerSafely,
     isAssetReferenced: isAssetReferenced,
     getCachedSrc: getCachedSrc,
-    readImageFile: readImageFile
+    readImageFile: readImageFile,
+    readAudioFile: readAudioFile
   };
 })(window);
