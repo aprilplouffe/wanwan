@@ -29,9 +29,18 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build web and sync Android
-        run: npm run cap:sync
-
+      - 
+      - name: Build web and prepare Android
+        run: |
+          npm run build
+          if [ ! -f android/app/build.gradle ]; then
+            echo "Android app module missing; regenerating Android project"
+            rm -rf android
+            npx cap add android
+          fi
+          npx cap sync android
+          test -f android/app/build.gradle
+  
       - name: Build debug APK
         working-directory: android
         run: |
