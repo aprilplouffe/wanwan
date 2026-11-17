@@ -3,16 +3,20 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main, master]
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: wanwan-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
       STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -20,6 +24,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -30,6 +36,17 @@ jobs:
           distribution: temurin
           java-version: 21
           cache: gradle
+
+      - name: Set version
+        id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          VERSION="1.0.${RUN_NUMBER}"
+          CODE=$((10000 + RUN_NUMBER))
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm install
@@ -74,9 +91,10 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/wanwan-release.jks
           test -s android/wanwan-release.jks
 
-      - name: Configure release signing and version
+      - name: Configure signing and version
         env:
-          BUILD_NUMBER: ${{ github.run_number }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.version }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -86,8 +104,8 @@ jobs:
           p = Path("android/app/build.gradle")
           s = p.read_text()
 
-          if not all(os.environ.get(k) for k in
-                     ("STORE_PASSWORD", "KEY_ALIAS", "KEY_PASSWORD")):
+          required = ("STORE_PASSWORD", "KEY_ALIAS", "KEY_PASSWORD")
+          if not all(os.environ.get(k) for k in required):
               raise SystemExit("Missing signing secrets")
 
           if "signingConfigs {" in s:
@@ -118,18 +136,24 @@ jobs:
                "\n            signingConfig signingConfigs.wanwanRelease\n" +
                s[release.end():])
 
-          version = 10000 + int(os.environ["BUILD_NUMBER"])
-          s, count = re.subn(
+          s, code_count = re.subn(
               r'\bversionCode\s+\d+',
-              f'versionCode {version}',
+              f'versionCode {os.environ["VERSION_CODE"]}',
               s,
               count=1
           )
-          if count != 1:
-              raise SystemExit("versionCode not found")
+          s, name_count = re.subn(
+              r'\bversionName\s+["\'][^"\']*["\']',
+              f'versionName "{os.environ["VERSION_NAME"]}"',
+              s,
+              count=1
+          )
+
+          if code_count != 1 or name_count != 1:
+              raise SystemExit("Android version fields not found")
 
           p.write_text(s)
-          print(f"Configured release versionCode {version}")
+          print("Release signing and version configured")
           PY
 
       - name: Build signed release APK
@@ -138,12 +162,103 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleRelease --no-daemon
 
-      - name: Verify and rename APK
+      - name: Prepare APK
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           test -f android/app/build/outputs/apk/release/app-release.apk
           mkdir -p out
           cp android/app/build/outputs/apk/release/app-release.apk \
-            "out/wanwan-release-${GITHUB_RUN_NUMBER}.apk"
+            "out/wanwan-v${VERSION}.apk"
+
+      - name: Generate Chinese release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ["REPO"]
+          version = os.environ["VERSION"]
+          token = os.environ["TOKEN"]
+          sha = os.environ["SHA"]
+
+          def api(path):
+              req = urllib.request.Request(
+                  "https://api.github.com" + path,
+                  headers={
+                      "Authorization": "Bearer " + token,
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "wanwan-release"
+                  }
+              )
+              with urllib.request.urlopen(req) as response:
+                  return json.load(response)
+
+          releases = api(f"/repos/{repo}/releases?per_page=100")
+          previous = next(
+              (r for r in releases
+               if not r.get("draft") and not r.get("prerelease")
+               and r.get("tag_name", "").startswith("v1.0.")),
+              None
+          )
+
+          lines = [
+              f"# 弯弯 v{version}",
+              "",
+              "## 本次更新",
+              ""
+          ]
+
+          if previous:
+              old = previous["tag_name"]
+              comparison = api(
+                  f"/repos/{repo}/compare/{old}...{sha}"
+              )
+              commits = comparison.get("commits", [])
+              if commits:
+                  for commit in commits:
+                      message = commit["commit"]["message"].splitlines()[0]
+                      lines.append(f"- {message}")
+              else:
+                  lines.append("- 本次构建未发现新的提交记录。")
+              lines.extend([
+                  "",
+                  f"完整代码变更："
+                  f"https://github.com/{repo}/compare/{old}...v{version}"
+              ])
+          else:
+              lines.append("- 首次自动发布版本。")
+              lines.append("- 使用固定签名生成 Android APK。")
+              lines.append("- 使用弯弯专属应用图标。")
+
+          lines.extend([
+              "",
+              "## 安装说明",
+              "",
+              f"下载 `wanwan-v{version}.apk` 并安装。",
+              "",
+              "后续使用相同签名、相同包名且版本号更高的 APK，"
+              "通常可以直接覆盖更新。",
+              "",
+              "注意：首次从 Debug 签名切换到正式签名时，"
+              "可能无法覆盖旧版。请先备份重要数据。",
+              "",
+              "更新条目来自 Git 提交记录，"
+              "不代表所有功能均已完成测试。"
+          ])
+
+          Path("release-notes.md").write_text(
+              "\n".join(lines) + "\n",
+              encoding="utf-8"
+          )
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
@@ -151,8 +266,13 @@ jobs:
           path: out/*.apk
           retention-days: 30
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: out/*.apk
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" out/*.apk \
+            --target "$GITHUB_SHA" \
+            --title "弯弯 $TAG" \
+            --notes-file release-notes.md \
+            --latest
