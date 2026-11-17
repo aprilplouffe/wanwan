@@ -1,0 +1,872 @@
+/* css/fan-community-chat.css — 同好社区 · 捡手机文学聊天界面（韩系奶油极简风）
+ * 严格限定于 #fan-community-page 作用域，避免与弯弯机原有聊天 App 样式冲突。
+ */
+
+#fan-community-page .fc-subview-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #edf0ec;
+}
+
+#fan-community-page .fc-subview-host[hidden],
+#fan-community-page .fc-home-shell[hidden] {
+  display: none;
+}
+
+#fan-community-page .fc-home-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#fan-community-page .fc-chat-app {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #edf0ec;
+  color: #333c36;
+  position: relative;
+}
+
+#fan-community-page .fc-chat-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: calc(12px + var(--fc-safe-top, 0px)) 14px 12px;
+  min-height: 54px;
+  background: #f8f8f3;
+  color: #414a42;
+  border-bottom: 1px solid #e1e6dd;
+}
+
+#fan-community-page .fc-chat-back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: transparent;
+  border: 0;
+  color: #5d6b5c;
+  font-size: 14px;
+  padding: 5px 8px 5px 2px;
+  border-radius: 10px;
+}
+
+#fan-community-page .fc-chat-back:active {
+  background: rgba(141, 154, 132, 0.12);
+}
+
+#fan-community-page .fc-chat-back-chevron {
+  font-size: 22px;
+  line-height: 1;
+  margin-top: -2px;
+}
+
+#fan-community-page .fc-chat-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 650;
+  color: #39423a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#fan-community-page .fc-chat-head-actions {
+  flex: none;
+  min-width: 56px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+#fan-community-page .fc-chat-head-tool {
+  border: 1px solid #e2e7dd;
+  background: #fffefa;
+  color: #62715f;
+  font-size: 12px;
+  border-radius: 9px;
+  padding: 5px 9px;
+}
+
+#fan-community-page .fc-chat-head-tool.active {
+  background: #eef3eb;
+  border-color: #c8d4c2;
+  color: #4c5c4a;
+  font-weight: 600;
+}
+
+#fan-community-page .fc-chat-stream {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  background: #e8ede8;
+  padding: 12px 14px 32px;
+  scrollbar-width: thin;
+}
+
+#fan-community-page .fc-chat-date {
+  text-align: center;
+  margin: 14px auto 22px;
+}
+
+#fan-community-page .fc-chat-date span {
+  display: inline-block;
+  background: #c8d1c7;
+  color: #ffffff;
+  border-radius: 20px;
+  padding: 7px 14px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+#fan-community-page .fc-chat-msg {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 18px 0;
+  position: relative;
+}
+
+#fan-community-page .fc-chat-msg.right {
+  flex-direction: row-reverse;
+}
+
+#fan-community-page .fc-chat-avatar {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  background: #b2c5b5;
+  color: #eef6ef;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+#fan-community-page .fc-chat-avatar::before {
+  content: "●";
+  font-size: 22px;
+  text-shadow: 0 11px 0 #eef6ef;
+  transform: translateY(-5px);
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-avatar {
+  display: none;
+}
+
+#fan-community-page .fc-chat-msgbody {
+  max-width: calc(100% - 60px);
+  min-width: 0;
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-msgbody {
+  max-width: 85%;
+  text-align: right;
+}
+
+#fan-community-page .fc-chat-name {
+  font-size: 12px;
+  color: #7a887e;
+  margin: 0 0 6px 2px;
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-name {
+  display: none;
+}
+
+#fan-community-page .fc-chat-bubble-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-bubble-wrap {
+  justify-content: flex-end;
+}
+
+#fan-community-page .fc-chat-bubble {
+  display: inline-block;
+  max-width: 100%;
+  background: #fffefa;
+  color: #354139;
+  border-radius: 5px 15px 15px 15px;
+  padding: 11px 15px;
+  font-size: 16px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  position: relative;
+  min-width: 35px;
+  text-align: left;
+  box-shadow: 0 1px 3px rgba(62, 84, 65, 0.04);
+  cursor: pointer;
+}
+
+#fan-community-page .fc-chat-bubble::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 5px;
+  border-top: 9px solid #fffefa;
+  border-left: 9px solid transparent;
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-bubble {
+  background: #d9e3d2;
+  color: #354139;
+  border-radius: 15px 5px 15px 15px;
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-bubble::before {
+  left: auto;
+  right: -7px;
+  border-left: 0;
+  border-right: 9px solid transparent;
+  border-top-color: #d9e3d2;
+}
+
+/* 假撤回状态：保留原文但展示柔和撤回状态 */
+#fan-community-page .fc-chat-bubble.is-recalled {
+  background: rgba(255, 254, 250, 0.72);
+  color: #6b766c;
+  border: 1px dashed #c2cdc0;
+  box-shadow: none;
+}
+
+#fan-community-page .fc-chat-bubble.is-recalled::before {
+  border-top-color: rgba(255, 254, 250, 0.72);
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-bubble.is-recalled {
+  background: rgba(217, 227, 210, 0.62);
+  color: #5b685b;
+  border: 1px dashed #afc0ab;
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-bubble.is-recalled::before {
+  border-top-color: rgba(217, 227, 210, 0.62);
+}
+
+#fan-community-page .fc-chat-recall-tag {
+  display: block;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #829081;
+  margin-bottom: 4px;
+}
+
+#fan-community-page .fc-chat-recall-text {
+  display: block;
+}
+
+#fan-community-page .fc-chat-fake-recall {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  background: #fffefa;
+  border: 1px solid #e2e7dd;
+  border-radius: 9px;
+  overflow: hidden;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(64, 92, 104, 0.08);
+}
+
+#fan-community-page .fc-chat-fake-recall button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  min-width: 28px;
+  height: 28px;
+  font-size: 13px;
+  line-height: 1;
+  color: #5d6c5b;
+  padding: 2px 8px;
+}
+
+#fan-community-page .fc-chat-fake-recall button + button {
+  border-left: 1px solid #ecefe8;
+}
+
+#fan-community-page .fc-chat-fake-recall button:active {
+  background: #f2f4ee;
+}
+
+#fan-community-page .fc-chat-fake-recall .fc-recall-cross {
+  color: #c96d72;
+  font-size: 16px;
+}
+
+/* 消息下方轻量创作工具条（点击消息或开启工具栏时显示） */
+#fan-community-page .fc-chat-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-controls {
+  justify-content: flex-end;
+}
+
+#fan-community-page .fc-chat-mini-btn {
+  border: 1px solid #e2e7dd;
+  background: rgba(255, 254, 250, 0.92);
+  color: #606e5f;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+#fan-community-page .fc-chat-mini-btn:active {
+  background: #eef2ea;
+}
+
+#fan-community-page .fc-chat-mini-btn.del {
+  color: #b8666a;
+}
+
+/* 图片与表情包气泡 */
+#fan-community-page .fc-chat-imagebubble {
+  padding: 0;
+  background: transparent;
+  border-radius: 15px;
+  overflow: hidden;
+  max-width: 220px;
+  box-shadow: 0 2px 8px rgba(53, 65, 57, 0.08);
+}
+
+#fan-community-page .fc-chat-imagebubble::before {
+  display: none;
+}
+
+#fan-community-page .fc-chat-msg.right .fc-chat-imagebubble {
+  background: transparent;
+}
+
+#fan-community-page .fc-chat-imagebubble.is-sticker {
+  max-width: 150px;
+  box-shadow: none;
+  border-radius: 12px;
+}
+
+#fan-community-page .fc-chat-imagebubble img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 14px;
+  background: rgba(255, 254, 250, 0.7);
+}
+
+#fan-community-page .fc-chat-imagebubble.is-sticker img {
+  max-height: 150px;
+  background: transparent;
+}
+
+#fan-community-page .fc-chat-image-placeholder {
+  width: 150px;
+  height: 120px;
+  border-radius: 14px;
+  background: #f6f4ec;
+  border: 1px solid #e3e6dc;
+  display: grid;
+  place-items: center;
+  color: #8a9285;
+  font-size: 12px;
+  text-align: center;
+  padding: 10px;
+}
+
+#fan-community-page .fc-chat-transfer {
+  width: min(285px, 100%);
+  background: #ffa37f;
+  border-radius: 17px;
+  padding: 17px;
+  color: #ffffff;
+  display: inline-block;
+  text-align: left;
+  box-shadow: 0 2px 8px rgba(173, 104, 77, 0.12);
+}
+
+#fan-community-page .fc-chat-transfer-amount {
+  font-size: 25px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+#fan-community-page .fc-chat-transfer-label {
+  font-size: 12px;
+  opacity: 0.92;
+  margin-top: 3px;
+}
+
+#fan-community-page .fc-chat-transfer hr {
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.48);
+  margin: 14px 0 9px;
+}
+
+#fan-community-page .fc-chat-transfer small {
+  font-size: 13px;
+}
+
+#fan-community-page .fc-chat-fallback {
+  font-size: 13px;
+  color: #6b786c;
+}
+
+#fan-community-page .fc-chat-recall-row {
+  display: flex;
+  justify-content: center;
+  margin: 13px 0 18px;
+}
+
+#fan-community-page .fc-chat-recall-notice {
+  text-align: center;
+  color: #6f7d72;
+  font-size: 12px;
+  background: rgba(141, 154, 132, 0.14);
+  border-radius: 12px;
+  padding: 6px 13px;
+}
+
+/* 底部 QQ 风格功能栏 */
+#fan-community-page .fc-chat-bottom {
+  flex: none;
+  position: relative;
+  background: #f6f7f2;
+  border-top: 1px solid #e0e6dd;
+  padding: 7px 9px calc(8px + var(--fc-safe-bottom, 0px));
+}
+
+#fan-community-page .fc-chat-role {
+  position: absolute;
+  right: 12px;
+  top: -27px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  z-index: 3;
+}
+
+#fan-community-page .fc-chat-role-btn {
+  background: #fffefa;
+  color: #71816f;
+  border: 1px solid #e1e7df;
+  border-radius: 14px;
+  font-size: 11px;
+  padding: 3px 10px;
+  line-height: 1.4;
+  box-shadow: 0 1px 4px rgba(72, 104, 126, 0.09);
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+#fan-community-page .fc-chat-role-btn.is-char {
+  background: #eef3eb;
+  color: #556653;
+  border-color: #d6dfd1;
+}
+
+#fan-community-page .fc-chat-compose {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-height: 44px;
+}
+
+#fan-community-page .fc-chat-icon-btn {
+  flex: none;
+  width: 34px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #6e7f70;
+  font-size: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+#fan-community-page .fc-chat-icon-btn.plus {
+  font-size: 24px;
+}
+
+#fan-community-page .fc-chat-icon-btn.active {
+  background: #e5ebe2;
+  color: #4f604e;
+}
+
+#fan-community-page .fc-chat-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  max-height: 96px;
+  background: #fffefa;
+  border: 1px solid #e5e9e1;
+  border-radius: 19px;
+  padding: 9px 13px;
+  resize: none;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #39453c;
+  outline: 0;
+  color-scheme: light;
+}
+
+#fan-community-page .fc-chat-input::placeholder {
+  color: #9ba59b;
+}
+
+#fan-community-page .fc-chat-input:focus {
+  border-color: #b7c5b2;
+}
+
+#fan-community-page .fc-chat-send {
+  flex: none;
+  border: 0;
+  background: #8d9f8b;
+  color: #ffffff;
+  border-radius: 16px;
+  padding: 8px 13px;
+  min-height: 38px;
+  font-size: 13px;
+  font-weight: 500;
+  transition: opacity 0.14s ease, background-color 0.14s ease;
+}
+
+#fan-community-page .fc-chat-send:active {
+  background: #7b8e79;
+}
+
+/* 展开的功能面板：位于输入框下方，不遮挡输入框 */
+#fan-community-page .fc-chat-panel {
+  height: 224px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #f4f5f0;
+  border-top: 1px solid #e5e9e2;
+  border-radius: 14px 14px 0 0;
+  margin: 8px -9px -4px;
+  padding: 12px 14px 14px;
+}
+
+#fan-community-page .fc-chat-panel[hidden] {
+  display: none;
+}
+
+#fan-community-page .fc-chat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px 6px;
+  padding-top: 4px;
+}
+
+#fan-community-page .fc-chat-tool {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  font-size: 11px;
+  color: #6b786b;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+#fan-community-page .fc-chat-tool-icon {
+  width: 48px;
+  height: 48px;
+  background: #fffefa;
+  border: 1px solid #e6eae4;
+  border-radius: 15px;
+  display: grid;
+  place-items: center;
+  font-size: 21px;
+  color: #6d836f;
+}
+
+#fan-community-page .fc-chat-tool:active .fc-chat-tool-icon {
+  background: #eaefe7;
+}
+
+#fan-community-page .fc-chat-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid #e4e7df;
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+#fan-community-page .fc-chat-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #5b6959;
+}
+
+#fan-community-page .fc-chat-panel-action {
+  border: 1px solid #dce2d6;
+  background: #fffefa;
+  color: #5e705c;
+  border-radius: 9px;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+#fan-community-page .fc-chat-stickers {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+#fan-community-page .fc-chat-sticker {
+  position: relative;
+  background: #fffefa;
+  border: 1px solid #e7eae2;
+  border-radius: 11px;
+  padding: 5px;
+  min-height: 62px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+#fan-community-page .fc-chat-sticker img {
+  width: 100%;
+  height: 44px;
+  object-fit: contain;
+}
+
+#fan-community-page .fc-chat-sticker span {
+  font-size: 9px;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #889187;
+  margin-top: 2px;
+  text-align: center;
+}
+
+#fan-community-page .fc-chat-sticker-del {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 0;
+  background: #8a9588;
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+#fan-community-page .fc-chat-addsticker {
+  display: grid;
+  place-items: center;
+  border: 1px dashed #b9c3b6;
+  background: #fffefa;
+  border-radius: 11px;
+  color: #6b7d69;
+  font-size: 22px;
+  min-height: 62px;
+}
+
+#fan-community-page .fc-chat-empty {
+  color: #8e978c;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 16px 8px;
+  grid-column: 1 / -1;
+}
+
+/* 底部弹窗 Sheet（韩系奶油风） */
+#fan-community-page .fc-chat-sheet-back {
+  position: absolute;
+  inset: 0;
+  background: rgba(34, 41, 35, 0.36);
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 20;
+}
+
+#fan-community-page .fc-chat-sheet-back.show {
+  display: flex;
+}
+
+#fan-community-page .fc-chat-sheet {
+  width: 100%;
+  max-height: 82%;
+  overflow-y: auto;
+  background: #fffefa;
+  color: #393b35;
+  border-radius: 22px 22px 0 0;
+  border-top: 1px solid #eae7de;
+  padding: 20px 18px calc(22px + var(--fc-safe-bottom, 0px));
+}
+
+#fan-community-page .fc-chat-sheet h3 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  color: #393b35;
+}
+
+#fan-community-page .fc-chat-sheet label {
+  display: block;
+  font-size: 12px;
+  color: #7c8076;
+  margin: 12px 0 6px;
+}
+
+#fan-community-page .fc-chat-sheet input:not([type="file"]),
+#fan-community-page .fc-chat-sheet textarea,
+#fan-community-page .fc-chat-sheet select {
+  width: 100%;
+  border: 1px solid #e3e7de;
+  border-radius: 11px;
+  padding: 10px 12px;
+  background: #fdfcf9;
+  color: #393b35;
+  font: inherit;
+  font-size: 14px;
+  color-scheme: light;
+}
+
+#fan-community-page .fc-chat-sheet textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+#fan-community-page .fc-chat-sheet input[type="file"] {
+  width: 100%;
+  font-size: 12px;
+  color: #6b7269;
+}
+
+#fan-community-page .fc-chat-datetime-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+#fan-community-page .fc-chat-sheet-preview {
+  margin-top: 10px;
+  background: #f4f5ef;
+  border: 1px solid #e5e9df;
+  border-radius: 12px;
+  padding: 10px;
+  text-align: center;
+}
+
+#fan-community-page .fc-chat-sheet-preview img {
+  max-width: 100%;
+  max-height: 170px;
+  margin: 0 auto;
+  border-radius: 10px;
+  object-fit: contain;
+}
+
+#fan-community-page .fc-chat-sheet-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+#fan-community-page .fc-chat-btn {
+  flex: 1;
+  border: 0;
+  border-radius: 11px;
+  padding: 11px 14px;
+  font-size: 14px;
+  background: #7d8d76;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+#fan-community-page .fc-chat-btn.alt {
+  flex: 0 0 auto;
+  background: #f4f5ef;
+  color: #677961;
+  border: 1px solid #e5e9df;
+}
+
+#fan-community-page .fc-chat-sheet-note {
+  font-size: 11px;
+  color: #92968c;
+  line-height: 1.7;
+  margin-top: 10px;
+}
+
+/* 图片点击放大查看弹窗 */
+#fan-community-page .fc-chat-lightbox {
+  position: absolute;
+  inset: 0;
+  background: rgba(27, 31, 28, 0.88);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 30;
+}
+
+#fan-community-page .fc-chat-lightbox.show {
+  display: flex;
+}
+
+#fan-community-page .fc-chat-lightbox img {
+  max-width: 100%;
+  max-height: 85%;
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+#fan-community-page .fc-chat-lightbox-close {
+  position: absolute;
+  top: calc(16px + var(--fc-safe-top, 0px));
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(57, 59, 53, 0.72);
+  color: #ffffff;
+  font-size: 20px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}

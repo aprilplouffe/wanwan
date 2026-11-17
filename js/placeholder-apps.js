@@ -1706,7 +1706,9 @@
   }
   window.showLifeGamePage = showLifeGamePage;
   window.showHeartbeatMallPage = showHeartbeatMallPage;
-  window.showFanCommunityPage = showFanCommunityPage;
+  if (!window.FanCommunityApp) {
+    window.showFanCommunityPage = showFanCommunityPage;
+  }
   if (!window.HeartbeatLiveApp) {
     window.showHeartbeatLivePage = showHeartbeatLivePage;
   }
@@ -1724,7 +1726,9 @@
   }
   window.showLifeGameApp = showLifeGamePage;
   window.showHeartbeatMallApp = showHeartbeatMallPage;
-  window.showFanCommunityApp = showFanCommunityPage;
+  if (!window.FanCommunityApp) {
+    window.showFanCommunityApp = showFanCommunityPage;
+  }
   if (!window.HeartbeatLiveApp) {
     window.showHeartbeatLiveApp = showHeartbeatLivePage;
   }
