@@ -29,7 +29,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - 
       - name: Build web and prepare Android
         run: |
           npm run build
