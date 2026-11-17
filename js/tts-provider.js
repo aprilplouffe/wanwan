@@ -23,10 +23,14 @@
   ];
 
   var DEFAULT_FISH_PROXY_PATH = '/api/tts/fish';
+  // 若部署在 GitHub Pages 且希望所有用户免填高级代理地址，可在此填入已部署的 Worker 地址：
+  // 例如：'https://wanwan-fish-tts.<你的子域名>.workers.dev/api/tts/fish'
+  var DEFAULT_PUBLIC_FISH_PROXY_URL = '';
   var FISH_AUDIO_UPSTREAM_HOST = 'api.fish.audio';
+  var DEFAULT_FISH_MODEL = 's2.1-pro-free';
   var FISH_AUDIO_MODELS = [
-    's2.1-pro',
     's2.1-pro-free',
+    's2.1-pro',
     'drama-3',
     's2-pro'
   ];
@@ -249,8 +253,18 @@
     return false;
   }
 
+  function isStaticGithubPagesRuntime() {
+    var loc = global.location;
+    if (!loc || !loc.hostname) return false;
+    var host = String(loc.hostname).toLowerCase();
+    return host.endsWith('.github.io');
+  }
+
   function resolveFishProxyEndpoint(rawUrl) {
     var trimmed = String(rawUrl || '').trim();
+    if (!trimmed) {
+      trimmed = String(global.WANWAN_FISH_PROXY_URL || DEFAULT_PUBLIC_FISH_PROXY_URL || '').trim();
+    }
     var nativeApp = isCapacitorNativeRuntime();
 
     if (!trimmed) {
@@ -260,7 +274,16 @@
           code: 'proxy_unconfigured',
           sameOrigin: false,
           url: '',
-          message: 'Android / 离线打包环境无法使用相对路径代理，请先前往「设置 -> Fish Audio 语音配置」填写 HTTPS 代理地址'
+          message: 'Android / 离线打包环境无法使用相对路径代理，请展开「高级设置」填写 HTTPS 代理地址'
+        };
+      }
+      if (isStaticGithubPagesRuntime()) {
+        return {
+          ok: false,
+          code: 'proxy_unconfigured',
+          sameOrigin: false,
+          url: '',
+          message: 'GitHub Pages 纯静态站点无法使用相对路径 /api/tts/fish，请展开「高级设置」填入您的 Cloudflare Worker 代理地址（https://wanwan-fish-tts.<子域名>.workers.dev/api/tts/fish）'
         };
       }
       return {
@@ -366,15 +389,12 @@
       readConfigKey('fishAudioFormat'),
       hasStoredFishPersonalKey()
     ]);
-    var authMode = vals[0] === FISH_AUTH_MODES.BYOK_SESSION
-      ? FISH_AUTH_MODES.BYOK_SESSION
-      : FISH_AUTH_MODES.SERVER_MANAGED;
-    // 向后兼容：若用户此前配置过旧版明文 fishAudioApiKey 且尚未选择 authMode，自动兼容切到 byok_session
-    if (!vals[0] && vals[5]) {
-      authMode = FISH_AUTH_MODES.BYOK_SESSION;
-    }
+    // 多用户 BYOK 默认启用短期会话模式；仅当用户显式在高级设置选择 server_managed 时切换
+    var authMode = vals[0] === FISH_AUTH_MODES.SERVER_MANAGED
+      ? FISH_AUTH_MODES.SERVER_MANAGED
+      : FISH_AUTH_MODES.BYOK_SESSION;
     var modelRaw = String(vals[3] || '').trim();
-    var model = FISH_AUDIO_MODELS.indexOf(modelRaw) >= 0 ? modelRaw : (modelRaw || 's2.1-pro');
+    var model = FISH_AUDIO_MODELS.indexOf(modelRaw) >= 0 ? modelRaw : (modelRaw || DEFAULT_FISH_MODEL);
     var fmtRaw = String(vals[4] || '').trim().toLowerCase();
     var format = FISH_AUDIO_FORMATS.indexOf(fmtRaw) >= 0 ? fmtRaw : 'mp3';
     return {
@@ -404,7 +424,7 @@
         missingReason = ep.message;
       } else if (fCfg.authMode === FISH_AUTH_MODES.BYOK_SESSION && !fCfg.hasPersonalKey) {
         ready = false;
-        missingReason = '当前设为「个人密钥代理会话」，请前往主设置保存 Fish Audio API Key 或改用服务端托管模式';
+        missingReason = '尚未填写个人 Fish Audio API Key，请前往「设置 -> Fish Audio 语音配置」填写';
       }
       return {
         provider: PROVIDERS.FISH_AUDIO,
@@ -578,28 +598,7 @@
     return new Uint8Array(buffer);
   }
 
-  async function ensureByokProxySession(endpointInfo, proxyToken, forceRefresh) {
-    var now = Date.now();
-    if (!forceRefresh && _memorySessionCache.endpoint === endpointInfo.url && _memorySessionCache.sessionToken && _memorySessionCache.expiresAt > now + 10000) {
-      return _memorySessionCache.sessionToken;
-    }
-    if (!forceRefresh) {
-      var persistedToken = String((await readConfigKey('fishAudioSessionToken')) || '').trim();
-      if (persistedToken) {
-        _memorySessionCache = {
-          endpoint: endpointInfo.url,
-          sessionToken: persistedToken,
-          expiresAt: now + 30 * 60 * 1000
-        };
-        return persistedToken;
-      }
-    }
-
-    var personalKey = await loadDecryptedFishPersonalKey();
-    if (!personalKey) {
-      throw makeTtsError('config_missing', '已启用“个人密钥代理会话”，请先在系统设置中保存 Fish Audio API Key');
-    }
-
+  async function exchangeByokSession(endpointInfo, proxyToken, personalKey, persistSession) {
     var sessionUrl = deriveFishEndpointUrl(endpointInfo.url, 'session');
     var headers = { 'Content-Type': 'application/json' };
     if (proxyToken) headers['X-Fish-Proxy-Token'] = proxyToken;
@@ -624,22 +623,58 @@
     try { sJson = await sRes.json(); } catch (_) {}
     if (!sRes.ok) {
       var msg = redactSecrets((sJson && sJson.message) || ('代理会话建立失败（HTTP ' + sRes.status + '）'), [personalKey, proxyToken]);
+      if (sRes.status === 400) throw makeTtsError('bad_request_400', msg, { httpStatus: 400 });
       if (sRes.status === 401) throw makeTtsError('proxy_unauthorized', msg, { httpStatus: 401 });
       if (sRes.status === 403) throw makeTtsError('forbidden_403', msg, { httpStatus: 403 });
+      if (sRes.status === 429) throw makeTtsError('rate_limit_429', msg, { httpStatus: 429, retryable: true });
       throw makeTtsError('server_5xx', msg, { httpStatus: sRes.status });
     }
 
     var token = String((sJson && sJson.sessionToken) || '').trim();
-    var ttlMs = Math.max(60, Number((sJson && sJson.expiresInSec) || 3600)) * 1000;
-    if (token) {
+    var ttlSec = Math.max(60, Number((sJson && sJson.expiresInSec) || 1800));
+    var expiresAt = Date.now() + ttlSec * 1000;
+    if (token && persistSession !== false) {
       _memorySessionCache = {
         endpoint: endpointInfo.url,
         sessionToken: token,
-        expiresAt: Date.now() + ttlMs
+        expiresAt: expiresAt
       };
-      await writeConfigKey('fishAudioSessionToken', token);
+      await writeConfigKey('fishAudioSessionToken', {
+        endpoint: endpointInfo.url,
+        token: token,
+        expiresAt: expiresAt
+      });
     }
-    return token;
+    return { token: token, expiresInSec: ttlSec, expiresAt: expiresAt };
+  }
+
+  async function ensureByokProxySession(endpointInfo, proxyToken, forceRefresh) {
+    var now = Date.now();
+    if (!forceRefresh && _memorySessionCache.endpoint === endpointInfo.url && _memorySessionCache.sessionToken && _memorySessionCache.expiresAt > now + 15000) {
+      return _memorySessionCache.sessionToken;
+    }
+    if (!forceRefresh) {
+      var persisted = await readConfigKey('fishAudioSessionToken');
+      if (persisted && typeof persisted === 'object' && persisted.endpoint === endpointInfo.url && persisted.token && Number(persisted.expiresAt) > now + 15000) {
+        _memorySessionCache = {
+          endpoint: endpointInfo.url,
+          sessionToken: String(persisted.token),
+          expiresAt: Number(persisted.expiresAt)
+        };
+        return _memorySessionCache.sessionToken;
+      }
+    } else {
+      _memorySessionCache = { endpoint: '', sessionToken: '', expiresAt: 0 };
+      await deleteConfigKey('fishAudioSessionToken');
+    }
+
+    var personalKey = await loadDecryptedFishPersonalKey();
+    if (!personalKey) {
+      throw makeTtsError('config_missing', '尚未配置个人 Fish Audio API Key，请先在系统设置中填写并保存');
+    }
+
+    var exchanged = await exchangeByokSession(endpointInfo, proxyToken, personalKey, true);
+    return exchanged.token;
   }
 
   async function mapProxyErrorResponse(res, extraSecrets) {
@@ -665,7 +700,7 @@
         return makeTtsError('proxy_unauthorized', detail || '代理访问令牌无效或缺失（HTTP 401）', { httpStatus: 401 });
       }
       if (code === 'session_required') {
-        return makeTtsError('session_required', detail || '代理会话已失效，请重新建立连接', { httpStatus: 401 });
+        return makeTtsError('session_required', detail || '代理短期会话已失效，请重新建立连接', { httpStatus: 401 });
       }
       return makeTtsError('auth_401', detail || 'Fish Audio API Key 无效或已过期（HTTP 401）', { httpStatus: 401 });
     }
@@ -675,8 +710,8 @@
     if (st === 429) {
       return makeTtsError('rate_limit_429', detail || '请求过于频繁或 Fish Audio 额度已达上限（HTTP 429）', { httpStatus: 429, retryable: true });
     }
-    if (st === 503 && code === 'proxy_key_missing') {
-      return makeTtsError('proxy_key_missing', detail || '代理服务端未配置 FISH_AUDIO_API_KEY，且未建立个人临时密钥会话', { httpStatus: 503 });
+    if (st === 503 && (code === 'proxy_key_missing' || code === 'session_secret_missing')) {
+      return makeTtsError(code, detail || '代理服务端未就绪（HTTP 503）', { httpStatus: 503 });
     }
     if (st === 504 || code === 'upstream_timeout') {
       return makeTtsError('timeout', detail || 'Fish Audio 上游合成超时（HTTP 504）', { httpStatus: 504, retryable: true });
@@ -729,12 +764,105 @@
       ok: Boolean(json && json.ok),
       sameOrigin: endpointInfo.sameOrigin,
       endpoint: endpointInfo.url,
+      mode: (json && json.mode) || 'server_managed',
       serverKeyConfigured: Boolean(json && json.serverKeyConfigured),
+      sessionSecretConfigured: json ? json.sessionSecretConfigured !== false : true,
       requiresAccessToken: Boolean(json && json.requiresAccessToken),
       byokSessionAllowed: json ? json.byokSessionAllowed !== false : true,
       hasByokSession: Boolean(json && json.hasByokSession),
       maxTextLength: Number(json && json.maxTextLength) || 1000
     };
+  }
+
+  async function testFishConnection(customCfg) {
+    customCfg = customCfg || {};
+    var cfg = await getFishAudioConfig();
+    var authMode = customCfg.authMode || cfg.authMode || FISH_AUTH_MODES.BYOK_SESSION;
+    var proxyUrl = customCfg.proxyUrl !== undefined ? customCfg.proxyUrl : cfg.proxyUrl;
+    var proxyToken = customCfg.proxyToken !== undefined ? customCfg.proxyToken : cfg.proxyToken;
+
+    var probe = await probeFishProxyStatus({ proxyUrl: proxyUrl, proxyToken: proxyToken });
+    if (!probe.ok) {
+      return {
+        ok: false,
+        stage: 'proxy',
+        code: probe.code || 'network_error',
+        message: probe.message || '代理连通失败'
+      };
+    }
+    if (!probe.sessionSecretConfigured && authMode === FISH_AUTH_MODES.BYOK_SESSION) {
+      return {
+        ok: false,
+        stage: 'proxy',
+        code: 'session_secret_missing',
+        probe: probe,
+        message: '代理已连通（' + probe.endpoint + '），但 Worker 尚未配置 BYOK_SESSION_SECRET Secret，无法签发短期加密会话'
+      };
+    }
+
+    if (authMode === FISH_AUTH_MODES.SERVER_MANAGED) {
+      if (!probe.serverKeyConfigured) {
+        return {
+          ok: false,
+          stage: 'proxy',
+          code: 'proxy_key_missing',
+          probe: probe,
+          message: '代理已连通，但服务端未配置托管 FISH_AUDIO_API_KEY（公开 Worker 请使用个人密钥 BYOK 模式）'
+        };
+      }
+      return {
+        ok: true,
+        stage: 'proxy',
+        probe: probe,
+        message: '服务端托管代理已连通就绪：' + probe.endpoint
+      };
+    }
+
+    if (!probe.byokSessionAllowed) {
+      return {
+        ok: false,
+        stage: 'proxy',
+        code: 'forbidden_403',
+        probe: probe,
+        message: '当前代理未开启个人密钥 BYOK 会话模式，请检查代理配置'
+      };
+    }
+
+    var candidateKey = String(customCfg.apiKey || '').trim();
+    var usingUnsavedInput = Boolean(candidateKey);
+    if (!candidateKey) {
+      candidateKey = await loadDecryptedFishPersonalKey();
+    }
+    if (!candidateKey) {
+      return {
+        ok: false,
+        stage: 'auth',
+        code: 'config_missing',
+        probe: probe,
+        message: '代理连通正常（' + probe.endpoint + '），请先填写个人 Fish Audio API Key 再完成会话测试'
+      };
+    }
+
+    var endpointInfo = resolveFishProxyEndpoint(proxyUrl);
+    try {
+      var sessionRes = await exchangeByokSession(endpointInfo, proxyToken, candidateKey, !usingUnsavedInput);
+      var mins = Math.max(1, Math.round((sessionRes.expiresInSec || 1800) / 60));
+      return {
+        ok: true,
+        stage: 'session',
+        probe: probe,
+        expiresInSec: sessionRes.expiresInSec,
+        message: '连接测试通过：代理可达且 BYOK 短期加密会话已建立（有效期约 ' + mins + ' 分钟）。注意：API Key 本身是否欠费或被 Fish 官方鉴权通过，将在聊天/直播填写 Reference ID 实际合成音频时校验。'
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        stage: 'session',
+        code: (err && err.code) || 'session_error',
+        probe: probe,
+        message: (err && err.message) || 'BYOK 会话交换失败'
+      };
+    }
   }
 
   async function callFishAudioTTS(text, referenceId, options) {
@@ -745,7 +873,7 @@
       throw makeTtsError(endpointInfo.code, endpointInfo.message);
     }
 
-    var model = String(options.model || cfg.model || 's2.1-pro').trim() || 's2.1-pro';
+    var model = String(options.model || cfg.model || DEFAULT_FISH_MODEL).trim() || DEFAULT_FISH_MODEL;
     var format = String(options.format || cfg.format || 'mp3').trim().toLowerCase();
     if (FISH_AUDIO_FORMATS.indexOf(format) < 0) format = 'mp3';
 
@@ -902,6 +1030,7 @@
     FISH_AUTH_MODES: FISH_AUTH_MODES,
     MINIMAX_MODELS: MINIMAX_MODELS,
     DEFAULT_FISH_PROXY_PATH: DEFAULT_FISH_PROXY_PATH,
+    DEFAULT_FISH_MODEL: DEFAULT_FISH_MODEL,
     FISH_AUDIO_MODELS: FISH_AUDIO_MODELS,
     FISH_AUDIO_FORMATS: FISH_AUDIO_FORMATS,
     normalizeProvider: normalizeProvider,
@@ -915,6 +1044,7 @@
     clearFishAudioPersonalKey: clearFishAudioPersonalKey,
     hasStoredFishPersonalKey: hasStoredFishPersonalKey,
     probeFishProxyStatus: probeFishProxyStatus,
+    testFishConnection: testFishConnection,
     getGlobalDefaultProvider: getGlobalDefaultProvider,
     getProviderCredentialStatus: getProviderCredentialStatus,
     describeMediaError: describeMediaError,

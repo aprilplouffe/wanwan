@@ -429,7 +429,7 @@ export function createApp(): express.Express {
       return;
     }
 
-    const model = String(body.model || "s2.1-pro").trim();
+    const model = String(body.model || "s2.1-pro-free").trim();
     if (!ALLOWED_FISH_MODELS.has(model)) {
       res.status(400).json({
         error: "unsupported_model",

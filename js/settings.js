@@ -174,58 +174,71 @@ async function initMinimaxConfigPage(page) {
 
 // ===== Fish Audio 语音配置 =====
 var FISH_AUDIO_MODELS = [
-  's2.1-pro',
   's2.1-pro-free',
+  's2.1-pro',
   'drama-3',
   's2-pro'
 ]
 var FISH_AUDIO_FORMATS = ['mp3', 'wav', 'opus', 'pcm']
 
+function formatFishModelLabel(modelId) {
+  if (modelId === 's2.1-pro-free') return 's2.1-pro-free（推荐 · 免费模型）'
+  if (modelId === 's2.1-pro') return 's2.1-pro（旗舰付费模型）'
+  return modelId
+}
+
 function openFishAudioConfigPage() {
   var modelOptions = FISH_AUDIO_MODELS.map(function(m) {
-    return '<option value="' + settingsEscHtml(m) + '">' + settingsEscHtml(m) + '</option>'
+    return '<option value="' + settingsEscHtml(m) + '">' + settingsEscHtml(formatFishModelLabel(m)) + '</option>'
   }).join('')
   var formatOptions = FISH_AUDIO_FORMATS.map(function(f) {
     return '<option value="' + settingsEscHtml(f) + '">' + settingsEscHtml(f.toUpperCase()) + '</option>'
   }).join('')
   var html =
     '<div class="setting-section"><div class="api-form" id="fish-audio-form">' +
-      '<label class="form-label">凭据与代理模式</label>' +
-      '<select class="input-field" id="fish-audio-auth-mode">' +
-        '<option value="server_managed">服务端托管密钥（推荐 · 浏览器不存 API Key）</option>' +
-        '<option value="byok_session">个人密钥代理会话（本地 AES-GCM 加密 · 仅经 HTTPS 代理换取会话）</option>' +
-      '</select>' +
-      '<label class="form-label">代理端点 URL（HTTPS / 同源）</label>' +
-      '<input class="input-field" id="fish-audio-proxy-url" placeholder="默认同源 /api/tts/fish（App 打包请填 https://.../api/tts/fish）" autocomplete="off">' +
-      '<label class="form-label">代理访问令牌（可选 · X-Fish-Proxy-Token）</label>' +
-      '<div class="input-with-toggle">' +
-        '<input class="input-field" id="fish-audio-proxy-token" type="password" placeholder="若代理服务端未启用访问口令可留空" autocomplete="off">' +
-        '<button class="btn-text-toggle" id="toggle-fish-proxy-token-vis" type="button">显示</button>' +
-      '</div>' +
-      '<div id="fish-byok-key-wrap" style="display:none">' +
-        '<label class="form-label">个人 Fish Audio API Key（仅提交至代理会话接口）</label>' +
+      '<div id="fish-byok-key-wrap">' +
+        '<label class="form-label">Fish Audio API Key（个人自备）</label>' +
         '<div class="input-with-toggle">' +
-          '<input class="input-field" id="fish-audio-api-key" type="password" placeholder="输入新的个人 API Key（留空表示保留已加密凭据）" autocomplete="off">' +
+          '<input class="input-field" id="fish-audio-api-key" type="password" placeholder="输入个人 API Key（留空表示保留本地已存凭据）" autocomplete="off">' +
           '<button class="btn-text-toggle" id="toggle-fish-audio-key-vis" type="button">显示</button>' +
         '</div>' +
-        '<div class="section-desc" id="fish-byok-key-status" style="padding:4px 0 6px"></div>' +
-        '<button class="btn-ghost btn-sm" id="btn-clear-fish-key" type="button" style="margin-bottom:8px">清除本地已存个人密钥</button>' +
+        '<div class="section-desc" id="fish-byok-key-status" style="padding:4px 0 4px"></div>' +
+        '<div class="section-desc" style="padding:0 0 6px;color:var(--c-hint,#888);font-size:11px;line-height:1.5">' +
+          '安全说明：Key 经 WebCrypto AES-GCM 加密保存在当前浏览器 IndexedDB（不导出至备份），仅经代理换取短期加密会话；浏览器端本地凭据仍无法绝对免疫同源 XSS 或恶意扩展读取，请勿在公共设备保存。' +
+        '</div>' +
+        '<button class="btn-ghost btn-sm" id="btn-clear-fish-key" type="button" style="margin-bottom:8px">清除本地已存密钥</button>' +
       '</div>' +
-      '<label class="form-label">语音模型（代理透传 model 请求头）</label>' +
+      '<label class="form-label">语音模型</label>' +
       '<select class="input-field" id="fish-audio-model">' +
         modelOptions +
       '</select>' +
-      '<label class="form-label">音频格式</label>' +
-      '<select class="input-field" id="fish-audio-format">' +
-        formatOptions +
-      '</select>' +
-      '<div class="section-desc" style="padding:8px 0 0">' +
-        'Fish Audio 官方接口（api.fish.audio/v1/tts）不开放浏览器 CORS 预检，前端统一经安全代理转发。<br>' +
-        '全局仅管理代理与编码格式；微信角色与心动直播角色的 Reference ID 各自独立配置。' +
-      '</div>' +
-      '<div class="section-desc" id="fish-proxy-diag-result" style="padding:6px 0 0"></div>' +
-      '<button class="btn-ghost btn-full" id="btn-test-fish-proxy" type="button" style="margin-top:8px">检测代理与后端密钥状态</button>' +
-      '<button class="btn-pill btn-full" id="btn-save-fish-audio" style="margin-top:8px">保存</button>' +
+      '<div class="section-desc" id="fish-proxy-diag-result" style="padding:8px 0 0"></div>' +
+      '<button class="btn-ghost btn-full" id="btn-test-fish-proxy" type="button" style="margin-top:8px">测试连接</button>' +
+      '<button class="btn-pill btn-full" id="btn-save-fish-audio" style="margin-top:8px">保存配置</button>' +
+      '<details class="fish-advanced-details" id="fish-advanced-settings">' +
+        '<summary>高级设置（自定义代理 / 格式 / 代理模式）</summary>' +
+        '<div class="fish-advanced-body">' +
+          '<label class="form-label">自定义代理端点 URL（HTTPS / 同源）</label>' +
+          '<input class="input-field" id="fish-audio-proxy-url" placeholder="GitHub Pages 请填 https://wanwan-fish-tts.<子域名>.workers.dev/api/tts/fish" autocomplete="off">' +
+          '<label class="form-label">凭据与代理模式</label>' +
+          '<select class="input-field" id="fish-audio-auth-mode">' +
+            '<option value="byok_session">个人密钥短期会话 BYOK（推荐 · 不消耗开发者额度）</option>' +
+            '<option value="server_managed">自建服务端托管密钥（仅自部署 Node 后端可用）</option>' +
+          '</select>' +
+          '<label class="form-label">音频格式</label>' +
+          '<select class="input-field" id="fish-audio-format">' +
+            formatOptions +
+          '</select>' +
+          '<label class="form-label">代理访问令牌（可选 · X-Fish-Proxy-Token）</label>' +
+          '<div class="input-with-toggle">' +
+            '<input class="input-field" id="fish-audio-proxy-token" type="password" placeholder="公开 BYOK Worker 通常留空；仅私有加锁代理填写" autocomplete="off">' +
+            '<button class="btn-text-toggle" id="toggle-fish-proxy-token-vis" type="button">显示</button>' +
+          '</div>' +
+          '<div class="section-desc" style="padding:8px 0 0;font-size:11px;line-height:1.5">' +
+            '微信聊天与心动直播（Char / NPC）的 Reference ID 各自独立配置；代理仅转发固定官方地址 api.fish.audio/v1/tts。' +
+          '</div>' +
+        '</div>' +
+      '</details>' +
     '</div></div>'
   var page = buildSubPage('sub-fish-audio-config', 'Fish Audio 语音配置', html)
   openSubPage(page)
@@ -236,11 +249,12 @@ async function initFishAudioConfigPage(page) {
   var ttsEngine = window.WanWanTTS
   var cfg = ttsEngine && typeof ttsEngine.getFishAudioConfig === 'function'
     ? await ttsEngine.getFishAudioConfig()
-    : { authMode: 'server_managed', proxyUrl: '', proxyToken: '', model: 's2.1-pro', format: 'mp3', hasPersonalKey: false }
+    : { authMode: 'byok_session', proxyUrl: '', proxyToken: '', model: 's2.1-pro-free', format: 'mp3', hasPersonalKey: false }
 
   var authModeEl = page.querySelector('#fish-audio-auth-mode')
   var proxyUrlEl = page.querySelector('#fish-audio-proxy-url')
   var proxyTokenEl = page.querySelector('#fish-audio-proxy-token')
+  var advEl = page.querySelector('#fish-advanced-settings')
   var byokWrapEl = page.querySelector('#fish-byok-key-wrap')
   var byokStatusEl = page.querySelector('#fish-byok-key-status')
   var apiKeyEl = page.querySelector('#fish-audio-api-key')
@@ -248,13 +262,13 @@ async function initFishAudioConfigPage(page) {
   var formatEl = page.querySelector('#fish-audio-format')
   var diagEl = page.querySelector('#fish-proxy-diag-result')
 
-  if (authModeEl) authModeEl.value = cfg.authMode || 'server_managed'
+  if (authModeEl) authModeEl.value = cfg.authMode || 'byok_session'
   if (proxyUrlEl) proxyUrlEl.value = cfg.proxyUrl || ''
   if (proxyTokenEl) proxyTokenEl.value = cfg.proxyToken || ''
   if (apiKeyEl) apiKeyEl.value = ''
 
   if (modelEl) {
-    var savedModel = cfg.model || 's2.1-pro'
+    var savedModel = cfg.model || 's2.1-pro-free'
     if (savedModel && !Array.prototype.some.call(modelEl.options, function(o) { return o.value === savedModel })) {
       var opt = document.createElement('option')
       opt.value = savedModel
@@ -268,11 +282,11 @@ async function initFishAudioConfigPage(page) {
   }
 
   function syncAuthModeUi(hasKey) {
-    var mode = authModeEl ? authModeEl.value : 'server_managed'
-    if (byokWrapEl) byokWrapEl.style.display = mode === 'byok_session' ? '' : 'none'
+    var mode = authModeEl ? authModeEl.value : 'byok_session'
+    if (byokWrapEl) byokWrapEl.style.display = mode === 'server_managed' ? 'none' : ''
     if (byokStatusEl) {
       byokStatusEl.textContent = hasKey
-        ? '状态：本地已加密保存个人密钥（已脱敏，不会明文出现在 TTS 请求中）'
+        ? '状态：本地已加密保存个人 API Key（不会写入备份，不会以明文出现在语音合成请求中）'
         : '状态：尚未保存个人 Fish Audio API Key'
     }
   }
@@ -306,37 +320,44 @@ async function initFishAudioConfigPage(page) {
   var testBtn = page.querySelector('#btn-test-fish-proxy')
   if (testBtn) {
     testBtn.addEventListener('click', async function() {
-      if (!ttsEngine || typeof ttsEngine.probeFishProxyStatus !== 'function') return
+      if (!ttsEngine) return
       testBtn.disabled = true
-      testBtn.textContent = '检测中…'
-      if (diagEl) diagEl.textContent = '正在向代理检测服务端配置与跨域连通性…'
+      testBtn.textContent = '测试中…'
+      if (diagEl) diagEl.textContent = '正在检测代理连通性与 BYOK 会话握手…'
       try {
-        var res = await ttsEngine.probeFishProxyStatus({
-          proxyUrl: proxyUrlEl ? proxyUrlEl.value.trim() : '',
-          proxyToken: proxyTokenEl ? proxyTokenEl.value.trim() : ''
-        })
+        var res = typeof ttsEngine.testFishConnection === 'function'
+          ? await ttsEngine.testFishConnection({
+              authMode: authModeEl ? authModeEl.value : 'byok_session',
+              proxyUrl: proxyUrlEl ? proxyUrlEl.value.trim() : '',
+              proxyToken: proxyTokenEl ? proxyTokenEl.value.trim() : '',
+              apiKey: apiKeyEl ? apiKeyEl.value.trim() : ''
+            })
+          : await ttsEngine.probeFishProxyStatus({
+              proxyUrl: proxyUrlEl ? proxyUrlEl.value.trim() : '',
+              proxyToken: proxyTokenEl ? proxyTokenEl.value.trim() : ''
+            })
         if (!res.ok) {
-          if (diagEl) diagEl.textContent = '检测未通过（' + (res.code || 'error') + '）：' + (res.message || '代理不可达')
+          if (res.code === 'proxy_unconfigured' && advEl) {
+            advEl.open = true
+          }
+          if (diagEl) diagEl.textContent = '测试未通过（' + (res.code || 'error') + '）：' + (res.message || '代理不可达')
           return
         }
-        var lines = ['代理已连通：' + res.endpoint]
-        lines.push(res.serverKeyConfigured ? '服务端已托管 FISH_AUDIO_API_KEY（无需客户端填 Key）' : '服务端尚未配置 FISH_AUDIO_API_KEY（需服务端环境变量或启用个人密钥会话）')
-        if (res.requiresAccessToken) lines.push('代理已开启访问令牌校验')
-        if (res.hasByokSession) lines.push('当前个人临时代理会话有效')
-        if (diagEl) diagEl.textContent = lines.join(' · ')
+        if (diagEl) diagEl.textContent = res.message || '连接测试通过'
       } finally {
         testBtn.disabled = false
-        testBtn.textContent = '检测代理与后端密钥状态'
+        testBtn.textContent = '测试连接'
       }
     })
   }
 
   page.querySelector('#btn-save-fish-audio').addEventListener('click', async function() {
-    var mode = authModeEl ? authModeEl.value : 'server_managed'
+    var mode = authModeEl ? authModeEl.value : 'byok_session'
     var rawProxyUrl = proxyUrlEl ? proxyUrlEl.value.trim() : ''
     if (ttsEngine && typeof ttsEngine.resolveFishProxyEndpoint === 'function') {
       var epCheck = ttsEngine.resolveFishProxyEndpoint(rawProxyUrl)
       if (!epCheck.ok) {
+        if (advEl) advEl.open = true
         window.toast(epCheck.message)
         if (proxyUrlEl && proxyUrlEl.focus) proxyUrlEl.focus()
         return
@@ -354,7 +375,7 @@ async function initFishAudioConfigPage(page) {
         ? await ttsEngine.hasStoredFishPersonalKey()
         : false
       if (!alreadyHas) {
-        window.toast('“个人密钥代理会话”模式需要填写 Fish Audio API Key')
+        window.toast('请填写个人 Fish Audio API Key')
         if (apiKeyEl && apiKeyEl.focus) apiKeyEl.focus()
         return
       }
@@ -378,7 +399,7 @@ async function initFishAudioConfigPage(page) {
       syncAuthModeUi(hasKeyNow)
       var settingsPage = document.getElementById('settings-page')
       if (settingsPage) await updateRowValues(settingsPage)
-      window.toast('Fish Audio 代理与语音配置已保存')
+      window.toast('Fish Audio 语音配置已保存')
     } catch (error) {
       var safeErr = ttsEngine && ttsEngine.redactSecrets ? ttsEngine.redactSecrets(error && error.message || error) : (error && error.message || error)
       window.toast('Fish Audio 语音配置保存失败：' + safeErr)
@@ -4032,10 +4053,10 @@ async function updateRowValues(page) {
     if (window.WanWanTTS && typeof window.WanWanTTS.getProviderCredentialStatus === 'function') {
       var fishStatus = await window.WanWanTTS.getProviderCredentialStatus('fish_audio')
       valFish.textContent = fishStatus.apiReady
-        ? ((fishStatus.model || 's2.1-pro') + ' · 代理模式')
-        : '需配置代理'
+        ? ((fishStatus.model || 's2.1-pro-free') + (fishStatus.authMode === 'byok_session' ? ' · BYOK' : ' · 代理'))
+        : (fishStatus.proxyEndpoint ? '未填 Key' : '需配代理')
     } else {
-      valFish.textContent = '代理模式'
+      valFish.textContent = 'BYOK'
     }
   }
   var valDefaultTts = page.querySelector('#val-default-tts-provider')

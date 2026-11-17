@@ -1721,16 +1721,17 @@ async function main() {
   );
   check(
     ttsProviderJs.includes('/api/tts/fish') &&
-    ttsProviderJs.includes('s2.1-pro') &&
+    ttsProviderJs.includes('s2.1-pro-free') &&
     ttsProviderJs.includes('reference_id') &&
     ttsProviderJs.includes('redactSecrets') &&
+    settingsJs.includes('fish-advanced-settings') &&
     dataJs.includes("'fishAudioVaultKey'") &&
     dataJs.includes("'fishAudioSessionToken'") &&
     dataJs.includes("'fishAudioApiKey'"),
-    'tts-provider.js 默认走同源/HTTPS Fish Audio 代理且 data.js 备份严格排除敏感密钥凭据'
+    'tts-provider.js 默认 s2.1-pro-free + BYOK，settings.js 将高级代理配置折叠收纳，data.js 备份排除密钥'
   );
 
-  // 18.2 WanWanTTS 底层引擎（Minimax hex 解码 + Fish Audio 二进制流 + CORS/HTTP 错误处理）
+  // 18.2 WanWanTTS 底层引擎（Minimax hex 解码 + Fish Audio BYOK 会话 + 二进制流 + CORS/HTTP 错误处理）
   const h2 = createHarness();
   const ctx2 = loadScripts(h2);
   const store2 = ctx2.HeartbeatLiveStorage;
@@ -1739,11 +1740,16 @@ async function main() {
   const tts2 = ctx2.WanWanTTS;
   const FakeBlob2 = h2.win.Blob;
 
+  const defaultFishCfg = await tts2.getFishAudioConfig();
+  check(
+    defaultFishCfg.authMode === 'byok_session' && defaultFishCfg.model === 's2.1-pro-free',
+    'Fish Audio 默认启用多用户 BYOK 会话模式，默认模型为 s2.1-pro-free'
+  );
+
   await h2.win.db.config.put({ key: 'minimaxVersion', value: 'domestic' });
   await h2.win.db.config.put({ key: 'minimaxGroupId', value: 'grp_test' });
   await h2.win.db.config.put({ key: 'minimaxApiKey', value: 'mm_secret_test' });
   await h2.win.db.config.put({ key: 'minimaxModel', value: 'speech-2.8-hd' });
-  await h2.win.db.config.put({ key: 'fishAudioAuthMode', value: 'byok_session' });
   await tts2.saveFishAudioPersonalKey('fish_secret_test');
 
   check((await tts2.getGlobalDefaultProvider()) === 'minimax', '默认全局语音服务安全回退为 minimax');
@@ -1759,11 +1765,28 @@ async function main() {
         async json() { return { base_resp: { status_code: 0 }, data: { audio: '494433' } }; }
       };
     }
-    if (String(url).includes('/api/tts/fish/session')) {
+    if (String(url).includes('/api/tts/fish/status') || String(url).endsWith('/status')) {
       return {
         ok: true,
         status: 200,
-        async json() { return { ok: true, sessionToken: 'opaque_sid_test', expiresInSec: 3600 }; }
+        async json() {
+          return {
+            ok: true,
+            mode: 'byok_only',
+            serverKeyConfigured: false,
+            sessionSecretConfigured: true,
+            byokSessionAllowed: true,
+            hasByokSession: true
+          };
+        }
+      };
+    }
+    if (String(url).includes('/api/tts/fish/session') || String(url).endsWith('/session')) {
+      const sid = String(url).includes('proxy2.example.com') ? 'opaque_sid_proxy2' : 'opaque_sid_test';
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { ok: true, sessionToken: sid, expiresInSec: 1800 }; }
       };
     }
     if (String(url).includes('/api/tts/fish')) {
@@ -1809,6 +1832,12 @@ async function main() {
     return { ok: false, status: 404, async json() { return {}; } };
   });
 
+  const connTestRes = await tts2.testFishConnection({ apiKey: 'fish_unsaved_probe_123' });
+  check(
+    Boolean(connTestRes && connTestRes.ok && connTestRes.stage === 'session'),
+    'testFishConnection 可串联完成代理探测与 BYOK 短期会话握手校验'
+  );
+
   const mmRes = await tts2.synthesize({ provider: 'minimax', text: '测试 Minimax', voiceId: 'mm_global_v1' });
   const fishRes = await tts2.synthesize({ provider: 'fish_audio', text: '测试 Fish Audio', referenceId: 'fish_ref_v1' });
   const fishReq = fetchCalls.find(c => String(c.url) === '/api/tts/fish');
@@ -1819,10 +1848,18 @@ async function main() {
     fishReq &&
     !fishReq.opts.headers.Authorization &&
     fishReq.opts.headers['X-Fish-Session'] === 'opaque_sid_test' &&
-    fishReqBody.model === 's2.1-pro' &&
+    fishReqBody.model === 's2.1-pro-free' &&
     fishReqBody.reference_id === 'fish_ref_v1' &&
     fishReqBody.normalize === true,
-    'WanWanTTS 正确分发 Minimax 与 Fish Audio 同源代理（无浏览器明文 Authorization 头，改用不透明会话令牌）'
+    'WanWanTTS 默认以 s2.1-pro-free + BYOK 不透明会话令牌调用 Fish Audio 代理，且保留 Minimax 兼容'
+  );
+
+  // 切换自定义代理 URL 时不复用旧代理的会话令牌
+  await tts2.callFishAudioTTS('切换代理测试', 'fish_ref_v1', { proxyUrl: 'https://proxy2.example.com/api/tts/fish' });
+  const proxy2Req = fetchCalls.find(c => String(c.url) === 'https://proxy2.example.com/api/tts/fish');
+  check(
+    Boolean(proxy2Req && proxy2Req.opts && proxy2Req.opts.headers['X-Fish-Session'] === 'opaque_sid_proxy2'),
+    '切换代理地址时按端点隔离 BYOK 会话令牌，不混用旧端点会话'
   );
 
   // 同源代理网络失败不再误判为 CORS；自定义跨域代理失败与 401/429/解码异常各自精准分类且密钥脱敏

@@ -714,6 +714,37 @@ textarea.input-field.floating-ball-css-input {
   justify-content: center;
   min-height: 42px;
 }
+.fish-advanced-details {
+  margin: 10px 0 6px;
+  border: 1px solid var(--c-line, #e8e8e8);
+  border-radius: 10px;
+  background: var(--c-surface, #f7f7f8);
+}
+.fish-advanced-details > summary {
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-sub, #555);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.fish-advanced-details > summary::-webkit-details-marker { display: none; }
+.fish-advanced-details > summary::after {
+  content: '展开';
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--c-hint, #888);
+}
+.fish-advanced-details[open] > summary::after {
+  content: '收起';
+}
+.fish-advanced-body {
+  padding: 2px 12px 12px;
+  border-top: 1px solid var(--c-line, #e8e8e8);
+}
 
 /* ===== 字体预览 ===== */
 .font-preview-box {

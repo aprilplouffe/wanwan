@@ -238,8 +238,8 @@
         global.db.config.get('fishAudioApiKeyEnc'),
         global.db.config.get('fishAudioApiKey')
       ]);
-      var authMode = (fRows[0] && fRows[0].value) || 'server_managed';
-      var fModel = (fRows[1] && fRows[1].value) || 's2.1-pro';
+      var authMode = (fRows[0] && fRows[0].value) || 'byok_session';
+      var fModel = (fRows[1] && fRows[1].value) || 's2.1-pro-free';
       var hasPersonal = Boolean((fRows[2] && fRows[2].value && fRows[2].value.cipher) || (fRows[3] && fRows[3].value));
       var fReady = authMode === 'byok_session' ? Boolean(hasPersonal && fModel) : Boolean(fModel);
       return {
