@@ -53,14 +53,14 @@
       title: 'AI 角色互动',
       desc: '自己发送消息，AI 扮演指定角色回复',
       isAi: true,
-      noticeText: 'AI 角色互动接口暂未接入，当前版本不会发起真实 AI 请求；您仍可正常使用下方输入框与工具手动创作，已有聊天记录不会丢失。'
+      noticeText: ''
     },
     {
       id: 'ai_story',
       title: 'AI 剧情生成',
       desc: '根据设定自动生成双方聊天剧情',
       isAi: true,
-      noticeText: 'AI 剧情生成接口暂未接入，当前版本不会自动生成剧情内容；您仍可正常使用下方工具手动创作，已有聊天记录不会丢失。'
+      noticeText: ''
     }
   ];
 
@@ -209,6 +209,11 @@
   var _playingVoiceIndex = -1;
   var _activeAudio = null;
   var _expandedVoices = Object.create(null);
+  var _expandedTextVoices = Object.create(null);
+  var _aiBusy = false;
+  var _aiErrorText = '';
+  var _aiLastTrigger = null;
+  var _aiRequestSeq = 0;
   var _cleanupDoc = null;
 
   function assetsApi() {
@@ -221,6 +226,10 @@
 
   function personasApi() {
     return global.FanCommunityPersonas || null;
+  }
+
+  function aiApi() {
+    return global.FanCommunityAi || null;
   }
 
   function clone(obj) {
@@ -796,6 +805,11 @@
     roleBtn.setAttribute('title', '切换消息发送身份');
     roleWrap.appendChild(roleBtn);
 
+    // 仅在 AI 创作模式下展示的轻量状态与操作条（手动模式默认隐藏，保留原版视觉）
+    var aiBar = el('div', 'fc-chat-ai-bar');
+    aiBar.id = 'fc-chat-ai-bar';
+    aiBar.hidden = true;
+
     var compose = el('div', 'fc-chat-compose');
 
     var voiceBtn = el('button', 'fc-chat-icon-btn voice');
@@ -837,6 +851,7 @@
     panelEl.hidden = true;
 
     bottom.appendChild(roleWrap);
+    bottom.appendChild(aiBar);
     bottom.appendChild(compose);
     bottom.appendChild(panelEl);
 
@@ -1025,12 +1040,48 @@
       return pApi.getPersona(ref.id);
     }
 
+    var _roleStatusState = { status: 'unbound', name: '', sourceLabel: '' };
+    var _roleCheckSeq = 0;
+
+    function refreshRoleStatusAndBar() {
+      var seq = ++_roleCheckSeq;
+      var ref = getWorkBoundRoleRef();
+      var pApi = personasApi();
+      if (!ref) {
+        _roleStatusState = { status: 'unbound', name: '', sourceLabel: '' };
+        renderAiModeBar();
+        return;
+      }
+      if (pApi && typeof pApi.resolveRoleRef === 'function') {
+        pApi.resolveRoleRef(ref).then(function(res) {
+          if (seq !== _roleCheckSeq || !document.body.contains(app)) return;
+          if (res.status === 'ok' && res.role) {
+            _roleStatusState = {
+              status: 'ok',
+              name: res.role.name || currentCharName(),
+              sourceLabel: res.sourceLabel || ''
+            };
+          } else if (res.status === 'missing') {
+            _roleStatusState = {
+              status: 'missing',
+              name: '',
+              sourceLabel: res.sourceLabel || ''
+            };
+          } else {
+            _roleStatusState = { status: 'unbound', name: '', sourceLabel: '' };
+          }
+          renderAiModeBar();
+        }).catch(function() {});
+      }
+    }
+
     function syncBoundPersonaUi() {
       // 仅确保旧字段 boundPersonaId 与 boundRoleRef 保持一致，不自动清除缺失角色的引用以便安全提示用户重新选择
       if (!_state) return;
       var ref = getWorkBoundRoleRef();
       _state.boundRoleRef = ref;
       _state.boundPersonaId = (ref && ref.source === 'community_persona') ? ref.id : '';
+      refreshRoleStatusAndBar();
     }
 
     function countRecalledMessages() {
@@ -1343,9 +1394,133 @@
       });
     }
 
+    function renderAiModeBar() {
+      if (!aiBar) return;
+      var modeDef = getCreationModeDef(_state && _state.creationMode);
+      if (!modeDef.isAi) {
+        aiBar.hidden = true;
+        aiBar.replaceChildren();
+        input.placeholder = '发消息……';
+        return;
+      }
+
+      aiBar.hidden = false;
+      aiBar.replaceChildren();
+      aiBar.classList.toggle('is-busy', _aiBusy);
+      aiBar.classList.toggle('is-error', Boolean(_aiErrorText));
+
+      input.placeholder = modeDef.id === 'ai_story'
+        ? '发消息或输入剧情提示…'
+        : '向 ' + currentCharName() + ' 发消息…';
+      if (!input.value) input.style.height = '38px';
+
+      var left = el('div', 'fc-chat-ai-bar-left');
+      var badge = el('button', 'fc-chat-ai-mode-tag', modeDef.id === 'ai_story' ? 'AI 剧情' : 'AI 互动');
+      badge.type = 'button';
+      badge.id = 'fc-chat-ai-mode-badge';
+      badge.title = '切换创作模式';
+      badge.onclick = openCreationModeSheet;
+      left.appendChild(badge);
+
+      var statusEl = el('span', 'fc-chat-ai-status');
+      statusEl.id = 'fc-chat-ai-status';
+      if (_aiBusy) {
+        statusEl.textContent = modeDef.id === 'ai_story' ? '正在生成线上聊天剧情…' : (currentCharName() + ' 正在输入…');
+      } else if (_aiErrorText) {
+        statusEl.textContent = _aiErrorText;
+      } else if (_roleStatusState.status === 'missing') {
+        statusEl.textContent = '原绑定角色已不存在（仍按本作品设定运行）';
+      } else {
+        var activeRoleLabel = _roleStatusState.status === 'ok' && _roleStatusState.name
+          ? _roleStatusState.name
+          : currentCharName();
+        statusEl.textContent = activeRoleLabel + (modeDef.id === 'ai_story' ? ' · 双人剧情待命' : ' · 在线');
+      }
+      left.appendChild(statusEl);
+
+      var right = el('div', 'fc-chat-ai-bar-actions');
+      if (_aiErrorText && !_aiBusy) {
+        var retryBtn = el('button', 'fc-chat-ai-btn is-primary', '重试');
+        retryBtn.type = 'button';
+        retryBtn.id = 'fc-chat-ai-retry-btn';
+        retryBtn.onclick = function() {
+          if (_aiLastTrigger) {
+            triggerAiTurn(_aiLastTrigger);
+          } else if (modeDef.id === 'ai_story') {
+            triggerAiTurn({ triggerType: 'story_beat', userDirection: '' });
+          } else {
+            triggerAiTurn({ triggerType: 'followup' });
+          }
+        };
+        var dismissBtn = el('button', 'fc-chat-ai-btn', '×');
+        dismissBtn.type = 'button';
+        dismissBtn.setAttribute('aria-label', '关闭错误提示');
+        dismissBtn.onclick = function() {
+          _aiErrorText = '';
+          renderAiModeBar();
+        };
+        right.appendChild(retryBtn);
+        right.appendChild(dismissBtn);
+      } else if (!_aiBusy) {
+        if (_roleStatusState.status === 'missing') {
+          var rebindBtn = el('button', 'fc-chat-ai-btn is-warn', '重选角色');
+          rebindBtn.type = 'button';
+          rebindBtn.id = 'fc-chat-ai-rebind-btn';
+          rebindBtn.onclick = function() {
+            openPersonaPickerSheet(function() {
+              syncBoundPersonaUi();
+            });
+          };
+          right.appendChild(rebindBtn);
+        }
+
+        var actionBtn = el('button', 'fc-chat-ai-btn is-primary');
+        actionBtn.type = 'button';
+        actionBtn.id = 'fc-chat-ai-action-btn';
+        if (modeDef.id === 'ai_story') {
+          actionBtn.textContent = '生成剧情';
+          actionBtn.onclick = function() {
+            var dirText = input.value.trim();
+            if (dirText) {
+              input.value = '';
+              autoResizeInput();
+            }
+            triggerAiTurn({
+              triggerType: 'story_beat',
+              userDirection: dirText
+            });
+          };
+        } else {
+          var visibleItems = Array.isArray(_state && _state.items)
+            ? _state.items.filter(function(it) { return it && !it.fakeRecall && it.type !== 'withdraw'; })
+            : [];
+          var lastVisible = visibleItems.length ? visibleItems[visibleItems.length - 1] : null;
+          var shouldReplyMedia = Boolean(lastVisible && lastVisible.side === 'right');
+          actionBtn.textContent = shouldReplyMedia ? '让Ta回复' : '让Ta发一条';
+          actionBtn.onclick = function() {
+            triggerAiTurn({
+              triggerType: shouldReplyMedia ? 'reply_after_media' : 'followup',
+              userInput: (lastVisible && lastVisible.text) || ''
+            });
+          };
+        }
+        right.appendChild(actionBtn);
+
+        var setBtn = el('button', 'fc-chat-ai-btn', '设定');
+        setBtn.type = 'button';
+        setBtn.id = 'fc-chat-ai-settings-shortcut';
+        setBtn.onclick = openAiSettingsPanel;
+        right.appendChild(setBtn);
+      }
+
+      aiBar.appendChild(left);
+      aiBar.appendChild(right);
+    }
+
     function syncCreationModeUi() {
       getCreationModeDef(_state && _state.creationMode);
       syncBoundPersonaUi();
+      renderAiModeBar();
     }
 
     function openCreationModeSheet() {
@@ -1372,7 +1547,7 @@
 
           var badges = el('div', 'fc-mode-card-badges');
           if (def.isAi) {
-            badges.appendChild(el('span', 'fc-mode-card-tag is-pending', '待接入 AI'));
+            badges.appendChild(el('span', 'fc-mode-card-tag is-ready', 'AI 已就绪'));
           }
           if (isActive) {
             badges.appendChild(el('span', 'fc-mode-card-tag is-current', '当前'));
@@ -1387,6 +1562,7 @@
           card.onclick = function() {
             if (!_state) return;
             _state.creationMode = def.id;
+            _aiErrorText = '';
             saveState(_state);
             syncCreationModeUi();
             closeSheet();
@@ -1451,7 +1627,7 @@
       var items = Array.isArray(_state && _state.items) ? _state.items : [];
       items.forEach(function(item, idx) {
         if (!item || item.fakeRecall || item.type === 'withdraw') return;
-        var textPool = [item.text, item.note, item.amount, item.alt].filter(Boolean).join(' ').toLowerCase();
+        var textPool = [item.text, item.content, item.note, item.amount, item.alt].filter(Boolean).join(' ').toLowerCase();
         if (textPool.indexOf(lower) !== -1) {
           _searchMatches.push(idx);
         }
@@ -1496,6 +1672,10 @@
     syncCreationModeUi();
 
     function autoResizeInput() {
+      if (!input.value) {
+        input.style.height = '38px';
+        return;
+      }
       input.style.height = 'auto';
       var next = Math.min(96, Math.max(38, input.scrollHeight));
       input.style.height = next + 'px';
@@ -2601,7 +2781,9 @@
         items.forEach(function(it, idx) {
           if (!it) return;
           if (it.fakeRecall || it.type === 'withdraw') {
-            var textVal = it.type === 'withdraw' && it.original ? it.original.text : it.text;
+            var textVal = it.type === 'withdraw' && it.original
+              ? (it.original.text || it.original.content)
+              : (it.text || it.content);
             var sideVal = it.type === 'withdraw' && it.original ? (it.side || it.original.side) : it.side;
             recalledEntries.push({
               index: idx,
@@ -3263,9 +3445,13 @@
       return m;
     }
 
+    function isEditableTextType(type) {
+      return type === 'text' || type === 'text_voice';
+    }
+
     function toggleRecall(index) {
       var m = unwrapWithdrawIfNeeded(index);
-      if (!m || m.type !== 'text') return;
+      if (!m || !isEditableTextType(m.type)) return;
       if (_state.items[index] === m) {
         m.fakeRecall = !m.fakeRecall;
       }
@@ -3277,12 +3463,13 @@
 
     function openEditTextSheet(index) {
       var m = _state.items[index];
-      if (!m || m.type !== 'text') return;
-      openSheet('编辑消息', function(body) {
-        var label = el('label', '', '修改消息内容');
+      if (!m || !isEditableTextType(m.type)) return;
+      var isTextVoice = m.type === 'text_voice';
+      openSheet(isTextVoice ? '编辑文字语音内容' : '编辑消息', function(body) {
+        var label = el('label', '', isTextVoice ? '修改语音条文字内容（将自动重算时长）' : '修改消息内容');
         var textarea = document.createElement('textarea');
         textarea.id = 'fc-chat-edit-input';
-        textarea.value = m.text || '';
+        textarea.value = m.text || m.content || '';
 
         var actions = el('div', 'fc-chat-sheet-actions');
         var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
@@ -3299,11 +3486,18 @@
             return;
           }
           m.text = nextText;
+          if (isTextVoice) {
+            m.content = nextText;
+            var aApi = aiApi();
+            if (aApi && typeof aApi.estimateTextVoiceDuration === 'function') {
+              m.duration = aApi.estimateTextVoiceDuration(nextText);
+            }
+          }
           _selectedIndex = -1;
           saveState(_state);
           closeSheet();
           renderMessages(false);
-          notify('已修改消息内容');
+          notify(isTextVoice ? '已修改文字语音内容' : '已修改消息内容');
         };
 
         actions.appendChild(cancelBtn);
@@ -3317,12 +3511,13 @@
 
     function openRewriteSheet(index) {
       var m = unwrapWithdrawIfNeeded(index);
-      if (!m || m.type !== 'text') return;
-      openSheet('改写消息', function(body) {
+      if (!m || !isEditableTextType(m.type)) return;
+      var isTextVoice = m.type === 'text_voice';
+      openSheet(isTextVoice ? '改写文字语音' : '改写消息', function(body) {
         var label = el('label', '', '修改后的消息内容（保存后将重新显示）');
         var textarea = document.createElement('textarea');
         textarea.id = 'fc-chat-rewrite-input';
-        textarea.value = m.text || '';
+        textarea.value = m.text || m.content || '';
 
         var actions = el('div', 'fc-chat-sheet-actions');
         var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
@@ -3339,6 +3534,13 @@
             return;
           }
           m.text = nextText;
+          if (isTextVoice) {
+            m.content = nextText;
+            var aApi = aiApi();
+            if (aApi && typeof aApi.estimateTextVoiceDuration === 'function') {
+              m.duration = aApi.estimateTextVoiceDuration(nextText);
+            }
+          }
           m.fakeRecall = false;
           _selectedIndex = -1;
           saveState(_state);
@@ -3487,12 +3689,21 @@
       });
       _expandedVoices = nextExpanded;
 
+      var nextExpandedTv = Object.create(null);
+      Object.keys(_expandedTextVoices).forEach(function(key) {
+        var idx = Number(key);
+        if (idx < index) nextExpandedTv[idx] = _expandedTextVoices[key];
+        else if (idx > index) nextExpandedTv[idx - 1] = _expandedTextVoices[key];
+      });
+      _expandedTextVoices = nextExpandedTv;
+
       var removed = _state.items.splice(index, 1)[0];
       if (_selectedIndex === index) _selectedIndex = -1;
       else if (_selectedIndex > index) _selectedIndex -= 1;
 
       saveState(_state);
       renderMessages(false);
+      renderAiModeBar();
       notify('已删除消息');
 
       // 删除某条消息时保护当前作品（含头像、背景与消息）与所有其他作品仍在引用的素材
@@ -3545,6 +3756,18 @@
           preview: shortTxt || '(空内容)',
           isRecalled: recalled,
           copyText: txt
+        };
+      }
+      if (item.type === 'text_voice') {
+        var tvTxt = String(item.text || item.content || '');
+        var shortTv = tvTxt.length > 16 ? (tvTxt.slice(0, 16) + '…') : tvTxt;
+        var tvRecalled = Boolean(item.fakeRecall || fromWithdraw);
+        return {
+          kind: 'text_voice',
+          label: tvRecalled ? '已撤回文字语音' : '文字语音',
+          preview: (item.duration || '6') + '″' + (shortTv ? (' · ' + shortTv) : ''),
+          isRecalled: tvRecalled,
+          copyText: tvTxt
         };
       }
       if (item.type === 'image') {
@@ -3666,6 +3889,13 @@
       else delete _expandedVoices[index];
       if (expA) _expandedVoices[target] = true;
       else delete _expandedVoices[target];
+
+      var expTvA = Boolean(_expandedTextVoices[index]);
+      var expTvB = Boolean(_expandedTextVoices[target]);
+      if (expTvB) _expandedTextVoices[index] = true;
+      else delete _expandedTextVoices[index];
+      if (expTvA) _expandedTextVoices[target] = true;
+      else delete _expandedTextVoices[target];
 
       if (_playingVoiceIndex === index) _playingVoiceIndex = target;
       else if (_playingVoiceIndex === target) _playingVoiceIndex = index;
@@ -4631,7 +4861,7 @@
 
     function buildInlineControls(index, item) {
       var controls = el('div', 'fc-chat-controls');
-      if (item.type === 'text') {
+      if (item.type === 'text' || item.type === 'text_voice') {
         var recallBtn = el('button', 'fc-chat-mini-btn', '撤回');
         recallBtn.type = 'button';
         recallBtn.onclick = function(e) {
@@ -4838,6 +5068,43 @@
             voiceWrap.appendChild(el('div', 'fc-chat-voice-transcript', item.text));
           }
           body.appendChild(voiceWrap);
+        } else if (item.type === 'text_voice') {
+          var tvText = String(item.text || item.content || '').trim();
+          var tvDur = Number(item.duration) || 6;
+          var isTvExpanded = Boolean(_expandedTextVoices[index]);
+          var tvMinWidth = Math.min(242, Math.max(134, 108 + tvDur * 4));
+          var tvCard = el('div', 'fc-chat-textvoice' + (isTvExpanded ? ' is-expanded' : ''));
+
+          var tvBar = el('button', 'fc-chat-textvoice-bar');
+          tvBar.type = 'button';
+          tvBar.style.minWidth = tvMinWidth + 'px';
+          tvBar.setAttribute('aria-expanded', isTvExpanded ? 'true' : 'false');
+          tvBar.setAttribute('aria-label', (isTvExpanded ? '收起语音文字' : '展开语音文字') + ' ' + tvDur + '秒');
+          tvBar.appendChild(el('span', 'fc-chat-textvoice-icon', '▶'));
+          tvBar.appendChild(el('span', 'fc-chat-textvoice-wave', '··· ···'));
+          tvBar.appendChild(el('span', 'fc-chat-textvoice-dur', tvDur + '″'));
+          tvBar.addEventListener('click', function(e) {
+            e.stopPropagation();
+            _expandedTextVoices[index] = !_expandedTextVoices[index];
+            renderMessages(false);
+          });
+          tvCard.appendChild(tvBar);
+
+          if (isTvExpanded && tvText) {
+            var tvBody = el('div', 'fc-chat-textvoice-body');
+            tvBody.appendChild(el('div', 'fc-chat-textvoice-text', tvText));
+            var tvCollapseBtn = el('button', 'fc-chat-textvoice-collapse', '收起');
+            tvCollapseBtn.type = 'button';
+            tvCollapseBtn.addEventListener('click', function(e) {
+              e.stopPropagation();
+              _expandedTextVoices[index] = false;
+              renderMessages(false);
+            });
+            tvBody.appendChild(tvCollapseBtn);
+            tvCard.appendChild(tvBody);
+          }
+
+          body.appendChild(tvCard);
         } else if (item.type === 'call') {
           var statusText = item.status || '已接通';
           var statusCls = '';
@@ -4932,6 +5199,7 @@
       }
 
       resolveMissingAssets(pendingAssets, resolveSeq);
+      renderAiModeBar();
     }
 
     syncRoleButton();
@@ -5021,7 +5289,7 @@
 
       var listEl = el('div', 'fc-ctx-list');
 
-      if (meta.kind === 'text') {
+      if (meta.kind === 'text' || meta.kind === 'text_voice') {
         listEl.appendChild(buildMenuActionButton({
           action: 'copy',
           icon: '⎘',
@@ -5215,19 +5483,79 @@
       openMessageContextMenu(idx, e.clientX, e.clientY);
     });
 
+    async function triggerAiTurn(triggerOpts) {
+      if (!_state) return;
+      var aApi = aiApi();
+      if (!aApi || typeof aApi.requestAiTurn !== 'function') {
+        notify('AI 互动引擎未就绪，请刷新后重试');
+        return;
+      }
+      if (_aiBusy) {
+        notify('AI 正在生成，请稍候…');
+        return;
+      }
+
+      var targetWorkId = _currentWorkId;
+      var reqSeq = ++_aiRequestSeq;
+      _aiBusy = true;
+      _aiErrorText = '';
+      _aiLastTrigger = triggerOpts || { triggerType: 'followup' };
+      renderAiModeBar();
+
+      try {
+        var result = await aApi.requestAiTurn({
+          workState: _state,
+          triggerType: _aiLastTrigger.triggerType || 'user_message',
+          userInput: _aiLastTrigger.userInput || '',
+          userDirection: _aiLastTrigger.userDirection || ''
+        });
+        if (reqSeq !== _aiRequestSeq || _currentWorkId !== targetWorkId || !document.body.contains(app)) {
+          return;
+        }
+        if (!Array.isArray(_state.items)) _state.items = [];
+        if (Array.isArray(result.messages)) {
+          for (var i = 0; i < result.messages.length; i++) {
+            _state.items.push(result.messages[i]);
+          }
+        }
+        saveState(_state);
+        _aiBusy = false;
+        _aiErrorText = '';
+        renderAiModeBar();
+        renderMessages(true);
+      } catch (err) {
+        if (reqSeq !== _aiRequestSeq || _currentWorkId !== targetWorkId || !document.body.contains(app)) {
+          return;
+        }
+        _aiBusy = false;
+        _aiErrorText = (err && err.message) ? String(err.message) : 'AI 请求失败，请重试';
+        renderAiModeBar();
+        notify(_aiErrorText);
+      }
+    }
+
     function handleSend() {
       var text = input.value.trim();
       if (!text) return;
       if (!Array.isArray(_state.items)) _state.items = [];
+      var sentSide = _sendSide;
       _state.items.push({
         type: 'text',
-        side: _sendSide,
+        side: sentSide,
         text: text
       });
       input.value = '';
       autoResizeInput();
       saveState(_state);
+      renderAiModeBar();
       renderMessages(true);
+
+      if (_state.creationMode === 'ai_roleplay' && sentSide === 'right') {
+        triggerAiTurn({
+          triggerType: 'user_message',
+          userInput: text
+        });
+      }
     }
 
     streamEl.addEventListener('click', function() {
@@ -5377,8 +5705,13 @@
   function close() {
     _activeResolveSeq += 1;
     _stickerRenderSeq += 1;
+    _aiRequestSeq += 1;
+    _aiBusy = false;
+    _aiErrorText = '';
+    _aiLastTrigger = null;
     stopVoicePlayback();
     _expandedVoices = Object.create(null);
+    _expandedTextVoices = Object.create(null);
     if (typeof _cleanupDoc === 'function') {
       _cleanupDoc();
       _cleanupDoc = null;

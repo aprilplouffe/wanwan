@@ -450,27 +450,111 @@
     }
   }
 
-  async function gatherCharContext(charObj, recentLines, settings) {
+  function buildLiveLoreScanTexts(charObj, recentLines, liveParams, isNpc) {
+    var parts = [];
+    function pushText(val) {
+      if (typeof val !== 'string') return;
+      var s = val.trim();
+      if (s) parts.push(s);
+    }
+
+    var lp = liveParams && typeof liveParams === 'object' ? liveParams : {};
+    var progInfo = PROGRAMS[lp.program || 'chat'] || PROGRAMS.chat;
+    pushText(progInfo.label);
+    pushText(lp.programTitle);
+    pushText(lp.hostName);
+    pushText(lp.giftName);
+    pushText(lp.userPrompt);
+    pushText(lp.liveSummary);
+    if (Array.isArray(lp.companionNames) && lp.companionNames.length) {
+      pushText(lp.companionNames.join(' '));
+    }
+
+    if (charObj) {
+      pushText(charObj.name);
+      pushText(charObj.role);
+      pushText(charObj.group);
+      pushText(charObj.description);
+      if (charObj.raw) {
+        pushText(charObj.raw.nick);
+        pushText(charObj.raw.description);
+      }
+    }
+
+    var recent = (recentLines || []).slice(-16);
+    for (var i = 0; i < recent.length; i++) {
+      var m = recent[i];
+      if (!m) continue;
+      if (m.sender) pushText(String(m.sender));
+      if (m.text) pushText(String(m.text));
+    }
+    return parts;
+  }
+
+  async function resolveLiveLorebook(charObj, charId, cidNum, isNpc, recentLines, liveParams, recentMsgs) {
+    var empty = { segments: { before: '', middle: '', after: '' }, mergedText: '' };
+    var isDemo = String(charId || '') === 'demo_char';
+    var roleSource = isDemo ? 'none' : (isNpc ? 'npc' : 'char');
+    var targetId = isDemo ? null : (Number.isFinite(cidNum) && String(cidNum) === String(charId) ? cidNum : charId);
+
+    if (typeof global.resolveLorebookContext === 'function') {
+      try {
+        var scanTexts = buildLiveLoreScanTexts(charObj, recentLines, liveParams, isNpc);
+        var res = await global.resolveLorebookContext({
+          roleSource: roleSource,
+          charId: targetId,
+          scanTexts: scanTexts,
+          maxChars: 2800,
+          appId: 'heartbeat_live'
+        });
+        return {
+          segments: res.segments || { before: '', middle: '', after: '' },
+          mergedText: res.mergedText || ''
+        };
+      } catch (_) {
+        return empty;
+      }
+    }
+
+    if (typeof global.getLorebookContextSegments === 'function') {
+      try {
+        var seg = await global.getLorebookContextSegments(targetId, recentMsgs);
+        return {
+          segments: seg || { before: '', middle: '', after: '' },
+          mergedText: [seg && seg.before, seg && seg.middle, seg && seg.after].filter(Boolean).join('\n\n')
+        };
+      } catch (_) {}
+    }
+
+    if (typeof global.getLorebookContext === 'function') {
+      try {
+        var ctxText = await global.getLorebookContext(targetId, recentMsgs);
+        return {
+          segments: { before: '', middle: ctxText || '', after: '' },
+          mergedText: ctxText || ''
+        };
+      } catch (_) {}
+    }
+    return empty;
+  }
+
+  async function gatherCharContext(charObj, recentLines, settings, liveParams) {
     var charId = charObj && (charObj.rawId != null ? charObj.rawId : charObj.id);
     var cidNum = Number(charId);
     var isNpc = Boolean(charObj && (charObj.roleType === 'npc' || (charObj.raw && charObj.raw.type === 'npc')));
-    var recentMsgs = (recentLines || []).slice(-10).map(function(m) {
+    var recentMsgs = (recentLines || []).slice(-12).map(function(m) {
       var isSelf = (m.senderRole === 'char' || m.senderRole === 'npc') && (!m.senderId || String(m.senderId) === String(charId));
       return { role: isSelf ? 'assistant' : 'user', content: m.text || '' };
     });
 
     // NPC 严格隔离：绝不读取 Char 的私聊记忆（WanWanMemory）、万象镜经历桥梁（WanxiangMirrorBridge）或其他角色私密配置
     if (isNpc) {
-      var npcLoreCtx = '';
-      try {
-        if (typeof global.getLorebookContext === 'function') {
-          npcLoreCtx = await global.getLorebookContext(Number.isFinite(cidNum) ? cidNum : charId, recentMsgs);
-        }
-      } catch (_) {}
+      var npcLore = await resolveLiveLorebook(charObj, charId, cidNum, true, recentLines, liveParams, recentMsgs);
       return {
         isNpc: true,
         chatInfo: { ownerUid: Number(global._wechatUid || 0), chatId: 0, charId: String(charId || '') },
-        loreCtx: npcLoreCtx || '',
+        loreCtx: npcLore.mergedText || '',
+        loreSegments: npcLore.segments,
         memoryCtx: '',
         bridgeCtx: '',
         bilingual: null
@@ -478,13 +562,7 @@
     }
 
     var chatInfo = await resolveCharChatInfo(charId);
-
-    var loreCtx = '';
-    try {
-      if (typeof global.getLorebookContext === 'function') {
-        loreCtx = await global.getLorebookContext(Number.isFinite(cidNum) ? cidNum : charId, recentMsgs);
-      }
-    } catch (_) {}
+    var charLore = await resolveLiveLorebook(charObj, charId, cidNum, false, recentLines, liveParams, recentMsgs);
 
     var memoryCtx = '';
     try {
@@ -516,7 +594,8 @@
     return {
       isNpc: false,
       chatInfo: chatInfo,
-      loreCtx: loreCtx,
+      loreCtx: charLore.mergedText || '',
+      loreSegments: charLore.segments,
       memoryCtx: memoryCtx,
       bridgeCtx: bridgeCtx,
       bilingual: bilingual
@@ -601,16 +680,25 @@
             ? '【视频同框连线中】双方处于同框画面状态，保持自然眼神与临场感（但不要编造看不到的现实物品）。'
             : '【普通弹幕互动中】从弹幕或互动中看到了对方的消息。';
 
+    var loreSeg = (ctx.loreSegments && typeof ctx.loreSegments === 'object')
+      ? ctx.loreSegments
+      : { before: '', middle: ctx.loreCtx || '', after: '' };
+
     var sys = '';
     sys += '你正在「心动直播」中扮演' + (isNpc ? ' NPC 角色「' : '角色「') + charName + '」。用户称呼为「' + userName + '」。\n';
     sys += '请严格忠于本角色自身人设，只以「' + charName + '」第一人称口吻回复，禁止代他人说话、跳戏或变成通用客服。\n\n';
+    if (loreSeg.before) {
+      sys += '<worldbook_prelude>\n' + loreSeg.before + '\n</worldbook_prelude>\n\n';
+    }
     sys += isNpc ? '<npc_persona>\n' : '<char_persona>\n';
     if (raw.gender) sys += '- 性别：' + raw.gender + '\n';
     if (raw.role) sys += '- 身份：' + raw.role + '\n';
     if (raw.group) sys += '- 所属分组：' + raw.group + '\n';
     if (raw.status) sys += '- 当前状态：' + raw.status + '\n';
     sys += (raw.description || (isNpc ? '贴合自己 NPC 身份的自然直播观众。' : '温柔、有主见的陪伴者，按普通自然逻辑说话。')) + '\n';
-    if (ctx.loreCtx) sys += '\n【世界观设定参考】\n' + ctx.loreCtx + '\n';
+    if (loreSeg.middle) {
+      sys += '\n【世界观设定参考】（请作为背景常识自然融入直播口语与弹幕互动，不要像念设定百科一样生硬复述）\n' + loreSeg.middle + '\n';
+    }
     sys += isNpc ? '</npc_persona>\n\n' : '</char_persona>\n\n';
 
     if (userObj.description || relationText) {
@@ -640,6 +728,9 @@
       sys += '- 对方已开启本地摄像头预览；请保持自然陪伴，不要伪造看到了具体衣物或隐私细节。\n';
     }
     sys += '</live_room_state>\n\n';
+    if (loreSeg.after) {
+      sys += '<worldbook_supplement>\n以下为补充世界观设定，请在直播回应中自然体现：\n' + loreSeg.after + '\n</worldbook_supplement>\n\n';
+    }
 
     if (!isNpc && ctx.bilingual && ctx.bilingual.enabled && global._wechatCallHelpers) {
       var h = global._wechatCallHelpers;
@@ -739,7 +830,7 @@
       return buildOfflineFallbackReply(params);
     }
 
-    var ctx = await gatherCharContext(charObj, recentLines, settings);
+    var ctx = await gatherCharContext(charObj, recentLines, settings, params);
     if (typeof params.isStale === 'function' && params.isStale()) {
       return { stale: true };
     }

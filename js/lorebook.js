@@ -80,6 +80,145 @@ window.getLorebookContext = async function(charId, recentMessages) {
   return [seg.before, seg.middle, seg.after].filter(Boolean).join('\n\n')
 }
 
+// ===== 共享只读世界书适配接口（供同好社区、心动直播及未来社区模块复用） =====
+// 严格复用现有 db.config('lorebooks') 存储、启用开关、scope/charIds 关联、关键词匹配及 position/injectOrder 规则；
+// 额外提供字符串/数字 ID 兼容、条目去重、优先级预算裁剪与未来公共人设显式绑定钩子。
+window.resolveLorebookContext = async function(options = {}) {
+  const emptyResult = {
+    segments: { before: '', middle: '', after: '' },
+    mergedText: '',
+    matchedCount: 0,
+    totalMatchedBeforeBudget: 0,
+    truncatedByBudget: false,
+    matchedMeta: []
+  }
+  if (typeof db === 'undefined' || !db || !db.config) return emptyResult
+
+  const books = await loadLorebooks()
+  if (!Array.isArray(books) || !books.length) return emptyResult
+
+  const roleSource = String(options.roleSource || '').trim().toLowerCase()
+  const rawCharId = options.charId
+  const hasTargetCharId = roleSource !== 'community_persona' &&
+    roleSource !== 'none' &&
+    rawCharId !== null &&
+    rawCharId !== undefined &&
+    String(rawCharId).trim() !== ''
+  const targetCharIdStr = hasTargetCharId ? String(rawCharId).trim() : ''
+
+  const extraBookIds = new Set(
+    (Array.isArray(options.extraPersonalBookIds) ? options.extraPersonalBookIds : [])
+      .map(id => String(id || '').trim())
+      .filter(Boolean)
+  )
+
+  const scanInputs = Array.isArray(options.scanTexts)
+    ? options.scanTexts
+    : (options.scanTexts ? [options.scanTexts] : [])
+  const dialogText = scanInputs
+    .map(item => {
+      if (typeof item === 'string') return item
+      if (item && typeof item === 'object') return String(item.content || item.text || '')
+      return ''
+    })
+    .filter(Boolean)
+    .join(' ')
+
+  const deduped = []
+  const seenContentKeys = new Set()
+  let seq = 0
+
+  for (const book of books) {
+    if (!book || !book.enabled) continue
+    if (book.scope === 'personal') {
+      const ids = Array.isArray(book.charIds) ? book.charIds : []
+      const boundToChar = hasTargetCharId && ids.some(id => id !== null && id !== undefined && String(id).trim() === targetCharIdStr)
+      const explicitlyBound = extraBookIds.has(String(book.id || '').trim())
+      if (!boundToChar && !explicitlyBound) continue
+    } else if (book.scope !== 'global') {
+      continue
+    }
+
+    for (const entry of book.entries || []) {
+      if (!entry || !entry.enabled) continue
+      const contentStr = String(entry.content || '').trim()
+      if (!contentStr) continue
+
+      const keywords = Array.isArray(entry.keywords) ? entry.keywords : []
+      const noKeywords = keywords.length === 0
+      const keywordHit = !noKeywords && keywords.some(kw => kw && dialogText.includes(kw))
+      if (!noKeywords && !keywordHit) continue
+
+      const pos = lbNormalizePosition(entry.position)
+      const dedupeKey = `${pos}::${contentStr}`
+      if (seenContentKeys.has(dedupeKey)) continue
+      seenContentKeys.add(dedupeKey)
+
+      const orderVal = Number.isFinite(Number(entry.injectOrder)) && entry.injectOrder !== '' && entry.injectOrder != null
+        ? Number(entry.injectOrder)
+        : LB_DEFAULT_INJECT_ORDER
+
+      deduped.push({
+        id: entry.id || '',
+        title: entry.title || '',
+        content: contentStr,
+        position: pos,
+        injectOrder: orderVal,
+        _seq: seq++,
+        _bookId: book.id || '',
+        _bookName: book.name || '',
+        _bookScope: book.scope || 'global',
+        _triggerType: noKeywords ? 'constant' : 'keyword'
+      })
+    }
+  }
+
+  if (!deduped.length) return emptyResult
+
+  const prioritized = deduped.slice().sort((a, b) => a.injectOrder - b.injectOrder || a._seq - b._seq)
+  const rawMaxChars = Number(options.maxChars)
+  const maxChars = Number.isFinite(rawMaxChars) && rawMaxChars > 0 ? Math.round(rawMaxChars) : 3600
+
+  const selected = []
+  let usedChars = 0
+  let truncatedByBudget = false
+
+  for (const item of prioritized) {
+    const len = item.content.length
+    if (usedChars + len <= maxChars) {
+      selected.push(item)
+      usedChars += len
+    } else {
+      const remaining = maxChars - usedChars
+      if (selected.length === 0 || remaining >= 160) {
+        const clipped = item.content.slice(0, Math.max(80, remaining - 1)) + '…'
+        selected.push({ ...item, content: clipped })
+      }
+      truncatedByBudget = true
+      break
+    }
+  }
+
+  const segments = window.buildLorebookSegments(selected)
+  return {
+    segments,
+    mergedText: [segments.before, segments.middle, segments.after].filter(Boolean).join('\n\n'),
+    matchedCount: selected.length,
+    totalMatchedBeforeBudget: deduped.length,
+    truncatedByBudget,
+    matchedMeta: selected.map(item => ({
+      bookId: String(item._bookId || ''),
+      bookName: String(item._bookName || ''),
+      scope: item._bookScope,
+      entryId: String(item.id || ''),
+      title: String(item.title || ''),
+      position: item.position,
+      injectOrder: item.injectOrder,
+      triggerType: item._triggerType
+    }))
+  }
+}
+
 // ===== 页面入口 =====
 window.showLorebookPage = function() {
   const page = buildLorebookListPage()

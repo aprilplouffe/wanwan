@@ -133,6 +133,18 @@
   color: var(--fc-accent);
 }
 
+#fan-community-page .fc-topbar-plain-title {
+  margin: 0;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 21px;
+  letter-spacing: -0.6px;
+  font-weight: 650;
+  color: var(--fc-ink);
+  line-height: 1.2;
+}
+
 .fc-view[hidden] {
   display: none;
 }
@@ -627,4 +639,226 @@
   line-height: 1.5;
   color: #7b8278;
 }
+
+#fan-community-page .fc-persona-ref-meta.is-lorebook {
+  background: #f5f2e8;
+  border-color: #e4decb;
+  color: #6e6447;
+}
+
+/* 公共人设 · 世界书挂载区（韩系奶油极简风） */
+#fan-community-page .fc-persona-lb-global-box {
+  background: #f7f6f0;
+  border: 1px solid #e7e6dc;
+  border-radius: 12px;
+  padding: 11px 12px;
+  margin-bottom: 12px;
+}
+
+#fan-community-page .fc-persona-lb-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+#fan-community-page .fc-persona-lb-subtitle {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--fc-ink);
+}
+
+#fan-community-page .fc-persona-lb-desc {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #7c8075;
+}
+
+#fan-community-page .fc-persona-lb-local-head {
+  margin-bottom: 8px;
+}
+
+#fan-community-page .fc-persona-lb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#fan-community-page .fc-persona-lb-empty {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px dashed #deded2;
+  background: #fcfbf7;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #8f9387;
+  text-align: center;
+}
+
+#fan-community-page .fc-persona-lb-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #fcfbf7;
+  border: 1px solid #e7e6dc;
+  border-radius: 12px;
+}
+
+#fan-community-page .fc-persona-lb-item.is-stale {
+  border-color: #ecd9d5;
+  background: #fdf8f7;
+}
+
+#fan-community-page .fc-persona-lb-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+#fan-community-page .fc-persona-lb-item-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+#fan-community-page .fc-persona-lb-item-name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--fc-ink);
+  word-break: break-word;
+}
+
+#fan-community-page .fc-persona-lb-item-meta {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #888c81;
+}
+
+#fan-community-page .fc-persona-lb-status-pill {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+#fan-community-page .fc-persona-lb-status-pill.is-auto {
+  background: #eff2eb;
+  border-color: #dbe2d4;
+  color: #5d6a58;
+}
+
+#fan-community-page .fc-persona-lb-status-pill.is-enabled {
+  background: #eef4ec;
+  border-color: #d4e2d0;
+  color: #536e4d;
+}
+
+#fan-community-page .fc-persona-lb-status-pill.is-disabled {
+  background: #f3f2ec;
+  border-color: #e3e1d6;
+  color: #88897e;
+}
+
+#fan-community-page .fc-persona-lb-status-pill.is-warn {
+  background: #fcf0ee;
+  border-color: #edd0cb;
+  color: #a45b58;
+}
+
+#fan-community-page .fc-persona-lb-unbind-btn {
+  flex: none;
+  border: 1px solid #e3e2d8;
+  background: #ffffff;
+  color: #6f7468;
+  border-radius: 9px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  line-height: 1.2;
+}
+
+#fan-community-page .fc-persona-lb-unbind-btn:active {
+  background: #f1f0ea;
+}
+
+#fan-community-page .fc-persona-lb-picker-tip {
+  margin: 0 0 10px;
+}
+
+#fan-community-page .fc-persona-lb-picker-search-wrap {
+  margin-bottom: 10px;
+}
+
+#fan-community-page .fc-persona-lb-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 44vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+#fan-community-page .fc-persona-lb-picker-empty {
+  padding: 18px 12px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #8e9287;
+  background: #f9f8f2;
+  border: 1px dashed #e2e1d7;
+  border-radius: 12px;
+}
+
+#fan-community-page .fc-persona-lb-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid #e5e5dc;
+  background: #fcfbf7;
+  color: var(--fc-ink);
+  text-align: left;
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+#fan-community-page .fc-persona-lb-option.is-selected {
+  background: #f2f5ee;
+  border-color: #b4c3ac;
+}
+
+#fan-community-page .fc-persona-lb-check {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 6px;
+  border: 1.5px solid #c5cbbf;
+  background: #ffffff;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#fan-community-page .fc-persona-lb-option.is-selected .fc-persona-lb-check {
+  background: #7d8d76;
+  border-color: #7d8d76;
+  color: #ffffff;
+}
+
+#fan-community-page .fc-persona-lb-option-main {
+  flex: 1;
+  min-width: 0;
+}
+
 

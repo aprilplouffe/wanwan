@@ -54,6 +54,19 @@
     return 'persona_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
   }
 
+  function dedupeStringIds(list) {
+    if (!Array.isArray(list)) return [];
+    var seen = Object.create(null);
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var id = String(list[i] || '').trim();
+      if (!id || seen[id]) continue;
+      seen[id] = true;
+      out.push(id);
+    }
+    return out;
+  }
+
   function normalizePersona(raw) {
     var now = Date.now();
     var src = raw && typeof raw === 'object' ? raw : {};
@@ -66,9 +79,31 @@
       speakingStyle: cleanText(src.speakingStyle, 1000),
       experience: cleanText(src.experience, 2000),
       notes: cleanText(src.notes, 1500),
+      lorebookIds: dedupeStringIds(src.lorebookIds),
       createdAt: typeof src.createdAt === 'number' ? src.createdAt : now,
       updatedAt: typeof src.updatedAt === 'number' ? src.updatedAt : now
     };
+  }
+
+  async function readAvailableLorebooks() {
+    try {
+      if (typeof global.loadLorebooks === 'function') {
+        var loaded = await global.loadLorebooks();
+        return Array.isArray(loaded) ? loaded : [];
+      }
+      if (global.db && global.db.config) {
+        var row = null;
+        if (typeof global.runWanWanDBRead === 'function') {
+          row = await global.runWanWanDBRead(function() {
+            return global.db.config.get('lorebooks');
+          });
+        } else {
+          row = await global.db.config.get('lorebooks');
+        }
+        return row && Array.isArray(row.value) ? row.value : [];
+      }
+    } catch (_) {}
+    return [];
   }
 
   function sortPersonas(list) {
@@ -353,8 +388,26 @@
     });
   }
 
+  function summarizeArchiveRelations(relations) {
+    if (!Array.isArray(relations) || !relations.length) return '';
+    var parts = [];
+    for (var i = 0; i < relations.length && parts.length < 8; i++) {
+      var r = relations[i];
+      if (!r || typeof r !== 'object') continue;
+      var typeStr = cleanText(String(r.type || ''), 40).trim();
+      var descStr = cleanText(String(r.desc || ''), 100).trim();
+      var targetName = cleanText(String(r.charName || r.name || ''), 40).trim();
+      if (!typeStr && !descStr) continue;
+      var piece = (targetName ? (targetName + '：') : '') + typeStr + (descStr ? ('（' + descStr + '）') : '');
+      if (piece) parts.push(piece);
+    }
+    return parts.join('；');
+  }
+
   function projectArchiveRole(raw) {
     var src = raw.type === 'npc' ? 'npc' : 'char';
+    var identityObj = raw.identity && typeof raw.identity === 'object' ? raw.identity : null;
+    var safeAccount = identityObj && typeof identityObj.account === 'string' ? cleanText(identityObj.account, 60).trim() : '';
     return {
       source: src,
       sourceLabel: src === 'npc' ? 'NPC' : 'Char',
@@ -366,6 +419,13 @@
       role: String(raw.role || '').trim(),
       group: String(raw.group || '').trim(),
       description: String(raw.description || '').trim(),
+      personality: cleanText(String(raw.personality || ''), 1200).trim(),
+      background: cleanText(String(raw.background || ''), 2000).trim(),
+      speakingStyle: cleanText(String(raw.speakingStyle || raw.style || ''), 1000).trim(),
+      experience: cleanText(String(raw.experience || ''), 2000).trim(),
+      notes: cleanText(String(raw.notes || ''), 1500).trim(),
+      accountHandle: safeAccount,
+      relationsSummary: summarizeArchiveRelations(raw.relations),
       avatar: typeof raw.avatar === 'string' ? raw.avatar : '',
       avatarAssetId: ''
     };
@@ -457,7 +517,8 @@
           background: p.background || '',
           speakingStyle: p.speakingStyle || '',
           experience: p.experience || '',
-          notes: p.notes || ''
+          notes: p.notes || '',
+          lorebookIds: Array.isArray(p.lorebookIds) ? p.lorebookIds.slice() : []
         }
       };
     }
@@ -609,7 +670,10 @@
         background: existingPersona ? (existingPersona.background || '') : '',
         speakingStyle: existingPersona ? (existingPersona.speakingStyle || '') : '',
         experience: existingPersona ? (existingPersona.experience || '') : '',
-        notes: existingPersona ? (existingPersona.notes || '') : ''
+        notes: existingPersona ? (existingPersona.notes || '') : '',
+        lorebookIds: existingPersona && Array.isArray(existingPersona.lorebookIds)
+          ? dedupeStringIds(existingPersona.lorebookIds)
+          : []
       };
       var editorToken = ++renderSeq;
 
@@ -830,6 +894,263 @@
       });
       eBody.appendChild(detailCard);
 
+      // 世界书绑定卡片（全局自动继承 + 自主挂载局部世界书）
+      var loreCard = el('section', 'fc-settings-card fc-persona-lorebook-card');
+      loreCard.id = 'fc-persona-lorebook-card';
+      var loreHead = el('div', 'fc-settings-card-head');
+      loreHead.appendChild(el('span', 'fc-settings-card-title', '世界书'));
+      loreHead.appendChild(el('span', 'fc-settings-card-tag', '全局继承 · 局部挂载'));
+      loreCard.appendChild(loreHead);
+
+      var globalBlock = el('div', 'fc-persona-lb-global-box');
+      var globalTitleRow = el('div', 'fc-persona-lb-row-top');
+      globalTitleRow.appendChild(el('strong', 'fc-persona-lb-subtitle', '全局世界书'));
+      var globalStatusPill = el('span', 'fc-persona-lb-status-pill is-auto', '自动继承');
+      globalStatusPill.id = 'fc-persona-lb-global-count';
+      globalTitleRow.appendChild(globalStatusPill);
+      globalBlock.appendChild(globalTitleRow);
+      globalBlock.appendChild(el('p', 'fc-persona-lb-desc', '弯弯机中已开启的全局世界书将由公共人设自动继承生效，与角色名称无关。'));
+      loreCard.appendChild(globalBlock);
+
+      var localSubhead = el('div', 'fc-settings-subhead fc-persona-lb-local-head');
+      localSubhead.appendChild(el('span', 'fc-settings-subhead-title', '局部世界书'));
+      var addLorebookBtn = el('button', 'fc-settings-mini-btn primary', '＋ 添加局部世界书');
+      addLorebookBtn.type = 'button';
+      addLorebookBtn.id = 'fc-persona-add-lorebook-btn';
+      localSubhead.appendChild(addLorebookBtn);
+      loreCard.appendChild(localSubhead);
+
+      var boundListEl = el('div', 'fc-persona-lb-list');
+      boundListEl.id = 'fc-persona-lorebook-list';
+      loreCard.appendChild(boundListEl);
+
+      async function refreshWorldbookSection() {
+        var books = await readAvailableLorebooks();
+        if (!editorPanel.classList.contains('show') || editorToken !== renderSeq) return;
+
+        var enabledGlobalCount = 0;
+        var bookMap = Object.create(null);
+        for (var i = 0; i < books.length; i++) {
+          var b = books[i];
+          if (!b || !b.id) continue;
+          bookMap[String(b.id)] = b;
+          if (b.scope === 'global' && b.enabled) {
+            enabledGlobalCount++;
+          }
+        }
+        globalStatusPill.textContent = enabledGlobalCount > 0
+          ? ('自动继承 · ' + enabledGlobalCount + ' 本已启用')
+          : '自动继承（当前 0 本启用）';
+
+        boundListEl.replaceChildren();
+        draft.lorebookIds = dedupeStringIds(draft.lorebookIds);
+
+        if (!draft.lorebookIds.length) {
+          var emptyNote = el('div', 'fc-persona-lb-empty', '暂未挂载局部世界书，可点击右上角「添加局部世界书」进行多选关联。');
+          boundListEl.appendChild(emptyNote);
+          return;
+        }
+
+        draft.lorebookIds.forEach(function(bookId) {
+          var matched = bookMap[String(bookId)] || null;
+          var itemEl = el('div', 'fc-persona-lb-item');
+          itemEl.dataset.lorebookId = bookId;
+
+          var mainCol = el('div', 'fc-persona-lb-item-main');
+          var titleRow = el('div', 'fc-persona-lb-item-title-row');
+
+          if (!matched) {
+            itemEl.classList.add('is-stale');
+            titleRow.appendChild(el('strong', 'fc-persona-lb-item-name', '原世界书已删除'));
+            var staleBadge = el('span', 'fc-persona-lb-status-pill is-warn', '已失效');
+            titleRow.appendChild(staleBadge);
+            mainCol.appendChild(titleRow);
+            mainCol.appendChild(el('div', 'fc-persona-lb-item-meta', '原关联世界书（ID ' + String(bookId).slice(-8) + '）已不存在，AI 请求时会自动跳过。'));
+          } else if (matched.scope !== 'personal') {
+            titleRow.appendChild(el('strong', 'fc-persona-lb-item-name', matched.name || '未命名世界书'));
+            var globalChangedBadge = el('span', 'fc-persona-lb-status-pill is-auto', '已改为全局');
+            titleRow.appendChild(globalChangedBadge);
+            mainCol.appendChild(titleRow);
+            var gCount = Array.isArray(matched.entries) ? matched.entries.length : 0;
+            mainCol.appendChild(el('div', 'fc-persona-lb-item-meta', gCount + ' 个条目 · 已转为全局世界书自动继承'));
+          } else {
+            titleRow.appendChild(el('strong', 'fc-persona-lb-item-name', matched.name || '未命名局部世界书'));
+            var stateBadge = el('span', 'fc-persona-lb-status-pill ' + (matched.enabled ? 'is-enabled' : 'is-disabled'), matched.enabled ? '已启用' : '已关闭');
+            titleRow.appendChild(stateBadge);
+            mainCol.appendChild(titleRow);
+            var entryCount = Array.isArray(matched.entries) ? matched.entries.length : 0;
+            var metaText = entryCount + ' 个条目' + (matched.enabled ? ' · 每次生成自动读取最新内容' : ' · 当前已关闭，生成时跳过生效');
+            mainCol.appendChild(el('div', 'fc-persona-lb-item-meta', metaText));
+          }
+
+          var unbindBtn = el('button', 'fc-persona-lb-unbind-btn', matched ? '解除挂载' : '移除关联');
+          unbindBtn.type = 'button';
+          unbindBtn.setAttribute('aria-label', '解除世界书挂载');
+          unbindBtn.onclick = function() {
+            draft.lorebookIds = draft.lorebookIds.filter(function(id) { return String(id) !== String(bookId); });
+            refreshWorldbookSection();
+          };
+
+          itemEl.appendChild(mainCol);
+          itemEl.appendChild(unbindBtn);
+          boundListEl.appendChild(itemEl);
+        });
+      }
+
+      async function openLorebookPickerSheet() {
+        var books = await readAvailableLorebooks();
+        var personalBooks = books.filter(function(b) {
+          return b && b.id && b.scope === 'personal';
+        });
+        var selectedSet = Object.create(null);
+        dedupeStringIds(draft.lorebookIds).forEach(function(id) {
+          selectedSet[String(id)] = true;
+        });
+        var pickerQuery = '';
+
+        openSheet('选择局部世界书', function(body) {
+          body.appendChild(el('p', 'fc-chat-sheet-note fc-persona-lb-picker-tip', '从弯弯机世界书库挑选要挂载到该公共人设的局部世界书（支持多选，不改变原世界书绑定对象）。'));
+
+          var searchWrapEl = el('div', 'fc-persona-lb-picker-search-wrap');
+          var searchInputEl = document.createElement('input');
+          searchInputEl.type = 'search';
+          searchInputEl.id = 'fc-persona-lb-search';
+          searchInputEl.className = 'fc-persona-lb-picker-search';
+          searchInputEl.placeholder = '按世界书名称筛选…';
+          searchInputEl.setAttribute('aria-label', '按世界书名称筛选');
+          searchWrapEl.appendChild(searchInputEl);
+          body.appendChild(searchWrapEl);
+
+          var listWrap = el('div', 'fc-persona-lb-picker-list');
+          listWrap.id = 'fc-persona-lb-picker-list';
+          body.appendChild(listWrap);
+
+          var actions = el('div', 'fc-chat-sheet-actions');
+          var pickerCancel = el('button', 'fc-chat-btn alt', '取消');
+          pickerCancel.type = 'button';
+          pickerCancel.onclick = closeSheet;
+
+          var pickerConfirm = el('button', 'fc-chat-btn', '确认挂载');
+          pickerConfirm.type = 'button';
+          pickerConfirm.id = 'fc-persona-lb-confirm';
+          actions.appendChild(pickerCancel);
+          actions.appendChild(pickerConfirm);
+          body.appendChild(actions);
+
+          function countSelected() {
+            var c = 0;
+            Object.keys(selectedSet).forEach(function(k) {
+              if (selectedSet[k]) c++;
+            });
+            return c;
+          }
+
+          function syncConfirmLabel() {
+            var n = countSelected();
+            pickerConfirm.textContent = n > 0 ? ('确认挂载 (' + n + ')') : '确认挂载';
+          }
+
+          function drawPickerRows() {
+            listWrap.replaceChildren();
+            if (!personalBooks.length) {
+              var emptyState = el('div', 'fc-persona-lb-picker-empty', '弯弯机世界书库中暂无局部（personal）世界书，请先在「世界书」中创建。');
+              listWrap.appendChild(emptyState);
+              return;
+            }
+            var q = pickerQuery.trim().toLowerCase();
+            var filteredBooks = personalBooks.filter(function(b) {
+              if (!q) return true;
+              var nameMatch = String(b.name || '').toLowerCase().indexOf(q) !== -1;
+              if (nameMatch) return true;
+              var entries = Array.isArray(b.entries) ? b.entries : [];
+              for (var j = 0; j < entries.length; j++) {
+                var en = entries[j];
+                if (en && String(en.title || '').toLowerCase().indexOf(q) !== -1) return true;
+              }
+              return false;
+            });
+
+            if (!filteredBooks.length) {
+              listWrap.appendChild(el('div', 'fc-persona-lb-picker-empty', '未找到名称包含「' + pickerQuery.trim() + '」的局部世界书。'));
+              return;
+            }
+
+            filteredBooks.forEach(function(book) {
+              var bid = String(book.id);
+              var isSelected = Boolean(selectedSet[bid]);
+              var optBtn = el('button', 'fc-persona-lb-option' + (isSelected ? ' is-selected' : ''));
+              optBtn.type = 'button';
+              optBtn.dataset.pickBookId = bid;
+
+              var checkBox = el('span', 'fc-persona-lb-check', isSelected ? '✓' : '');
+              checkBox.setAttribute('aria-hidden', 'true');
+
+              var info = el('div', 'fc-persona-lb-option-main');
+              var rowTop = el('div', 'fc-persona-lb-item-title-row');
+              rowTop.appendChild(el('strong', 'fc-persona-lb-item-name', book.name || '未命名世界书'));
+              rowTop.appendChild(el('span', 'fc-persona-lb-status-pill ' + (book.enabled ? 'is-enabled' : 'is-disabled'), book.enabled ? '已启用' : '已关闭'));
+              info.appendChild(rowTop);
+
+              var entryCount = Array.isArray(book.entries) ? book.entries.length : 0;
+              var enabledEntries = Array.isArray(book.entries)
+                ? book.entries.filter(function(en) { return en && en.enabled; }).length
+                : 0;
+              info.appendChild(el('div', 'fc-persona-lb-item-meta', '共 ' + entryCount + ' 条（' + enabledEntries + ' 条已开启）'));
+
+              optBtn.appendChild(checkBox);
+              optBtn.appendChild(info);
+              optBtn.onclick = function() {
+                if (selectedSet[bid]) {
+                  delete selectedSet[bid];
+                } else {
+                  selectedSet[bid] = true;
+                }
+                optBtn.classList.toggle('is-selected', Boolean(selectedSet[bid]));
+                checkBox.textContent = selectedSet[bid] ? '✓' : '';
+                syncConfirmLabel();
+              };
+              listWrap.appendChild(optBtn);
+            });
+          }
+
+          searchInputEl.addEventListener('input', function() {
+            pickerQuery = searchInputEl.value || '';
+            drawPickerRows();
+          });
+
+          pickerConfirm.onclick = function() {
+            var nextIds = [];
+            // 保留原本存在但已失效/改为全局的顺序，同时按当前选择更新有效局部世界书
+            var personalIdMap = Object.create(null);
+            personalBooks.forEach(function(b) { personalIdMap[String(b.id)] = true; });
+
+            personalBooks.forEach(function(b) {
+              var bid = String(b.id);
+              if (selectedSet[bid]) nextIds.push(bid);
+            });
+            draft.lorebookIds.forEach(function(oldId) {
+              var oid = String(oldId);
+              if (!personalIdMap[oid] && selectedSet[oid]) {
+                nextIds.push(oid);
+              }
+            });
+            draft.lorebookIds = dedupeStringIds(nextIds);
+            closeSheet();
+            refreshWorldbookSection();
+          };
+
+          syncConfirmLabel();
+          drawPickerRows();
+        });
+      }
+
+      addLorebookBtn.onclick = function() {
+        openLorebookPickerSheet();
+      };
+
+      eBody.appendChild(loreCard);
+      refreshWorldbookSection();
+
       var eFoot = el('div', 'fc-settings-foot');
       var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
       cancelBtn.type = 'button';
@@ -875,7 +1196,8 @@
             background: draft.background,
             speakingStyle: draft.speakingStyle,
             experience: draft.experience,
-            notes: draft.notes
+            notes: draft.notes,
+            lorebookIds: dedupeStringIds(draft.lorebookIds)
           };
 
           var res = isEdit ? updatePersona(existingPersona.id, payload) : createPersona(payload);
@@ -1021,6 +1343,10 @@
           : 0;
         if (refCount > 0) {
           nameRow.appendChild(el('span', 'fc-persona-ref-meta', '已关联 ' + refCount + ' 部作品'));
+        }
+        var lbCount = Array.isArray(persona.lorebookIds) ? persona.lorebookIds.length : 0;
+        if (lbCount > 0) {
+          nameRow.appendChild(el('span', 'fc-persona-ref-meta is-lorebook', '世界书 ' + lbCount));
         }
         infoCol.appendChild(nameRow);
 

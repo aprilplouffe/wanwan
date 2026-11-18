@@ -809,6 +809,74 @@
     });
   }
 
+  function deriveStickerName(rawName) {
+    var base = String(rawName || '').trim();
+    if (!base) return '表情包';
+    base = base.replace(/\.[a-z0-9]{1,5}$/i, '').trim();
+    return base || '表情包';
+  }
+
+  async function updateStickerMeta(id, meta) {
+    if (!id || !meta || typeof meta !== 'object') return null;
+    var existing = await getAsset(id);
+    if (!existing) return null;
+    var nextName = meta.name !== undefined ? String(meta.name || '').trim() : existing.name;
+    var tags = Array.isArray(meta.tags)
+      ? meta.tags.map(function(t) { return String(t || '').trim(); }).filter(Boolean).slice(0, 8)
+      : (Array.isArray(existing.tags) ? existing.tags : []);
+    var mood = meta.mood !== undefined ? String(meta.mood || '').trim() : (existing.mood || '');
+    var note = meta.note !== undefined ? String(meta.note || '').trim() : (existing.note || '');
+    return putAsset(Object.assign({}, existing, {
+      name: nextName || existing.name || '表情包',
+      tags: tags,
+      mood: mood,
+      note: note
+    }));
+  }
+
+  async function buildAiStickerCatalog(limit) {
+    var maxItems = typeof limit === 'number' && limit > 0 ? Math.min(60, Math.round(limit)) : 36;
+    var stickers = [];
+    try {
+      stickers = await listAssets('sticker');
+    } catch (_) {
+      stickers = [];
+    }
+    var catalog = [];
+    var idMap = Object.create(null);
+    for (var i = 0; i < stickers.length; i++) {
+      var st = stickers[i];
+      if (!st || !st.id) continue;
+      var cleanName = deriveStickerName(st.name);
+      var tagList = Array.isArray(st.tags)
+        ? st.tags.map(function(t) { return String(t || '').trim(); }).filter(Boolean)
+        : [];
+      if (st.keywords && typeof st.keywords === 'string') {
+        st.keywords.split(/[,，、\s]+/).forEach(function(k) {
+          var s = k.trim();
+          if (s && tagList.indexOf(s) === -1) tagList.push(s);
+        });
+      }
+      var entry = {
+        id: String(st.id),
+        name: cleanName,
+        tags: tagList.slice(0, 8),
+        mood: String(st.mood || '').trim(),
+        note: String(st.note || '').trim(),
+        createdAt: Number(st.createdAt || 0)
+      };
+      idMap[entry.id] = entry;
+      if (catalog.length < maxItems) {
+        catalog.push(entry);
+      }
+    }
+    return {
+      catalog: catalog,
+      idMap: idMap,
+      totalCount: stickers.length
+    };
+  }
+
   global.FanCommunityAssets = {
     DB_NAME: DB_NAME,
     uid: uid,
@@ -821,6 +889,9 @@
     getCachedSrc: getCachedSrc,
     readImageFile: readImageFile,
     readAudioFile: readAudioFile,
+    deriveStickerName: deriveStickerName,
+    updateStickerMeta: updateStickerMeta,
+    buildAiStickerCatalog: buildAiStickerCatalog,
     recordDiagnostic: recordDiagnostic,
     updateDiagnosticSaveStatus: updateDiagnosticSaveStatus,
     getDiagnostics: getDiagnostics,

@@ -777,8 +777,10 @@
       var answer = '';
       var cfg = await this.getAiConfig();
 
+      var studyContext = params.studyContext || null;
+
       if (cfg && cfg.url && cfg.key) {
-        answer = await this.callCloudAi(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory, docFilter, chapterFilter);
+        answer = await this.callCloudAi(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory, docFilter, chapterFilter, studyContext);
       } else {
         answer = this.synthesizeLocalAnswer(query, mode, companionChar, searchRes.chunks, isFallback);
       }
@@ -810,7 +812,7 @@
     },
 
     // 云端请求（严格携带人设/专业系统指令，控制上下文预算）
-    callCloudAi: async function(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory, docFilter, chapterFilter) {
+    callCloudAi: async function(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory, docFilter, chapterFilter, studyContext) {
       var systemPrompt = '';
       if (mode === 'professional') {
         // 读取专业学习助手当前提示词（自定义或系统内置默认）
@@ -829,22 +831,63 @@
         // 读取当前 Char 专属自习室附加规则（按 charId 严格独立隔离）
         var cid = companionChar ? companionChar.id : 'char_default';
         var charProfile = await StudyPromptManager.getPromptProfile('study_char_overlay', cid, companionChar ? companionChar.name : '');
+        var studyStateObj = (window.WanwanStudyRoom && window.WanwanStudyRoom.getState) ? window.WanwanStudyRoom.getState() : null;
+        var studyMode = (studyContext && studyContext.studyMode) || (studyStateObj && studyStateObj.studyMode) || 'gentle';
+
+        // 统一只读世界书解析：全局启用世界书 + 当前伴学 Char/NPC 已启用局部世界书
+        var loreSegments = { before: '', middle: '', after: '' };
+        if (typeof window.resolveLorebookContext === 'function') {
+          try {
+            var hasRealChar = Boolean(companionChar && companionChar.id && String(companionChar.id) !== 'char_default');
+            var roleSource = hasRealChar ? (companionChar.type === 'npc' ? 'npc' : 'char') : 'none';
+            var scanList = [
+              query,
+              companionChar ? companionChar.name : '',
+              companionChar ? companionChar.personality : '',
+              docFilter || '',
+              chapterFilter || '',
+              studyMode,
+              studyContext ? ((studyContext.taskType || '') + ' ' + (studyContext.taskName || '') + ' ' + (studyContext.timerPhase || '')) : '',
+              evidenceText || ''
+            ];
+            if (Array.isArray(chatHistory)) {
+              chatHistory.slice(-4).forEach(function(m) {
+                if (m && m.text) scanList.push(m.text);
+              });
+            }
+            var lbRes = await window.resolveLorebookContext({
+              roleSource: roleSource,
+              charId: hasRealChar ? companionChar.id : null,
+              scanTexts: scanList.filter(Boolean),
+              maxChars: 2800,
+              appId: 'study_room'
+            });
+            if (lbRes && lbRes.segments) {
+              loreSegments = lbRes.segments;
+            }
+          } catch (lbErr) {
+            console.warn('[StudyAIEngine] Lorebook resolution skipped:', lbErr);
+          }
+        }
 
         // 严格遵循第 4 节系统边界：原有人设只读，绝不覆盖或篡改
         var originalPersona =
+          (loreSegments.before ? ('【世界书前置设定（仅作人物背景与口吻参考，严禁篡改教材事实）】\n' + loreSegments.before + '\n\n') : '') +
           '【原有人设档案（只读，不得覆盖或改写）】\n' +
           '角色名称：' + companionChar.name + '\n' +
           '性格特征：' + (companionChar.personality || '温柔体贴') + '\n' +
-          (companionChar.lorebook ? ('设定背景：' + companionChar.lorebook + '\n') : '');
+          (companionChar.lorebook ? ('设定背景：' + companionChar.lorebook + '\n') : '') +
+          (loreSegments.middle ? ('\n【世界书补充设定】\n' + loreSegments.middle + '\n') : '');
 
         var overlayRules =
           '\n【自习室附加规则】\n' +
-          charProfile.content;
+          charProfile.content +
+          (loreSegments.after ? ('\n\n【世界书收束设定（不得覆盖教材引用严谨规则）】\n' + loreSegments.after) : '');
 
-        var studyMode = (window.WanwanStudyRoom && window.WanwanStudyRoom.getState) ? window.WanwanStudyRoom.getState().studyMode : 'gentle';
         var dynamicContext =
           '\n\n【当前自习室动态上下文】' +
           '\n当前陪伴模式：' + studyMode +
+          (studyContext && studyContext.taskName ? ('\n当前学习任务：' + studyContext.taskType + ' · ' + studyContext.taskName) : '') +
           '\n当前 Char ID：' + (companionChar.id || 'char_default') +
           '\n资料使用范围：' + (docFilter ? '指定教材' : '全部教材资料库') +
           (chapterFilter ? ('\n指定章节：' + chapterFilter) : '') +

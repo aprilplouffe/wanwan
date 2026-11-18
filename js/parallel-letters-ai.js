@@ -58,10 +58,209 @@
     }).join('\n\n');
   }
 
+  // ===== 平行来信 · 世界书统一读取与当前分支扫描辅助 =====
+  function collectParallelScanTexts(opts) {
+    opts = opts || {};
+    var out = [];
+    function push(val) {
+      if (typeof val !== 'string') return;
+      var s = val.trim();
+      if (s) out.push(s);
+    }
+
+    var universe = opts.universe;
+    if (universe && typeof universe === 'object') {
+      push(universe.title);
+      push(universe.premise);
+      push(universe.worldSetting);
+      push(universe.initialRelationship);
+      push(universe.specialSettings);
+      push(universe.storyAnticipation);
+      push(universe.atmosphere);
+      if (Array.isArray(universe.characterSnapshots)) {
+        universe.characterSnapshots.forEach(function(snap) {
+          if (!snap) return;
+          push(snap.name);
+          push(snap.nick);
+          push(snap.role);
+          push(snap.description);
+          push(snap.ifCustomRole);
+          push(snap.ifCustomBackstory);
+        });
+      }
+    }
+
+    if (Array.isArray(opts.selectedChars)) {
+      opts.selectedChars.forEach(function(c) {
+        if (!c) return;
+        push(c.name);
+        push(c.nick);
+        push(c.role);
+        push(c.description);
+      });
+    }
+
+    var branch = opts.branch;
+    if (branch && typeof branch === 'object') {
+      push(branch.branchName);
+      push(branch.relationshipState);
+      push(branch.summary);
+      if (Array.isArray(branch.importantEvents)) {
+        branch.importantEvents.forEach(push);
+      }
+      if (Array.isArray(branch.scenes)) {
+        branch.scenes.forEach(function(sc) {
+          if (!sc) return;
+          push(sc.directorPrompt);
+          push(sc.playerAction);
+          push(sc.narration);
+          push(sc.relationshipEvolution);
+          push(sc.keyEvent);
+          if (Array.isArray(sc.dialogues)) {
+            sc.dialogues.forEach(function(d) {
+              if (!d) return;
+              push((d.speaker ? d.speaker + '：' : '') + (d.text || ''));
+              push(d.aside);
+            });
+          }
+        });
+      }
+    }
+
+    if (Array.isArray(opts.extraTexts)) {
+      opts.extraTexts.forEach(push);
+    }
+    return out;
+  }
+
+  function mergeParallelLorebookResults(results, maxTotalChars) {
+    var cap = Number.isFinite(Number(maxTotalChars)) && Number(maxTotalChars) > 0 ? Number(maxTotalChars) : 3600;
+    var bucketSeen = { before: {}, middle: {}, after: {} };
+    var buckets = { before: [], middle: [], after: [] };
+    var used = 0;
+
+    function addTextToBucket(pos, text) {
+      if (!text) return;
+      var parts = String(text).split(/\n\n+/);
+      for (var i = 0; i < parts.length; i++) {
+        var piece = parts[i].trim();
+        if (!piece) continue;
+        if (bucketSeen[pos][piece]) continue;
+        if (used + piece.length > cap) {
+          var rem = cap - used;
+          if (used === 0 || rem >= 140) {
+            piece = piece.slice(0, Math.max(80, rem - 1)) + '…';
+          } else {
+            continue;
+          }
+        }
+        bucketSeen[pos][piece] = true;
+        buckets[pos].push(piece);
+        used += piece.length;
+      }
+    }
+
+    (results || []).forEach(function(res) {
+      if (!res || !res.segments) return;
+      addTextToBucket('before', res.segments.before);
+      addTextToBucket('middle', res.segments.middle);
+      addTextToBucket('after', res.segments.after);
+    });
+
+    var segments = {
+      before: buckets.before.join('\n\n'),
+      middle: buckets.middle.join('\n\n'),
+      after: buckets.after.join('\n\n')
+    };
+    return {
+      segments: segments,
+      mergedText: [segments.before, segments.middle, segments.after].filter(Boolean).join('\n\n')
+    };
+  }
+
+  async function resolveParallelLorebookContext(opts) {
+    opts = opts || {};
+    var empty = { segments: { before: '', middle: '', after: '' }, mergedText: '' };
+    if (typeof window.resolveLorebookContext !== 'function') return empty;
+
+    var scanTexts = collectParallelScanTexts(opts);
+    var targets = [];
+    var seenTarget = {};
+
+    function pushTarget(roleSource, charId) {
+      var idStr = (charId !== null && charId !== undefined) ? String(charId).trim() : '';
+      var src = idStr ? (roleSource === 'npc' ? 'npc' : 'char') : 'none';
+      var key = src + '::' + idStr;
+      if (seenTarget[key]) return;
+      seenTarget[key] = true;
+      targets.push({ roleSource: src, charId: idStr || null });
+    }
+
+    var snapshots = opts.universe && Array.isArray(opts.universe.characterSnapshots)
+      ? opts.universe.characterSnapshots
+      : [];
+
+    if (opts.targetCharacterName && snapshots.length) {
+      var tName = String(opts.targetCharacterName).trim();
+      var matchedSnaps = snapshots.filter(function(s) {
+        return s && (s.name === tName || s.nick === tName);
+      });
+      matchedSnaps.forEach(function(s) {
+        if (s && s.type !== 'user' && s.sourceCharId !== null && s.sourceCharId !== undefined && String(s.sourceCharId).trim() !== '') {
+          pushTarget(s.type, s.sourceCharId);
+        }
+      });
+    }
+
+    if (!targets.length && snapshots.length) {
+      snapshots.forEach(function(s) {
+        if (s && s.type !== 'user' && s.sourceCharId !== null && s.sourceCharId !== undefined && String(s.sourceCharId).trim() !== '') {
+          pushTarget(s.type, s.sourceCharId);
+        }
+      });
+    }
+
+    if (!targets.length && Array.isArray(opts.selectedChars)) {
+      opts.selectedChars.forEach(function(c) {
+        if (c && c.type !== 'user' && c.id !== null && c.id !== undefined && String(c.id).trim() !== '') {
+          pushTarget(c.type, c.id);
+        }
+      });
+    }
+
+    // 若没有任何原角色 ID（或未选角色），仍需解析一次全局世界书
+    if (!targets.length) {
+      pushTarget('none', null);
+    }
+
+    try {
+      var settled = [];
+      for (var i = 0; i < targets.length; i++) {
+        var t = targets[i];
+        var r = await window.resolveLorebookContext({
+          roleSource: t.roleSource,
+          charId: t.charId,
+          scanTexts: scanTexts,
+          maxChars: 3400,
+          appId: 'parallel_letters'
+        });
+        settled.push(r);
+      }
+      return mergeParallelLorebookResults(settled, 3600);
+    } catch (e) {
+      console.warn('[ParallelLettersAI] Lorebook resolution skipped:', e);
+      return empty;
+    }
+  }
+
   // ===== 10.4 编译全量上下文 Prompt =====
   function compilePromptPayload(universe, branch, userInput, extraPrefs) {
+    extraPrefs = extraPrefs || {};
     var modePrompt = universe.currentMode === 'inCharacter' ? IN_CHARACTER_MODE_PROMPT : SPECTATOR_MODE_PROMPT;
     var system = BASE_SYSTEM_PROMPT + '\n\n' + modePrompt;
+    var lbSeg = (extraPrefs.lorebookSegments && typeof extraPrefs.lorebookSegments === 'object')
+      ? extraPrefs.lorebookSegments
+      : { before: '', middle: '', after: '' };
 
     var scenesHistory = (branch && Array.isArray(branch.scenes)) ? branch.scenes : [];
     var historyText = '暂无（此为世界开启首幕）';
@@ -80,6 +279,16 @@
       }).join('\n\n');
     }
 
+    var lbBeforeBlock = lbSeg.before
+      ? ('\n\n【世界书前置设定（当前宇宙与角色背景参考，不得覆盖 IF 核心假设与模式规则）】\n' + lbSeg.before)
+      : '';
+    var lbMiddleBlock = lbSeg.middle
+      ? ('\n\n【世界书补充设定】\n' + lbSeg.middle)
+      : '';
+    var lbAfterBlock = lbSeg.after
+      ? ('\n\n【世界书收束补充（不得覆盖以下输出格式与模式规则）】\n' + lbSeg.after)
+      : '';
+
     var dynamicContext = 
 `【当前 IF 世界】
 宇宙 ID：${universe.universeId}
@@ -90,10 +299,10 @@ IF 标题：${universe.title}
 特殊设定：${universe.specialSettings || '无'}
 剧情期待：${universe.storyAnticipation || '自然展开'}
 故事氛围：${universe.atmosphere || '治愈'}
-篇幅定位：${universe.storyLength || '标准'}
+篇幅定位：${universe.storyLength || '标准'}${lbBeforeBlock}
 
 【出演角色资料】
-${formatCharacterProfiles(universe.characterSnapshots)}
+${formatCharacterProfiles(universe.characterSnapshots)}${lbMiddleBlock}
 
 【当前模式】
 ${universe.currentMode === 'inCharacter' ? '入戏模式（用户亲自参与，切忌替用户表态行动）' : '观影模式（用户为导演，用户输入为镜头与剧本指令）'}
@@ -107,7 +316,7 @@ ${universe.currentMode === 'inCharacter' ? '入戏模式（用户亲自参与，
 ${historyText}
 
 【用户本次输入/指令】
-${userInput || (scenesHistory.length === 0 ? '【系统指令：请生成具有高度文学美感的第一幕故事开场】' : '【系统指令：自然推进下一幕剧情】')}
+${userInput || (scenesHistory.length === 0 ? '【系统指令：请生成具有高度文学美感的第一幕故事开场】' : '【系统指令：自然推进下一幕剧情】')}${lbAfterBlock}
 
 【输出要求】
 请必须以纯 JSON 格式输出本幕内容（不要输出 markdown 代码块外多余文本），数据结构如下：
@@ -211,9 +420,17 @@ ${userInput || (scenesHistory.length === 0 ? '【系统指令：请生成具有�
       });
     }
 
+    var lore = await resolveParallelLorebookContext({
+      selectedChars: selectedChars,
+      extraTexts: [charNames, charDesc]
+    });
+    var loreSection = lore.mergedText
+      ? ('\n【参考世界书设定（全局与参演角色已启用条目，供脑洞构想结合发挥）】\n' + lore.mergedText + '\n')
+      : '';
+
     var prompt = 
 `你是一位脑洞极佳的平行宇宙编剧。请根据出演角色：${charDesc || '原创伴侣与主角'}，
-构想 3~4 组脑洞大开、极具文学张力与情感羁绊的「IF平行世界」设定组合（例如涵盖：「民国潜伏」「末日废土信使」「高校初遇」或星际科幻、古风悬疑等）。
+构想 3~4 组脑洞大开、极具文学张力与情感羁绊的「IF平行世界」设定组合（例如涵盖：「民国潜伏」「末日废土信使」「高校初遇」或星际科幻、古风悬疑等）。${loreSection}
 
 请严格以纯 JSON 数组返回，格式如下：
 [
@@ -264,7 +481,14 @@ ${userInput || (scenesHistory.length === 0 ? '【系统指令：请生成具有�
   async function generateScene(universe, branch, userInput, extraOpts) {
     extraOpts = extraOpts || {};
     var activeMode = extraOpts.mode || universe.currentMode || 'spectator';
-    var compiled = compilePromptPayload(universe, branch, userInput, extraOpts);
+    var lore = await resolveParallelLorebookContext({
+      universe: universe,
+      branch: branch,
+      extraTexts: [userInput, extraOpts.choiceText]
+    });
+    var compiled = compilePromptPayload(universe, branch, userInput, Object.assign({}, extraOpts, {
+      lorebookSegments: lore.segments
+    }));
     var cfg = await getActiveAiConfig();
 
     if (!cfg) {
@@ -438,11 +662,22 @@ ${userInput || (scenesHistory.length === 0 ? '【系统指令：请生成具有�
       };
     }
 
+    var sceneText = scene ? (scene.narration + (scene.dialogues || []).map(function(d){ return d.speaker + ':' + d.text; }).join('; ')) : '开场初遇';
+    var lore = await resolveParallelLorebookContext({
+      universe: universe,
+      branch: branch,
+      targetCharacterName: targetName,
+      extraTexts: [sceneText]
+    });
+    var loreSection = lore.mergedText
+      ? ('\n【参考世界书设定（仅作人物心理与世界观背景参考）】\n' + lore.mergedText)
+      : '';
+
     var prompt = 
 `你是一位精通微表情心理与人物内心戏的文学小说家。
 【当前世界】背景：${universe.worldSetting} | 核心假设：${universe.premise} | 关系：${universe.initialRelationship}
 【目标角色】：${targetName}
-【当前幕剧情概况】：${scene ? (scene.narration + (scene.dialogues || []).map(function(d){ return d.speaker + ':' + d.text; }).join('; ')) : '开场初遇'}
+【当前幕剧情概况】：${sceneText}${loreSection}
 
 请剖析此时此刻【${targetName}】在极度克制之下未曾言明、最隐秘深层的「内心独白与心理暗流」。
 必须严格以纯 JSON 格式输出：
@@ -531,11 +766,21 @@ ${userInput || (scenesHistory.length === 0 ? '【系统指令：请生成具有�
       }
     }
 
+    var lore = await resolveParallelLorebookContext({
+      universe: universe,
+      branch: branch,
+      targetCharacterName: targetName,
+      extraTexts: [typeName]
+    });
+    var loreSection = lore.mergedText
+      ? ('\n【参考世界书设定（仅作当前平行时空与角色口吻背景参考）】\n' + lore.mergedText)
+      : '';
+
     var prompt = 
 `你是一位文学才华横溢的小说家。
 【当前世界】背景：${universe.worldSetting} | 核心假设：${universe.premise} | 关系状态：${branch ? branch.relationshipState : universe.initialRelationship}
 【出演角色】：${targetName}
-【番外形式】：${typeName}（${currentType === 'letter' ? '未寄出的信' : currentType === 'diary' ? '深夜私密日记' : '另一视角的平行独白'}）
+【番外形式】：${typeName}（${currentType === 'letter' ? '未寄出的信' : currentType === 'diary' ? '深夜私密日记' : '另一视角的平行独白'}）${loreSection}
 
 请以【${targetName}】为第一人称，撰写一篇极具文学厚度、时代质感与情感张力的专属番外。
 要求：

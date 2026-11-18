@@ -74,7 +74,7 @@
     return '' +
       '<div class="fc-frame">' +
         '<div class="fc-home-shell" id="fc-home-shell">' +
-          '<header class="fc-topbar">' +
+          '<header class="fc-topbar" id="fc-topbar">' +
             '<button type="button" class="fc-brand-home-btn" id="fc-brand-home-btn" data-fc-home-trigger="1" aria-label="同好社区，点击返回弯弯机桌面" title="点击返回弯弯机桌面">' +
               '<span class="fc-brand-home-title">同好社区</span>' +
               '<span class="fc-brand-home-mark" aria-hidden="true">✦</span>' +
@@ -168,8 +168,27 @@
     badge.textContent = count > 0 ? ('已保存 ' + count + ' 位') : '暂无角色';
   }
 
+  function renderTopbar(page, tab) {
+    var topbar = page && page.querySelector('#fc-topbar');
+    if (!topbar) return;
+    if (tab === 'archive') {
+      topbar.innerHTML = '<h1 class="fc-topbar-plain-title" id="fc-topbar-title">存档</h1>';
+      return;
+    }
+    if (tab === 'settings') {
+      topbar.innerHTML = '<h1 class="fc-topbar-plain-title" id="fc-topbar-title">设置</h1>';
+      return;
+    }
+    topbar.innerHTML =
+      '<button type="button" class="fc-brand-home-btn" id="fc-brand-home-btn" data-fc-home-trigger="1" aria-label="同好社区，点击返回弯弯机桌面" title="点击返回弯弯机桌面">' +
+        '<span class="fc-brand-home-title">同好社区</span>' +
+        '<span class="fc-brand-home-mark" aria-hidden="true">✦</span>' +
+      '</button>';
+  }
+
   function switchTab(page, tab) {
     _activeTab = tab;
+    renderTopbar(page, tab);
     page.querySelectorAll('[data-fc-view]').forEach(function(section) {
       section.hidden = section.dataset.fcView !== tab;
     });

@@ -223,6 +223,84 @@
     return ref ? { source: ref.source, id: ref.id } : null;
   }
 
+  function clampScore(val, fallback) {
+    var num = Number(val);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.max(0, Math.min(100, Math.round(num)));
+  }
+
+  function createDefaultEmotionState() {
+    return {
+      relationshipStage: '日常初始',
+      intimacy: 20,
+      trust: 25,
+      affection: 15,
+      currentEmotion: '平静',
+      emotionIntensity: 35,
+      recentStoryEvents: [],
+      relationshipSummary: '',
+      smallTalkStreak: 0,
+      lastUpdatedAt: 0
+    };
+  }
+
+  function normalizeEmotionState(raw) {
+    var base = createDefaultEmotionState();
+    if (!raw || typeof raw !== 'object') return base;
+    var events = [];
+    if (Array.isArray(raw.recentStoryEvents)) {
+      for (var i = 0; i < raw.recentStoryEvents.length; i++) {
+        var ev = raw.recentStoryEvents[i];
+        if (!ev || typeof ev !== 'object') continue;
+        var evText = cleanStr(String(ev.event || ''), 240).trim();
+        if (!evText) continue;
+        events.push({
+          event: evText,
+          impact: cleanStr(String(ev.impact || ''), 160).trim(),
+          emotionShift: cleanStr(String(ev.emotionShift || ''), 80).trim(),
+          timestamp: typeof ev.timestamp === 'number' && Number.isFinite(ev.timestamp) ? ev.timestamp : 0
+        });
+      }
+    }
+    if (events.length > 12) {
+      events = events.slice(events.length - 12);
+    }
+    return {
+      relationshipStage: cleanStr(String(raw.relationshipStage || ''), 40).trim() || base.relationshipStage,
+      intimacy: clampScore(raw.intimacy, base.intimacy),
+      trust: clampScore(raw.trust, base.trust),
+      affection: clampScore(raw.affection, base.affection),
+      currentEmotion: cleanStr(String(raw.currentEmotion || ''), 40).trim() || base.currentEmotion,
+      emotionIntensity: clampScore(raw.emotionIntensity, base.emotionIntensity),
+      recentStoryEvents: events,
+      relationshipSummary: cleanStr(String(raw.relationshipSummary || ''), 500).trim(),
+      smallTalkStreak: Math.max(0, Math.min(999, Math.round(Number(raw.smallTalkStreak) || 0))),
+      lastUpdatedAt: typeof raw.lastUpdatedAt === 'number' && Number.isFinite(raw.lastUpdatedAt) ? raw.lastUpdatedAt : 0
+    };
+  }
+
+  function createDefaultAiMemory() {
+    return {
+      historySummary: '',
+      summarizedCount: 0,
+      lastSummaryAt: 0,
+      lastModeUsed: '',
+      turnCount: 0
+    };
+  }
+
+  function normalizeAiMemory(raw) {
+    var base = createDefaultAiMemory();
+    if (!raw || typeof raw !== 'object') return base;
+    return {
+      historySummary: cleanStr(String(raw.historySummary || ''), 1600).trim(),
+      summarizedCount: Math.max(0, Math.round(Number(raw.summarizedCount) || 0)),
+      lastSummaryAt: typeof raw.lastSummaryAt === 'number' && Number.isFinite(raw.lastSummaryAt) ? raw.lastSummaryAt : 0,
+      lastModeUsed: cleanStr(String(raw.lastModeUsed || ''), 30).trim(),
+      turnCount: Math.max(0, Math.round(Number(raw.turnCount) || 0))
+    };
+  }
+
   function normalizeWorkData(raw, fallbackMeta) {
     var now = Date.now();
     var meta = fallbackMeta || {};
@@ -248,6 +326,8 @@
       boundPersonaId: syncedPersonaId,
       boundRoleRef: boundRoleRef,
       aiSettings: normalizeAiSettings(src.aiSettings, resolvedChar),
+      emotionState: normalizeEmotionState(src.emotionState),
+      aiMemory: normalizeAiMemory(src.aiMemory),
       topic: typeof src.topic === 'string' ? src.topic : '',
       join: src.join !== false,
       showTools: Boolean(src.showTools),
@@ -476,6 +556,8 @@
       boundPersonaId: '',
       boundRoleRef: null,
       aiSettings: createDefaultAiSettings('对方'),
+      emotionState: createDefaultEmotionState(),
+      aiMemory: createDefaultAiMemory(),
       topic: '',
       join: true,
       showTools: false,
@@ -763,6 +845,10 @@
     normalizeCreationMode: normalizeCreationMode,
     createDefaultAiSettings: createDefaultAiSettings,
     normalizeAiSettings: normalizeAiSettings,
+    createDefaultEmotionState: createDefaultEmotionState,
+    normalizeEmotionState: normalizeEmotionState,
+    createDefaultAiMemory: createDefaultAiMemory,
+    normalizeAiMemory: normalizeAiMemory,
     DEFAULT_APPEARANCE: clone(DEFAULT_APPEARANCE),
     normalizeAppearance: normalizeAppearance,
     ensureInitialized: ensureInitialized,
