@@ -34,9 +34,24 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #edf0ec;
-  color: #333c36;
+  background: #abc6d9;
+  color: #22262a;
   position: relative;
+}
+
+#fan-community-page .fc-svg-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  pointer-events: none;
+}
+
+#fan-community-page .fc-svg-wrap svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 #fan-community-page .fc-chat-head {
@@ -45,43 +60,41 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: calc(12px + var(--fc-safe-top, 0px)) 14px 12px;
-  min-height: 54px;
-  background: #f8f8f3;
-  color: #414a42;
-  border-bottom: 1px solid #e1e6dd;
+  padding: calc(10px + var(--fc-safe-top, 0px)) 12px 10px;
+  min-height: 52px;
+  background: #abc6d9;
+  color: #1f282f;
+  border-bottom: 1px solid rgba(93, 130, 156, 0.24);
+  z-index: 4;
 }
 
 #fan-community-page .fc-chat-back {
   flex: none;
+  width: 38px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  justify-content: center;
   background: transparent;
   border: 0;
-  color: #5d6b5c;
-  font-size: 14px;
-  padding: 5px 8px 5px 2px;
+  color: #1f2b33;
+  padding: 0;
   border-radius: 10px;
+  transition: background-color 0.14s ease;
 }
 
 #fan-community-page .fc-chat-back:active {
-  background: rgba(141, 154, 132, 0.12);
-}
-
-#fan-community-page .fc-chat-back-chevron {
-  font-size: 22px;
-  line-height: 1;
-  margin-top: -2px;
+  background: rgba(255, 255, 255, 0.34);
 }
 
 #fan-community-page .fc-chat-title {
   flex: 1;
   min-width: 0;
   text-align: center;
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 650;
-  color: #39423a;
+  letter-spacing: -0.2px;
+  color: #1d262d;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -89,28 +102,92 @@
 
 #fan-community-page .fc-chat-head-actions {
   flex: none;
-  min-width: 56px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 2px;
+}
+
+#fan-community-page .fc-chat-head-icon-btn {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  color: #1f2b33;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+#fan-community-page .fc-chat-head-icon-btn:active,
+#fan-community-page .fc-chat-head-icon-btn.active {
+  background: rgba(255, 255, 255, 0.42);
+  color: #155c8e;
+}
+
+/* 可折叠聊天内容搜索条 */
+#fan-community-page .fc-chat-search-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
   gap: 6px;
+  padding: 8px 12px;
+  background: #dceaf4;
+  border-bottom: 1px solid rgba(102, 137, 162, 0.25);
+  z-index: 3;
 }
 
-#fan-community-page .fc-chat-head-tool {
-  border: 1px solid #e2e7dd;
-  background: #fffefa;
-  color: #62715f;
+#fan-community-page .fc-chat-search-bar[hidden] {
+  display: none;
+}
+
+#fan-community-page .fc-chat-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid rgba(114, 149, 174, 0.35);
+  background: #ffffff;
+  color: #24313c;
+  border-radius: 17px;
+  padding: 0 12px;
+  font-size: 13px;
+  outline: 0;
+  color-scheme: light;
+}
+
+#fan-community-page .fc-chat-search-count {
+  flex: none;
+  font-size: 11px;
+  color: #4f6a80;
+  min-width: 28px;
+  text-align: center;
+}
+
+#fan-community-page .fc-chat-search-nav {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(114, 149, 174, 0.32);
+  background: #ffffff;
+  color: #36566f;
+  border-radius: 8px;
+  font-size: 16px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+#fan-community-page .fc-chat-search-close {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: #2f6c98;
   font-size: 12px;
-  border-radius: 9px;
-  padding: 5px 9px;
-  white-space: nowrap;
-}
-
-#fan-community-page .fc-chat-head-tool.active {
-  background: #eef3eb;
-  border-color: #c8d4c2;
-  color: #4c5c4a;
   font-weight: 600;
+  padding: 5px 6px;
 }
 
 #fan-community-page .fc-chat-stream-wrap {
@@ -120,7 +197,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--fc-chat-bg-color, #e8ede8);
+  background: var(--fc-chat-bg-color, #abc6d9);
 }
 
 #fan-community-page .fc-chat-bg-layer {
@@ -182,12 +259,13 @@
 
 #fan-community-page .fc-chat-date span {
   display: inline-block;
-  background: #c8d1c7;
+  background: rgba(122, 152, 174, 0.72);
   color: #ffffff;
-  border-radius: 20px;
-  padding: 7px 14px;
+  border-radius: 18px;
+  padding: 6px 14px;
   font-size: 12px;
   line-height: 1.3;
+  box-shadow: 0 1px 4px rgba(56, 84, 106, 0.12);
 }
 
 #fan-community-page .fc-chat-msg {
@@ -206,10 +284,11 @@
   width: 42px;
   height: 42px;
   flex: none;
-  background: #b2c5b5;
-  color: #eef6ef;
-  border-radius: 50%;
-  border: 1px solid rgba(114, 134, 113, 0.14);
+  background: #49b0c0;
+  color: #c6edf0;
+  border-radius: 14px;
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 2px 7px rgba(48, 86, 108, 0.15);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -219,12 +298,12 @@
 #fan-community-page .fc-chat-avatar::before {
   content: "●";
   font-size: 22px;
-  text-shadow: 0 11px 0 #eef6ef;
+  text-shadow: 0 11px 0 #c6edf0;
   transform: translateY(-5px);
 }
 
 #fan-community-page .fc-chat-avatar.has-img {
-  background: #ecefe8;
+  background: #ffffff;
 }
 
 #fan-community-page .fc-chat-avatar.has-img::before {
@@ -236,30 +315,31 @@
   height: 100%;
   object-fit: cover;
   display: block;
-  border-radius: 50%;
+  border-radius: 13px;
 }
 
 #fan-community-page .fc-chat-msg.right .fc-chat-avatar {
-  background: #9eb39d;
+  background: #49b0c0;
 }
 
 #fan-community-page .fc-chat-msg.right .fc-chat-avatar.has-img {
-  background: #ecefe8;
+  background: #ffffff;
 }
 
 #fan-community-page .fc-chat-msgbody {
-  max-width: calc(100% - 60px);
+  max-width: calc(100% - 62px);
   min-width: 0;
 }
 
 #fan-community-page .fc-chat-msg.right .fc-chat-msgbody {
-  max-width: calc(100% - 60px);
+  max-width: calc(100% - 62px);
   text-align: right;
 }
 
 #fan-community-page .fc-chat-name {
   font-size: 12px;
-  color: var(--fc-stream-name-fg, #7a887e);
+  font-weight: 500;
+  color: var(--fc-stream-name-fg, #4d6172);
   margin: 0 0 6px 2px;
   max-width: 220px;
   overflow: hidden;
@@ -270,8 +350,8 @@
 #fan-community-page .fc-chat-app.has-bg-image .fc-chat-name {
   display: inline-block;
   width: fit-content;
-  background: rgba(255, 254, 250, 0.86);
-  color: #4a574a;
+  background: rgba(255, 255, 255, 0.88);
+  color: #314453;
   padding: 2px 8px;
   border-radius: 7px;
 }
@@ -296,18 +376,18 @@
 #fan-community-page .fc-chat-bubble {
   display: inline-block;
   max-width: 100%;
-  background: var(--fc-char-bubble-bg, #fffefa);
-  color: var(--fc-char-bubble-fg, #354139);
-  border-radius: 5px 15px 15px 15px;
+  background: var(--fc-char-bubble-bg, #ffffff);
+  color: var(--fc-char-bubble-fg, #22262a);
+  border-radius: 6px 18px 18px 18px;
   padding: 11px 15px;
-  font-size: 16px;
-  line-height: 1.65;
+  font-size: 15.5px;
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   position: relative;
   min-width: 35px;
   text-align: left;
-  box-shadow: 0 1px 3px rgba(62, 84, 65, 0.04);
+  box-shadow: 0 2px 7px rgba(46, 78, 102, 0.085);
   cursor: pointer;
 }
 
@@ -316,14 +396,15 @@
   position: absolute;
   left: -7px;
   top: 5px;
-  border-top: 9px solid var(--fc-char-bubble-bg, #fffefa);
+  border-top: 9px solid var(--fc-char-bubble-bg, #ffffff);
   border-left: 9px solid transparent;
 }
 
 #fan-community-page .fc-chat-msg.right .fc-chat-bubble {
-  background: var(--fc-user-bubble-bg, #d9e3d2);
-  color: var(--fc-user-bubble-fg, #354139);
-  border-radius: 15px 5px 15px 15px;
+  background: var(--fc-user-bubble-bg, #fff133);
+  color: var(--fc-user-bubble-fg, #22262a);
+  border-radius: 18px 6px 18px 18px;
+  box-shadow: 0 2px 7px rgba(96, 89, 20, 0.11);
 }
 
 #fan-community-page .fc-chat-msg.right .fc-chat-bubble::before {
@@ -331,82 +412,14 @@
   right: -7px;
   border-left: 0;
   border-right: 9px solid transparent;
-  border-top-color: var(--fc-user-bubble-bg, #d9e3d2);
+  border-top-color: var(--fc-user-bubble-bg, #fff133);
 }
 
-/* 假撤回状态：保留原文但展示柔和撤回状态 */
-#fan-community-page .fc-chat-bubble.is-recalled {
-  background: var(--fc-char-bubble-recall-bg, rgba(255, 254, 250, 0.72));
-  color: var(--fc-char-bubble-sub, #6b766c);
-  border: 1px dashed var(--fc-char-bubble-recall-border, #c2cdc0);
-  box-shadow: none;
-}
-
-#fan-community-page .fc-chat-bubble.is-recalled::before {
-  border-top-color: var(--fc-char-bubble-recall-bg, rgba(255, 254, 250, 0.72));
-}
-
-#fan-community-page .fc-chat-msg.right .fc-chat-bubble.is-recalled {
-  background: var(--fc-user-bubble-recall-bg, rgba(217, 227, 210, 0.62));
-  color: var(--fc-user-bubble-sub, #5b685b);
-  border: 1px dashed var(--fc-user-bubble-recall-border, #afc0ab);
-}
-
-#fan-community-page .fc-chat-msg.right .fc-chat-bubble.is-recalled::before {
-  border-top-color: var(--fc-user-bubble-recall-bg, rgba(217, 227, 210, 0.62));
-}
-
-#fan-community-page .fc-chat-recall-tag {
-  display: block;
-  font-size: 11px;
-  line-height: 1.3;
-  color: var(--fc-char-bubble-sub, #829081);
-  margin-bottom: 4px;
-}
-
-#fan-community-page .fc-chat-msg.right .fc-chat-recall-tag {
-  color: var(--fc-user-bubble-sub, #829081);
-}
-
-#fan-community-page .fc-chat-recall-text {
-  display: block;
-}
-
-#fan-community-page .fc-chat-fake-recall {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  background: #fffefa;
-  border: 1px solid #e2e7dd;
-  border-radius: 9px;
-  overflow: hidden;
-  white-space: nowrap;
-  box-shadow: 0 1px 4px rgba(64, 92, 104, 0.08);
-}
-
-#fan-community-page .fc-chat-fake-recall button {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  min-width: 28px;
-  height: 28px;
-  font-size: 13px;
-  line-height: 1;
-  color: #5d6c5b;
-  padding: 2px 8px;
-}
-
-#fan-community-page .fc-chat-fake-recall button + button {
-  border-left: 1px solid #ecefe8;
-}
-
-#fan-community-page .fc-chat-fake-recall button:active {
-  background: #f2f4ee;
-}
-
-#fan-community-page .fc-chat-fake-recall .fc-recall-cross {
-  color: #c96d72;
-  font-size: 16px;
+#fan-community-page .fc-msg-search-hit .fc-chat-bubble,
+#fan-community-page .fc-msg-search-hit .fc-chat-transfer,
+#fan-community-page .fc-msg-search-hit .fc-chat-voice,
+#fan-community-page .fc-msg-search-hit .fc-chat-call {
+  box-shadow: 0 0 0 2.5px #2d87c8, 0 4px 14px rgba(45, 135, 200, 0.25);
 }
 
 /* 消息下方轻量创作工具条（点击消息或开启工具栏时显示） */
@@ -586,13 +599,13 @@
   min-width: 138px;
   max-width: 240px;
   border: 0;
-  border-radius: 5px 15px 15px 15px;
-  background: var(--fc-char-bubble-bg, #fffefa);
-  color: var(--fc-char-bubble-fg, #354139);
+  border-radius: 6px 18px 18px 18px;
+  background: var(--fc-char-bubble-bg, #ffffff);
+  color: var(--fc-char-bubble-fg, #22262a);
   padding: 11px 14px;
   font-size: 14px;
   position: relative;
-  box-shadow: 0 1px 3px rgba(62, 84, 65, 0.05);
+  box-shadow: 0 2px 7px rgba(46, 78, 102, 0.085);
   cursor: pointer;
 }
 
@@ -601,14 +614,14 @@
   position: absolute;
   left: -7px;
   top: 5px;
-  border-top: 9px solid var(--fc-char-bubble-bg, #fffefa);
+  border-top: 9px solid var(--fc-char-bubble-bg, #ffffff);
   border-left: 9px solid transparent;
 }
 
 #fan-community-page .fc-chat-msg.right .fc-chat-voice {
-  background: var(--fc-user-bubble-bg, #d9e3d2);
-  color: var(--fc-user-bubble-fg, #354139);
-  border-radius: 15px 5px 15px 15px;
+  background: var(--fc-user-bubble-bg, #fff133);
+  color: var(--fc-user-bubble-fg, #22262a);
+  border-radius: 18px 6px 18px 18px;
   flex-direction: row-reverse;
 }
 
@@ -617,11 +630,11 @@
   right: -7px;
   border-left: 0;
   border-right: 9px solid transparent;
-  border-top-color: var(--fc-user-bubble-bg, #d9e3d2);
+  border-top-color: var(--fc-user-bubble-bg, #fff133);
 }
 
 #fan-community-page .fc-chat-voice.is-playing {
-  box-shadow: 0 0 0 1.5px #8d9a84, 0 2px 8px rgba(72, 96, 74, 0.12);
+  box-shadow: 0 0 0 2px #4d8fb8, 0 2px 8px rgba(46, 88, 118, 0.16);
 }
 
 #fan-community-page .fc-chat-voice-icon {
@@ -705,21 +718,21 @@
   gap: 11px;
   min-width: 186px;
   max-width: 265px;
-  background: var(--fc-char-bubble-bg, #fffefa);
-  border: 1px solid rgba(141, 154, 132, 0.22);
-  border-radius: 5px 15px 15px 15px;
+  background: var(--fc-char-bubble-bg, #ffffff);
+  border: 1px solid rgba(102, 137, 162, 0.22);
+  border-radius: 6px 18px 18px 18px;
   padding: 11px 14px;
-  color: var(--fc-char-bubble-fg, #354139);
+  color: var(--fc-char-bubble-fg, #22262a);
   text-align: left;
-  box-shadow: 0 1px 3px rgba(62, 84, 65, 0.05);
+  box-shadow: 0 2px 7px rgba(46, 78, 102, 0.085);
   cursor: pointer;
 }
 
 #fan-community-page .fc-chat-msg.right .fc-chat-call {
-  background: var(--fc-user-bubble-bg, #d9e3d2);
-  border-color: rgba(141, 154, 132, 0.28);
-  color: var(--fc-user-bubble-fg, #354139);
-  border-radius: 15px 5px 15px 15px;
+  background: var(--fc-user-bubble-bg, #fff133);
+  border-color: rgba(145, 134, 34, 0.24);
+  color: var(--fc-user-bubble-fg, #22262a);
+  border-radius: 18px 6px 18px 18px;
 }
 
 #fan-community-page .fc-chat-call-icon {
@@ -775,28 +788,14 @@
   color: #6b786c;
 }
 
-#fan-community-page .fc-chat-recall-row {
-  display: flex;
-  justify-content: center;
-  margin: 13px 0 18px;
-}
-
-#fan-community-page .fc-chat-recall-notice {
-  text-align: center;
-  color: #6f7d72;
-  font-size: 12px;
-  background: rgba(141, 154, 132, 0.14);
-  border-radius: 12px;
-  padding: 6px 13px;
-}
-
-/* 底部 QQ 风格功能栏 */
+/* 底部原版输入与功能栏（柔和半透晴蓝磨砂底栏） */
 #fan-community-page .fc-chat-bottom {
   flex: none;
   position: relative;
-  background: #f6f7f2;
-  border-top: 1px solid #e0e6dd;
-  padding: 7px 9px calc(8px + var(--fc-safe-bottom, 0px));
+  background: linear-gradient(180deg, rgba(176, 204, 223, 0.94), rgba(164, 193, 214, 0.98));
+  border-top: 1px solid rgba(98, 134, 159, 0.26);
+  box-shadow: 0 -4px 16px rgba(58, 92, 118, 0.06);
+  padding: 6px 8px calc(8px + var(--fc-safe-bottom, 0px));
 }
 
 #fan-community-page .fc-chat-role {
@@ -810,31 +809,32 @@
 }
 
 #fan-community-page .fc-chat-role-btn {
-  background: #fffefa;
-  color: #71816f;
-  border: 1px solid #e1e7df;
+  background: rgba(255, 255, 255, 0.9);
+  color: #466983;
+  border: 1px solid rgba(255, 255, 255, 0.72);
   border-radius: 14px;
   font-size: 11px;
+  font-weight: 500;
   padding: 3px 10px;
   line-height: 1.4;
   max-width: 210px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  box-shadow: 0 1px 4px rgba(72, 104, 126, 0.09);
+  box-shadow: 0 2px 6px rgba(48, 84, 108, 0.12);
   transition: background-color 0.14s ease, color 0.14s ease;
 }
 
 #fan-community-page .fc-chat-role-btn.is-char {
-  background: #eef3eb;
-  color: #556653;
-  border-color: #d6dfd1;
+  background: rgba(232, 243, 251, 0.96);
+  color: #2c5b7c;
+  border-color: rgba(145, 184, 212, 0.65);
 }
 
 #fan-community-page .fc-chat-compose {
   display: flex;
   align-items: flex-end;
-  gap: 6px;
+  gap: 5px;
   min-height: 44px;
 }
 
@@ -845,21 +845,21 @@
   border: 0;
   border-radius: 50%;
   background: transparent;
-  color: #6e7f70;
-  font-size: 22px;
+  color: #2f4f66;
   display: grid;
   place-items: center;
   padding: 0;
   transition: background-color 0.14s ease, color 0.14s ease;
 }
 
-#fan-community-page .fc-chat-icon-btn.plus {
-  font-size: 24px;
+#fan-community-page .fc-chat-icon-btn .fc-svg-wrap {
+  width: 22px;
+  height: 22px;
 }
 
 #fan-community-page .fc-chat-icon-btn.active {
-  background: #e5ebe2;
-  color: #4f604e;
+  background: rgba(255, 255, 255, 0.56);
+  color: #186da4;
 }
 
 #fan-community-page .fc-chat-input {
@@ -867,42 +867,45 @@
   min-width: 0;
   min-height: 38px;
   max-height: 96px;
-  background: #fffefa;
-  border: 1px solid #e5e9e1;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.72);
   border-radius: 19px;
   padding: 9px 13px;
   resize: none;
   font: inherit;
   font-size: 14px;
   line-height: 1.4;
-  color: #39453c;
+  color: #243440;
   outline: 0;
+  box-shadow: 0 1px 3px rgba(62, 95, 118, 0.07);
   color-scheme: light;
 }
 
 #fan-community-page .fc-chat-input::placeholder {
-  color: #9ba59b;
+  color: #889baa;
 }
 
 #fan-community-page .fc-chat-input:focus {
-  border-color: #b7c5b2;
+  border-color: #7ab0d4;
+  background: #ffffff;
 }
 
 #fan-community-page .fc-chat-send {
   flex: none;
   border: 0;
-  background: #8d9f8b;
+  background: #4e92c2;
   color: #ffffff;
-  border-radius: 16px;
+  border-radius: 17px;
   padding: 8px 13px;
   min-height: 38px;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(45, 98, 136, 0.18);
   transition: opacity 0.14s ease, background-color 0.14s ease;
 }
 
 #fan-community-page .fc-chat-send:active {
-  background: #7b8e79;
+  background: #3d7fae;
 }
 
 /* 展开的功能面板：位于输入框下方，不遮挡输入框 */
@@ -910,10 +913,10 @@
   height: 224px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: #f4f5f0;
-  border-top: 1px solid #e5e9e2;
-  border-radius: 14px 14px 0 0;
-  margin: 8px -9px -4px;
+  background: #edf4f9;
+  border-top: 1px solid rgba(154, 185, 207, 0.45);
+  border-radius: 16px 16px 0 0;
+  margin: 8px -8px -4px;
   padding: 12px 14px 14px;
 }
 
@@ -936,7 +939,7 @@
   background: none;
   border: 0;
   font-size: 11px;
-  color: #6b786b;
+  color: #4f6c82;
   min-width: 0;
   padding: 2px 0;
 }
@@ -944,17 +947,18 @@
 #fan-community-page .fc-chat-tool-icon {
   width: 48px;
   height: 48px;
-  background: #fffefa;
-  border: 1px solid #e6eae4;
+  background: #ffffff;
+  border: 1px solid #d9e6f0;
   border-radius: 15px;
   display: grid;
   place-items: center;
   font-size: 21px;
-  color: #6d836f;
+  color: #4a83aa;
+  box-shadow: 0 1px 4px rgba(58, 96, 124, 0.06);
 }
 
 #fan-community-page .fc-chat-tool:active .fc-chat-tool-icon {
-  background: #eaefe7;
+  background: #dfecf5;
 }
 
 #fan-community-page .fc-chat-panel-head {
@@ -962,7 +966,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-bottom: 1px solid #e4e7df;
+  border-bottom: 1px solid #d8e5ef;
   padding-bottom: 8px;
   margin-bottom: 10px;
 }
@@ -970,7 +974,7 @@
 #fan-community-page .fc-chat-panel-title {
   font-size: 12px;
   font-weight: 600;
-  color: #5b6959;
+  color: #435e74;
 }
 
 #fan-community-page .fc-chat-panel-actions {
@@ -983,9 +987,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #dce2d6;
-  background: #fffefa;
-  color: #5e705c;
+  border: 1px solid #cddde9;
+  background: #ffffff;
+  color: #3f6a8a;
   border-radius: 9px;
   padding: 5px 10px;
   font-size: 11px;
@@ -996,14 +1000,14 @@
 }
 
 #fan-community-page .fc-chat-panel-action.subtle {
-  background: #f2f4ee;
-  color: #778375;
-  border-color: #e2e7dc;
+  background: #e4eef5;
+  color: #5b7489;
+  border-color: #d2e0eb;
   padding: 5px 8px;
 }
 
 #fan-community-page .fc-chat-panel-action:active {
-  background: #eef2ea;
+  background: #dfecf5;
 }
 
 #fan-community-page .fc-chat-panel-action.is-busy {
@@ -1231,7 +1235,7 @@
   display: none;
   align-items: flex-end;
   justify-content: center;
-  z-index: 20;
+  z-index: 32;
 }
 
 #fan-community-page .fc-chat-sheet-back.show {
@@ -1350,7 +1354,7 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
-  z-index: 30;
+  z-index: 40;
 }
 
 #fan-community-page .fc-chat-lightbox.show {
@@ -1872,7 +1876,7 @@
 #fan-community-page .fc-appearance-preview {
   position: relative;
   border-radius: 16px;
-  border: 1px solid #e3e6dc;
+  border: 1px solid #d5e2ec;
   overflow: hidden;
   padding: 14px 12px;
   min-height: 132px;
@@ -1880,7 +1884,7 @@
   flex-direction: column;
   justify-content: center;
   gap: 10px;
-  background-color: #e8ede8;
+  background-color: #abc6d9;
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
@@ -1901,14 +1905,14 @@
 #fan-community-page .fc-preview-dot {
   width: 24px;
   height: 24px;
-  border-radius: 50%;
+  border-radius: 8px;
   flex: none;
-  background: #b2c5b5;
-  border: 1px solid rgba(114, 134, 113, 0.16);
+  background: #49b0c0;
+  border: 1px solid rgba(255, 255, 255, 0.5);
 }
 
 #fan-community-page .fc-preview-row.right .fc-preview-dot {
-  background: #9eb39d;
+  background: #49b0c0;
 }
 
 #fan-community-page .fc-preview-bubble {
@@ -2075,7 +2079,6 @@
 #fan-community-page .fc-chat-stream [data-msg-index].fc-msg-hold-active .fc-chat-transfer,
 #fan-community-page .fc-chat-stream [data-msg-index].fc-msg-hold-active .fc-chat-voice,
 #fan-community-page .fc-chat-stream [data-msg-index].fc-msg-hold-active .fc-chat-call,
-#fan-community-page .fc-chat-stream [data-msg-index].fc-msg-hold-active .fc-chat-recall-notice,
 #fan-community-page .fc-chat-stream .fc-chat-date.fc-msg-hold-active span {
   box-shadow: 0 0 0 2px rgba(125, 141, 118, 0.55), 0 6px 16px rgba(62, 84, 65, 0.14);
 }
@@ -2891,4 +2894,239 @@
   gap: 8px;
   margin-top: 10px;
 }
+
+/* 右上角三横线分组设置菜单与作品管理样式 */
+#fan-community-page .fc-chat-menu-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 24;
+  display: none;
+  justify-content: flex-end;
+  align-items: flex-start;
+  padding: calc(56px + var(--fc-safe-top, 0px)) 12px 16px;
+  background: rgba(25, 40, 52, 0.24);
+  backdrop-filter: blur(2px);
+}
+
+#fan-community-page .fc-chat-menu-mask.show {
+  display: flex;
+}
+
+#fan-community-page .fc-chat-menu-panel {
+  width: min(316px, 100%);
+  max-height: calc(100% - 12px);
+  background: #f9fbfd;
+  border: 1px solid #d9e5ee;
+  border-radius: 18px;
+  box-shadow: 0 16px 38px rgba(24, 48, 66, 0.2), 0 3px 10px rgba(24, 48, 66, 0.08);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #26333d;
+}
+
+#fan-community-page .fc-menu-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 14px 11px;
+  background: #f0f6fa;
+  border-bottom: 1px solid #e1ebf2;
+}
+
+#fan-community-page .fc-menu-head-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#fan-community-page .fc-menu-head-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: #202e38;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#fan-community-page .fc-menu-head-sub {
+  font-size: 11px;
+  color: #617a8e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#fan-community-page .fc-menu-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid #d5e2ec;
+  background: #ffffff;
+  color: #557085;
+  font-size: 17px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+#fan-community-page .fc-menu-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#fan-community-page .fc-menu-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6a8091;
+  padding: 0 4px 5px;
+}
+
+#fan-community-page .fc-menu-group-list {
+  background: #ffffff;
+  border: 1px solid #e2ebf2;
+  border-radius: 13px;
+  overflow: hidden;
+}
+
+#fan-community-page .fc-menu-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: #26333d;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+#fan-community-page .fc-menu-row + .fc-menu-row {
+  border-top: 1px solid #edf2f7;
+}
+
+#fan-community-page .fc-menu-row:active {
+  background: #eef5fa;
+}
+
+#fan-community-page .fc-menu-row-icon {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: #ebf3f9;
+  color: #3d7da8;
+  font-size: 14px;
+  display: grid;
+  place-items: center;
+}
+
+#fan-community-page .fc-menu-row-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#fan-community-page .fc-menu-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #22303a;
+}
+
+#fan-community-page .fc-menu-row-sub {
+  font-size: 11px;
+  color: #708596;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#fan-community-page .fc-menu-row-right {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#fan-community-page .fc-menu-row-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #2f6c98;
+  background: #e7f1f8;
+  border: 1px solid #cfe2ef;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+#fan-community-page .fc-menu-row-arrow {
+  font-size: 16px;
+  color: #93a6b6;
+}
+
+#fan-community-page .fc-work-manage-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#fan-community-page .fc-work-manage-rename-row .fc-settings-input {
+  flex: 1;
+  min-width: 0;
+}
+
+#fan-community-page .fc-work-manage-rename-row .fc-settings-mini-btn {
+  flex: none;
+  min-height: 40px;
+}
+
+#fan-community-page .fc-recalled-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+#fan-community-page .fc-recalled-item {
+  background: #f6f8fa;
+  border: 1px solid #e1e9f0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#fan-community-page .fc-recalled-item-meta {
+  font-size: 11px;
+  font-weight: 600;
+  color: #5b7285;
+}
+
+#fan-community-page .fc-recalled-item-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #2c3842;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#fan-community-page .fc-recalled-item-ops {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 2px;
+}
+
 

@@ -151,11 +151,12 @@
 
   var DEFAULT_APPEARANCE = {
     bgType: 'color',
-    bgColor: '#e8ede8',
+    bgColor: '#abc6d9',
     bgImageAssetId: '',
     bgImageFit: 'cover',
-    userBubbleColor: '#d9e3d2',
-    charBubbleColor: '#fffefa'
+    userBubbleColor: '#fff133',
+    charBubbleColor: '#ffffff',
+    appearanceVersion: 2
   };
 
   function normalizeHexColor(val, fallback) {
@@ -172,13 +173,32 @@
     var src = raw && typeof raw === 'object' ? raw : {};
     var bgImageAssetId = typeof src.bgImageAssetId === 'string' ? src.bgImageAssetId : '';
     var bgType = src.bgType === 'image' && bgImageAssetId ? 'image' : 'color';
+    var bgColor = normalizeHexColor(src.bgColor, DEFAULT_APPEARANCE.bgColor);
+    var userBubbleColor = normalizeHexColor(src.userBubbleColor, DEFAULT_APPEARANCE.userBubbleColor);
+    var charBubbleColor = normalizeHexColor(src.charBubbleColor, DEFAULT_APPEARANCE.charBubbleColor);
+
+    // 将历史版本未自定义过的旧默认外观自动升级为原版晴空蓝 + 白/黄气泡
+    if (
+      src.appearanceVersion !== 2 &&
+      bgType === 'color' &&
+      !bgImageAssetId &&
+      bgColor === '#e8ede8' &&
+      userBubbleColor === '#d9e3d2' &&
+      charBubbleColor === '#fffefa'
+    ) {
+      bgColor = DEFAULT_APPEARANCE.bgColor;
+      userBubbleColor = DEFAULT_APPEARANCE.userBubbleColor;
+      charBubbleColor = DEFAULT_APPEARANCE.charBubbleColor;
+    }
+
     return {
       bgType: bgType,
-      bgColor: normalizeHexColor(src.bgColor, DEFAULT_APPEARANCE.bgColor),
+      bgColor: bgColor,
       bgImageAssetId: bgImageAssetId,
       bgImageFit: src.bgImageFit === 'contain' ? 'contain' : 'cover',
-      userBubbleColor: normalizeHexColor(src.userBubbleColor, DEFAULT_APPEARANCE.userBubbleColor),
-      charBubbleColor: normalizeHexColor(src.charBubbleColor, DEFAULT_APPEARANCE.charBubbleColor)
+      userBubbleColor: userBubbleColor,
+      charBubbleColor: charBubbleColor,
+      appearanceVersion: 2
     };
   }
 

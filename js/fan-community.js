@@ -44,7 +44,7 @@
               '<button type="button" class="fc-entry-card" data-fc-entry="chat">' +
                 '<span class="fc-symbol" aria-hidden="true">💬</span>' +
                 '<strong class="fc-card-title">捡手机文学</strong>' +
-                '<small class="fc-card-desc">沉浸式消息阅读 · QQ 风格功能栏 · 假撤回 · 表情包 · 语音与视频</small>' +
+                '<small class="fc-card-desc">沉浸式消息阅读 · QQ 风格功能栏 · 消息撤回 · 表情包 · 语音与视频</small>' +
               '</button>' +
               '<button type="button" class="fc-entry-card" data-fc-entry="forum">' +
                 '<span class="fc-symbol" aria-hidden="true">📖</span>' +

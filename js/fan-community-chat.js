@@ -1,6 +1,6 @@
-// js/fan-community-chat.js — 同好社区 · 捡手机文学创作模块（任务 03 ~ 任务 06）
-// 功能：多作品列表与安全迁移、新建与重命名作品、独立聊天记录、文字/图片/表情包/日期/假撤回、
-//       转账卡片、语音消息、语音通话与视频通话卡片、持久化恢复。
+// js/fan-community-chat.js — 同好社区 · 捡手机文学创作模块
+// 功能：多作品列表与安全迁移、新建与重命名作品、独立聊天记录、文字/图片/表情包/日期/撤回管理、
+//       转账卡片、语音消息、语音通话与视频通话卡片、独立人设与外观设置、持久化恢复。
 
 (function(global) {
   'use strict';
@@ -10,32 +10,33 @@
 
   var DEFAULT_APPEARANCE = {
     bgType: 'color',
-    bgColor: '#e8ede8',
+    bgColor: '#abc6d9',
     bgImageAssetId: '',
     bgImageFit: 'cover',
-    userBubbleColor: '#d9e3d2',
-    charBubbleColor: '#fffefa'
+    userBubbleColor: '#fff133',
+    charBubbleColor: '#ffffff',
+    appearanceVersion: 2
   };
 
   var BG_COLOR_PRESETS = [
-    { id: 'default', label: '默认浅灰绿', color: '#e8ede8' },
+    { id: 'default', label: '原版晴空蓝', color: '#abc6d9' },
+    { id: 'mistBlue', label: '浅雾海盐蓝', color: '#cfe0eb' },
     { id: 'cream', label: '暖奶油白', color: '#f6f1e7' },
-    { id: 'mistBlue', label: '柔雾晴蓝', color: '#e6edf2' },
+    { id: 'sage', label: '浅灰豆绿', color: '#e8ede8' },
     { id: 'lilac', label: '淡雾丁香', color: '#ede9f2' },
-    { id: 'peach', label: '杏桃奶茶', color: '#f5eae3' },
-    { id: 'deepMoss', label: '静谧深苔', color: '#2f3a32' }
+    { id: 'deepNight', label: '夜读深海蓝', color: '#273644' }
   ];
 
   var BUBBLE_PAIR_PRESETS = [
-    { id: 'default', label: '默认柔绿', user: '#d9e3d2', char: '#fffefa' },
+    { id: 'default', label: '原版黄白', user: '#fff133', char: '#ffffff' },
+    { id: 'sky', label: '晴雾蓝白', user: '#d6e7f5', char: '#ffffff' },
+    { id: 'sageCream', label: '柔绿奶油', user: '#d9e3d2', char: '#fffefa' },
     { id: 'oatmeal', label: '暖杏奶咖', user: '#efe3d0', char: '#fffdf9' },
-    { id: 'sky', label: '晴雾蓝白', user: '#d6e4ee', char: '#fcfdff' },
-    { id: 'blush', label: '淡藕粉灰', user: '#eedce0', char: '#fffbfc' },
-    { id: 'nightMoss', label: '夜读苔绿', user: '#3f5243', char: '#2d342e' }
+    { id: 'nightSlate', label: '夜读深蓝', user: '#365874', char: '#24313d' }
   ];
 
-  var USER_BUBBLE_PRESETS = ['#d9e3d2', '#efe3d0', '#d6e4ee', '#eedce0', '#dce6dc', '#3f5243'];
-  var CHAR_BUBBLE_PRESETS = ['#fffefa', '#fffdf9', '#fcfdff', '#f4f2ec', '#edf1ea', '#2d342e'];
+  var USER_BUBBLE_PRESETS = ['#fff133', '#d6e7f5', '#d9e3d2', '#efe3d0', '#eedce0', '#365874'];
+  var CHAR_BUBBLE_PRESETS = ['#ffffff', '#fffefa', '#f4f8fb', '#f4f2ec', '#edf1ea', '#24313d'];
 
   var DEFAULT_CREATION_MODE = 'manual';
 
@@ -176,11 +177,12 @@
     userAvatarAssetId: '',
     appearance: {
       bgType: 'color',
-      bgColor: '#e8ede8',
+      bgColor: '#abc6d9',
       bgImageAssetId: '',
       bgImageFit: 'cover',
-      userBubbleColor: '#d9e3d2',
-      charBubbleColor: '#fffefa'
+      userBubbleColor: '#fff133',
+      charBubbleColor: '#ffffff',
+      appearanceVersion: 2
     },
     creationMode: DEFAULT_CREATION_MODE,
     boundPersonaId: '',
@@ -261,22 +263,22 @@
   }
 
   function computeBubbleTokens(hex) {
-    var clean = normalizeHex(hex, '#fffefa');
+    var clean = normalizeHex(hex, '#ffffff');
     if (isDarkHex(clean)) {
       return {
         bg: clean,
-        fg: '#f7f8f5',
-        sub: '#cfd7ce',
+        fg: '#f7f9fb',
+        sub: '#cfdbe5',
         recallBg: hexToRgba(clean, 0.8),
-        recallBorder: 'rgba(247, 248, 245, 0.36)'
+        recallBorder: 'rgba(247, 249, 251, 0.36)'
       };
     }
     return {
       bg: clean,
-      fg: '#354139',
-      sub: '#6c796c',
-      recallBg: hexToRgba(clean, 0.74),
-      recallBorder: 'rgba(138, 152, 136, 0.5)'
+      fg: '#22262a',
+      sub: '#5b6b77',
+      recallBg: hexToRgba(clean, 0.78),
+      recallBorder: 'rgba(104, 128, 145, 0.45)'
     };
   }
 
@@ -288,13 +290,28 @@
     var src = raw && typeof raw === 'object' ? raw : {};
     var bgImageAssetId = typeof src.bgImageAssetId === 'string' ? src.bgImageAssetId : '';
     var bgType = src.bgType === 'image' && bgImageAssetId ? 'image' : 'color';
+    var bgColor = normalizeHex(src.bgColor, DEFAULT_APPEARANCE.bgColor);
+    var userBubbleColor = normalizeHex(src.userBubbleColor, DEFAULT_APPEARANCE.userBubbleColor);
+    var charBubbleColor = normalizeHex(src.charBubbleColor, DEFAULT_APPEARANCE.charBubbleColor);
+    var isLegacyUnmodified = Number(src.appearanceVersion) < 2 &&
+      bgType === 'color' &&
+      !bgImageAssetId &&
+      bgColor === '#e8ede8' &&
+      userBubbleColor === '#d9e3d2' &&
+      charBubbleColor === '#fffefa';
+    if (isLegacyUnmodified) {
+      bgColor = DEFAULT_APPEARANCE.bgColor;
+      userBubbleColor = DEFAULT_APPEARANCE.userBubbleColor;
+      charBubbleColor = DEFAULT_APPEARANCE.charBubbleColor;
+    }
     return {
       bgType: bgType,
-      bgColor: normalizeHex(src.bgColor, DEFAULT_APPEARANCE.bgColor),
+      bgColor: bgColor,
       bgImageAssetId: bgImageAssetId,
       bgImageFit: src.bgImageFit === 'contain' ? 'contain' : 'cover',
-      userBubbleColor: normalizeHex(src.userBubbleColor, DEFAULT_APPEARANCE.userBubbleColor),
-      charBubbleColor: normalizeHex(src.charBubbleColor, DEFAULT_APPEARANCE.charBubbleColor)
+      userBubbleColor: userBubbleColor,
+      charBubbleColor: charBubbleColor,
+      appearanceVersion: 2
     };
   }
 
@@ -672,109 +689,85 @@
     container.replaceChildren();
     var app = el('div', 'fc-chat-app');
 
-    // 顶部栏（保持任务 03~05 既有视觉，返回作品列表）
+    var _searchQuery = '';
+    var _searchMatches = [];
+    var _searchCursor = -1;
+
+    function createSvgIcon(svgMarkup) {
+      var holder = document.createElement('span');
+      holder.className = 'fc-svg-wrap';
+      holder.setAttribute('aria-hidden', 'true');
+      holder.innerHTML = svgMarkup;
+      return holder;
+    }
+
+    // 顶部栏：严格保留原版结构（左返回、中角色名、右搜索 + 三横线菜单）
     var head = el('header', 'fc-chat-head');
     var backBtn = el('button', 'fc-chat-back');
     backBtn.type = 'button';
+    backBtn.id = 'fc-chat-back';
     backBtn.setAttribute('aria-label', '返回作品列表');
-    backBtn.appendChild(el('span', 'fc-chat-back-chevron', '‹'));
-    backBtn.appendChild(el('span', '', '作品'));
+    backBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>'));
 
-    var titleEl = el('b', 'fc-chat-title', _state.title || INITIAL_STATE.title);
+    var titleEl = el('b', 'fc-chat-title', (_state && _state.char) || INITIAL_STATE.char);
+    titleEl.id = 'fc-chat-title';
 
     var headActions = el('div', 'fc-chat-head-actions');
-    var toolsToggleBtn = el('button', 'fc-chat-head-tool', '工具');
-    toolsToggleBtn.type = 'button';
-    toolsToggleBtn.id = 'fc-chat-tools-toggle';
-    toolsToggleBtn.setAttribute('title', '显示/隐藏消息创作操作栏');
-    toolsToggleBtn.classList.toggle('active', Boolean(_state.showTools));
+    var searchBtn = el('button', 'fc-chat-head-icon-btn');
+    searchBtn.type = 'button';
+    searchBtn.id = 'fc-chat-search-btn';
+    searchBtn.setAttribute('title', '搜索聊天内容');
+    searchBtn.setAttribute('aria-label', '搜索聊天内容');
+    searchBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="20" y1="20" x2="16.2" y2="16.2"></line></svg>'));
 
-    var settingsBtn = el('button', 'fc-chat-head-tool', '设置');
-    settingsBtn.type = 'button';
-    settingsBtn.id = 'fc-chat-settings-btn';
-    settingsBtn.setAttribute('title', '设置角色昵称、头像与聊天外观');
+    var menuBtn = el('button', 'fc-chat-head-icon-btn');
+    menuBtn.type = 'button';
+    menuBtn.id = 'fc-chat-menu-btn';
+    menuBtn.setAttribute('title', '更多功能与设置');
+    menuBtn.setAttribute('aria-label', '打开设置菜单');
+    menuBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><line x1="4" y1="6.5" x2="20" y2="6.5"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="17.5" x2="20" y2="17.5"></line></svg>'));
 
-    headActions.appendChild(toolsToggleBtn);
-    headActions.appendChild(settingsBtn);
+    headActions.appendChild(searchBtn);
+    headActions.appendChild(menuBtn);
 
     head.appendChild(backBtn);
     head.appendChild(titleEl);
     head.appendChild(headActions);
 
-    // 创作模式状态条与入口（任务 11 & 任务 12）
-    var modeBar = el('div', 'fc-chat-mode-bar');
-    modeBar.id = 'fc-chat-mode-bar';
-    var modeStatus = el('div', 'fc-chat-mode-status');
-    modeStatus.appendChild(el('span', 'fc-chat-mode-dot'));
-    modeStatus.appendChild(el('span', 'fc-chat-mode-prefix', '当前模式'));
-    var modeLabelEl = el('strong', 'fc-chat-mode-label', '');
-    modeLabelEl.id = 'fc-chat-mode-label';
-    modeStatus.appendChild(modeLabelEl);
+    // 可折叠聊天搜索条（默认收起，不打扰主聊天区）
+    var searchBar = el('div', 'fc-chat-search-bar');
+    searchBar.id = 'fc-chat-search-bar';
+    searchBar.hidden = true;
 
-    var modeActions = el('div', 'fc-chat-mode-actions');
-    var aiSettingsBtn = el('button', 'fc-chat-ai-settings-btn', 'AI 设定');
-    aiSettingsBtn.type = 'button';
-    aiSettingsBtn.id = 'fc-chat-ai-settings-btn';
-    aiSettingsBtn.setAttribute('aria-label', '编辑 AI 角色设定与剧情背景');
-    aiSettingsBtn.hidden = true;
+    var searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.id = 'fc-chat-search-input';
+    searchInput.className = 'fc-chat-search-input';
+    searchInput.placeholder = '搜索聊天关键词…';
+    searchInput.setAttribute('aria-label', '搜索聊天关键词');
 
-    var modeBtn = el('button', 'fc-chat-mode-btn');
-    modeBtn.type = 'button';
-    modeBtn.id = 'fc-chat-mode-btn';
-    modeBtn.setAttribute('aria-label', '选择创作模式');
-    modeBtn.appendChild(el('span', '', '创作模式'));
-    modeBtn.appendChild(el('span', 'fc-chat-mode-caret', '▾'));
+    var searchCountEl = el('span', 'fc-chat-search-count', '');
+    searchCountEl.id = 'fc-chat-search-count';
 
-    modeActions.appendChild(aiSettingsBtn);
-    modeActions.appendChild(modeBtn);
+    var searchPrevBtn = el('button', 'fc-chat-search-nav', '‹');
+    searchPrevBtn.type = 'button';
+    searchPrevBtn.id = 'fc-chat-search-prev';
+    searchPrevBtn.setAttribute('aria-label', '上一条匹配');
 
-    modeBar.appendChild(modeStatus);
-    modeBar.appendChild(modeActions);
+    var searchNextBtn = el('button', 'fc-chat-search-nav', '›');
+    searchNextBtn.type = 'button';
+    searchNextBtn.id = 'fc-chat-search-next';
+    searchNextBtn.setAttribute('aria-label', '下一条匹配');
 
-    // AI 模式待接入提示条与公共人设绑定区（仅在 AI 模式下显示）
-    var aiNoticeEl = el('div', 'fc-chat-ai-notice');
-    aiNoticeEl.id = 'fc-chat-ai-notice';
-    aiNoticeEl.hidden = true;
-    var aiNoticeHead = el('div', 'fc-chat-ai-notice-head');
-    aiNoticeHead.appendChild(el('span', 'fc-chat-ai-notice-badge', 'AI 功能待接入'));
-    var aiNoticeTitle = el('span', 'fc-chat-ai-notice-title', '');
-    aiNoticeTitle.id = 'fc-chat-ai-notice-title';
-    aiNoticeHead.appendChild(aiNoticeTitle);
-    var aiNoticeDesc = el('p', 'fc-chat-ai-notice-desc', '');
-    aiNoticeDesc.id = 'fc-chat-ai-notice-desc';
+    var searchCloseBtn = el('button', 'fc-chat-search-close', '完成');
+    searchCloseBtn.type = 'button';
+    searchCloseBtn.id = 'fc-chat-search-close';
 
-    var personaStripEl = el('div', 'fc-chat-persona-strip');
-    personaStripEl.id = 'fc-chat-persona-strip';
-    var personaStripLeft = el('div', 'fc-chat-bound-left');
-    var boundAvatarEl = el('div', 'fc-chat-bound-avatar');
-    boundAvatarEl.id = 'fc-chat-bound-persona-avatar';
-    var boundInfoEl = el('div', 'fc-chat-bound-info');
-    var boundNameEl = el('strong', 'fc-chat-bound-name', '未选择公共人设');
-    boundNameEl.id = 'fc-chat-bound-persona-name';
-    var boundSubEl = el('span', 'fc-chat-bound-sub', '可从同好社区公共人设库引用 1 位角色');
-    boundSubEl.id = 'fc-chat-bound-persona-sub';
-    boundInfoEl.appendChild(boundNameEl);
-    boundInfoEl.appendChild(boundSubEl);
-    personaStripLeft.appendChild(boundAvatarEl);
-    personaStripLeft.appendChild(boundInfoEl);
-
-    var personaStripActions = el('div', 'fc-chat-bound-actions');
-    var pickPersonaBtn = el('button', 'fc-chat-bound-pick-btn', '从人设库选择');
-    pickPersonaBtn.type = 'button';
-    pickPersonaBtn.id = 'fc-chat-pick-persona-btn';
-    var unbindPersonaBtn = el('button', 'fc-chat-bound-unbind-btn', '解绑');
-    unbindPersonaBtn.type = 'button';
-    unbindPersonaBtn.id = 'fc-chat-unbind-persona-btn';
-    unbindPersonaBtn.hidden = true;
-    personaStripActions.appendChild(pickPersonaBtn);
-    personaStripActions.appendChild(unbindPersonaBtn);
-
-    personaStripEl.appendChild(personaStripLeft);
-    personaStripEl.appendChild(personaStripActions);
-
-    aiNoticeEl.appendChild(aiNoticeHead);
-    aiNoticeEl.appendChild(aiNoticeDesc);
-    aiNoticeEl.appendChild(personaStripEl);
+    searchBar.appendChild(searchInput);
+    searchBar.appendChild(searchCountEl);
+    searchBar.appendChild(searchPrevBtn);
+    searchBar.appendChild(searchNextBtn);
+    searchBar.appendChild(searchCloseBtn);
 
     // 消息流与独立背景图层
     var streamWrap = el('div', 'fc-chat-stream-wrap');
@@ -785,7 +778,7 @@
     streamWrap.appendChild(bgLayer);
     streamWrap.appendChild(streamEl);
 
-    // 底部 QQ 风格输入与工具栏
+    // 底部原版输入与功能栏
     var bottom = el('div', 'fc-chat-bottom');
 
     var roleWrap = el('div', 'fc-chat-role');
@@ -796,25 +789,36 @@
     roleWrap.appendChild(roleBtn);
 
     var compose = el('div', 'fc-chat-compose');
+
+    var voiceBtn = el('button', 'fc-chat-icon-btn voice');
+    voiceBtn.type = 'button';
+    voiceBtn.id = 'fc-chat-voice-btn';
+    voiceBtn.setAttribute('aria-label', '发送语音消息');
+    voiceBtn.setAttribute('title', '发送语音消息');
+    voiceBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"></circle><path d="M9.5 10.2v3.6M12 8.4v7.2M14.5 10.2v3.6"></path></svg>'));
+
     var input = el('textarea', 'fc-chat-input');
     input.id = 'fc-chat-input';
     input.rows = 1;
     input.placeholder = '发消息……';
 
-    var emojiBtn = el('button', 'fc-chat-icon-btn', '☺');
+    var emojiBtn = el('button', 'fc-chat-icon-btn emoji');
     emojiBtn.type = 'button';
     emojiBtn.id = 'fc-chat-emoji-btn';
     emojiBtn.setAttribute('aria-label', '表情包');
+    emojiBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"></circle><circle cx="9" cy="10" r="1" fill="currentColor" stroke="none"></circle><circle cx="15" cy="10" r="1" fill="currentColor" stroke="none"></circle><path d="M8.5 14.3a4.3 4.3 0 0 0 7 0"></path></svg>'));
 
-    var moreBtn = el('button', 'fc-chat-icon-btn plus', '⊕');
+    var moreBtn = el('button', 'fc-chat-icon-btn plus');
     moreBtn.type = 'button';
     moreBtn.id = 'fc-chat-more-btn';
     moreBtn.setAttribute('aria-label', '更多创作工具');
+    moreBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"><circle cx="12" cy="12" r="9.2"></circle><line x1="12" y1="8.2" x2="12" y2="15.8"></line><line x1="8.2" y1="12" x2="15.8" y2="12"></line></svg>'));
 
     var sendBtn = el('button', 'fc-chat-send', '发送');
     sendBtn.type = 'button';
     sendBtn.id = 'fc-chat-send';
 
+    compose.appendChild(voiceBtn);
     compose.appendChild(input);
     compose.appendChild(emojiBtn);
     compose.appendChild(moreBtn);
@@ -840,6 +844,16 @@
       stickerBatchInput.value = '';
     });
 
+    // 右上角三横线功能菜单浮层
+    var menuMask = el('div', 'fc-chat-menu-mask');
+    menuMask.id = 'fc-chat-menu-mask';
+    menuMask.setAttribute('aria-hidden', 'true');
+    var menuPanel = el('section', 'fc-chat-menu-panel');
+    menuPanel.id = 'fc-chat-menu-panel';
+    menuPanel.setAttribute('role', 'dialog');
+    menuPanel.setAttribute('aria-label', '聊天设置与创作菜单');
+    menuMask.appendChild(menuPanel);
+
     // 底部弹窗 Sheet
     var sheetBack = el('div', 'fc-chat-sheet-back');
     sheetBack.id = 'fc-chat-sheet-back';
@@ -861,12 +875,12 @@
     lightbox.appendChild(lightboxImg);
     lightbox.appendChild(lightboxClose);
 
-    // 角色与聊天外观设置面板
+    // 二级设置页（角色与身份 / 聊天外观 / 作品管理）
     var settingsPanel = el('section', 'fc-chat-settings-panel');
     settingsPanel.id = 'fc-chat-settings-panel';
     settingsPanel.setAttribute('aria-hidden', 'true');
 
-    // AI 角色设定与剧情背景设置面板（任务 12）
+    // AI 设定二级设置页
     var aiSettingsPanel = el('section', 'fc-chat-settings-panel fc-ai-settings-panel');
     aiSettingsPanel.id = 'fc-chat-ai-settings-panel';
     aiSettingsPanel.setAttribute('aria-hidden', 'true');
@@ -881,11 +895,11 @@
     ctxMask.appendChild(ctxMenu);
 
     app.appendChild(head);
-    app.appendChild(modeBar);
-    app.appendChild(aiNoticeEl);
+    app.appendChild(searchBar);
     app.appendChild(streamWrap);
     app.appendChild(bottom);
     app.appendChild(stickerBatchInput);
+    app.appendChild(menuMask);
     app.appendChild(sheetBack);
     app.appendChild(settingsPanel);
     app.appendChild(aiSettingsPanel);
@@ -921,14 +935,14 @@
 
       if (isDarkHex(ap.bgColor)) {
         app.classList.add('has-dark-bg');
-        app.style.setProperty('--fc-stream-name-fg', '#e3e8e0');
-        app.style.setProperty('--fc-empty-title-fg', '#f3f5f0');
-        app.style.setProperty('--fc-empty-sub-fg', '#cfd5ce');
+        app.style.setProperty('--fc-stream-name-fg', '#e3ebf2');
+        app.style.setProperty('--fc-empty-title-fg', '#f3f7fa');
+        app.style.setProperty('--fc-empty-sub-fg', '#c6d4e0');
       } else {
         app.classList.remove('has-dark-bg');
-        app.style.setProperty('--fc-stream-name-fg', '#7a887e');
-        app.style.setProperty('--fc-empty-title-fg', '#5b685b');
-        app.style.setProperty('--fc-empty-sub-fg', '#889487');
+        app.style.setProperty('--fc-stream-name-fg', '#4d6172');
+        app.style.setProperty('--fc-empty-title-fg', '#3e5364');
+        app.style.setProperty('--fc-empty-sub-fg', '#5f7688');
       }
 
       var bgSeq = ++_activeBgSeq;
@@ -959,11 +973,16 @@
       }
     }
 
+    function syncHeaderTitle() {
+      titleEl.textContent = currentCharName();
+    }
+
     function syncRoleButton() {
       var isUser = _sendSide === 'right';
       var labelName = isUser ? (currentUserName() + ' · User') : (currentCharName() + ' · Char');
       roleBtn.textContent = labelName + ' ⌄';
       roleBtn.classList.toggle('is-char', !isUser);
+      syncHeaderTitle();
     }
 
     function getBoundPersona() {
@@ -980,32 +999,32 @@
       if (_state && _state.boundPersonaId && !bound && pApi) {
         _state.boundPersonaId = '';
       }
-      if (bound) {
-        boundNameEl.textContent = bound.name;
-        var summaryBits = [];
-        if (bound.background) summaryBits.push(bound.background);
-        else if (bound.personality) summaryBits.push(bound.personality);
-        boundSubEl.textContent = summaryBits.length ? ('公共人设 · ' + summaryBits[0]) : ('已引用公共人设 · ID ' + bound.id.slice(-6));
-        unbindPersonaBtn.hidden = false;
-        personaStripEl.classList.add('has-bound');
-        if (pApi && typeof pApi.renderAvatarBox === 'function') {
-          var expectedId = bound.id;
-          pApi.renderAvatarBox(boundAvatarEl, bound.avatarAssetId, function() {
-            return document.body.contains(app) && _state && _state.boundPersonaId === expectedId;
-          });
-        }
-      } else {
-        boundAvatarEl.replaceChildren();
-        boundAvatarEl.classList.remove('has-img');
-        boundNameEl.textContent = '未选择公共人设（可选）';
-        boundSubEl.textContent = '可从社区「公共人设库」绑定 1 位角色，不覆盖作品聊天昵称与设定';
-        unbindPersonaBtn.hidden = true;
-        personaStripEl.classList.remove('has-bound');
-      }
+    }
+
+    function countRecalledMessages() {
+      var items = Array.isArray(_state && _state.items) ? _state.items : [];
+      var count = 0;
+      items.forEach(function(it) {
+        if (!it) return;
+        if (it.fakeRecall || it.type === 'withdraw') count += 1;
+      });
+      return count;
+    }
+
+    function countVisibleMessages() {
+      var items = Array.isArray(_state && _state.items) ? _state.items : [];
+      var count = 0;
+      items.forEach(function(it) {
+        if (!it) return;
+        if (it.fakeRecall || it.type === 'withdraw') return;
+        count += 1;
+      });
+      return count;
     }
 
     function openPersonaPickerSheet(onChanged) {
       closeMessageContextMenu();
+      closeChatMenu();
       if (_panelMode) setPanelMode('');
       var pApi = personasApi();
       openSheet('从人设库选择角色', function(body) {
@@ -1039,13 +1058,13 @@
         }
 
         var searchWrap = el('div', 'fc-persona-picker-search-wrap');
-        var searchInput = document.createElement('input');
-        searchInput.type = 'search';
-        searchInput.id = 'fc-persona-picker-search';
-        searchInput.className = 'fc-settings-input';
-        searchInput.placeholder = '按角色姓名查找…';
-        searchInput.setAttribute('aria-label', '按角色姓名查找公共人设');
-        searchWrap.appendChild(searchInput);
+        var searchInputEl = document.createElement('input');
+        searchInputEl.type = 'search';
+        searchInputEl.id = 'fc-persona-picker-search';
+        searchInputEl.className = 'fc-settings-input';
+        searchInputEl.placeholder = '按角色姓名查找…';
+        searchInputEl.setAttribute('aria-label', '按角色姓名查找公共人设');
+        searchWrap.appendChild(searchInputEl);
         body.appendChild(searchWrap);
 
         var listBox = el('div', 'fc-persona-picker-list');
@@ -1102,8 +1121,8 @@
           });
         }
 
-        searchInput.addEventListener('input', function() {
-          drawPickerList(searchInput.value);
+        searchInputEl.addEventListener('input', function() {
+          drawPickerList(searchInputEl.value);
         });
         drawPickerList('');
 
@@ -1132,38 +1151,16 @@
       });
     }
 
-    pickPersonaBtn.onclick = function() {
-      openPersonaPickerSheet();
-    };
-
-    unbindPersonaBtn.onclick = function() {
-      if (!_state || !_state.boundPersonaId) return;
-      _state.boundPersonaId = '';
-      saveState(_state);
-      syncBoundPersonaUi();
-      notify('已解除当前作品的公共人设绑定');
-    };
-
     function syncCreationModeUi() {
-      var def = getCreationModeDef(_state && _state.creationMode);
-      modeLabelEl.textContent = def.title;
-      modeBar.classList.toggle('is-ai-mode', def.isAi);
-      aiSettingsBtn.hidden = !def.isAi;
-      aiNoticeEl.hidden = !def.isAi;
-      if (def.isAi) {
-        aiNoticeTitle.textContent = def.title;
-        aiNoticeDesc.textContent = def.noticeText;
-      } else {
-        aiNoticeTitle.textContent = '';
-        aiNoticeDesc.textContent = '';
-      }
+      getCreationModeDef(_state && _state.creationMode);
       syncBoundPersonaUi();
     }
 
     function openCreationModeSheet() {
       closeMessageContextMenu();
+      closeChatMenu();
       if (_panelMode) setPanelMode('');
-      openSheet('选择创作模式', function(body) {
+      openSheet('创作模式', function(body) {
         var curId = normalizeMode(_state && _state.creationMode);
         var sub = el('p', 'fc-mode-sheet-sub', '每部作品独立保存创作模式，切换模式不会清空已有聊天记录。');
         var cards = el('div', 'fc-mode-cards');
@@ -1183,10 +1180,10 @@
 
           var badges = el('div', 'fc-mode-card-badges');
           if (def.isAi) {
-            badges.appendChild(el('span', 'fc-mode-card-tag is-pending', 'AI 功能待接入'));
+            badges.appendChild(el('span', 'fc-mode-card-tag is-pending', '待接入 AI'));
           }
           if (isActive) {
-            badges.appendChild(el('span', 'fc-mode-card-tag is-current', '当前模式'));
+            badges.appendChild(el('span', 'fc-mode-card-tag is-current', '当前'));
           }
           top.appendChild(badges);
 
@@ -1201,7 +1198,7 @@
             saveState(_state);
             syncCreationModeUi();
             closeSheet();
-            notify('已切换为「' + def.title + '」' + (def.isAi ? '（AI 功能待接入）' : ''));
+            notify('已切换为「' + def.title + '」');
           };
 
           cards.appendChild(card);
@@ -1218,6 +1215,81 @@
         body.appendChild(cards);
         body.appendChild(actions);
       });
+    }
+
+    function applySearchHighlight() {
+      var rows = streamEl.querySelectorAll('[data-msg-index]');
+      Array.prototype.forEach.call(rows, function(node) {
+        node.classList.remove('fc-msg-search-hit');
+      });
+      if (!_searchMatches.length || _searchCursor < 0 || _searchCursor >= _searchMatches.length) {
+        return;
+      }
+      var targetIdx = _searchMatches[_searchCursor];
+      var hitRow = streamEl.querySelector('[data-msg-index="' + targetIdx + '"]');
+      if (hitRow) {
+        hitRow.classList.add('fc-msg-search-hit');
+        try {
+          hitRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        } catch (_) {
+          hitRow.scrollIntoView();
+        }
+      }
+    }
+
+    function runMessageSearch(queryText, resetCursor) {
+      _searchQuery = String(queryText || '').trim();
+      _searchMatches = [];
+      if (!_searchQuery) {
+        _searchCursor = -1;
+        searchCountEl.textContent = '';
+        applySearchHighlight();
+        return;
+      }
+      var lower = _searchQuery.toLowerCase();
+      var items = Array.isArray(_state && _state.items) ? _state.items : [];
+      items.forEach(function(item, idx) {
+        if (!item || item.fakeRecall || item.type === 'withdraw') return;
+        var textPool = [item.text, item.note, item.amount, item.alt].filter(Boolean).join(' ').toLowerCase();
+        if (textPool.indexOf(lower) !== -1) {
+          _searchMatches.push(idx);
+        }
+      });
+      if (!_searchMatches.length) {
+        _searchCursor = -1;
+        searchCountEl.textContent = '0/0';
+        applySearchHighlight();
+        return;
+      }
+      if (resetCursor || _searchCursor < 0 || _searchCursor >= _searchMatches.length) {
+        _searchCursor = _searchMatches.length - 1;
+      }
+      searchCountEl.textContent = (_searchCursor + 1) + '/' + _searchMatches.length;
+      applySearchHighlight();
+    }
+
+    function stepSearchMatch(delta) {
+      if (!_searchMatches.length) return;
+      _searchCursor = (_searchCursor + delta + _searchMatches.length) % _searchMatches.length;
+      searchCountEl.textContent = (_searchCursor + 1) + '/' + _searchMatches.length;
+      applySearchHighlight();
+    }
+
+    function openSearchBar() {
+      closeChatMenu();
+      closeMessageContextMenu();
+      searchBar.hidden = false;
+      searchBtn.classList.add('active');
+      setTimeout(function() {
+        searchInput.focus();
+      }, 30);
+    }
+
+    function closeSearchBar() {
+      searchBar.hidden = true;
+      searchBtn.classList.remove('active');
+      searchInput.value = '';
+      runMessageSearch('', true);
     }
 
     syncCreationModeUi();
@@ -1296,22 +1368,162 @@
       }).catch(function() {});
     }
 
-    function closeRoleSettingsPanel() {
+    function closeChatMenu() {
+      menuMask.classList.remove('show');
+      menuMask.setAttribute('aria-hidden', 'true');
+      menuPanel.replaceChildren();
+    }
+
+    function openChatMenu() {
+      closeMessageContextMenu();
+      closeSheet();
+      if (_panelMode) setPanelMode('');
+      menuPanel.replaceChildren();
+
+      var modeDef = getCreationModeDef(_state && _state.creationMode);
+      var boundPersona = getBoundPersona();
+      var ap = getAppearance(_state && _state.appearance);
+      var visibleCount = countVisibleMessages();
+      var recalledCount = countRecalledMessages();
+
+      var mHead = el('div', 'fc-menu-head');
+      var mTitleWrap = el('div', 'fc-menu-head-text');
+      mTitleWrap.appendChild(el('strong', 'fc-menu-head-title', _state.title || '未命名作品'));
+      mTitleWrap.appendChild(el('span', 'fc-menu-head-sub', currentCharName() + ' · ' + modeDef.title));
+      var mCloseBtn = el('button', 'fc-menu-close', '×');
+      mCloseBtn.type = 'button';
+      mCloseBtn.id = 'fc-chat-menu-close';
+      mCloseBtn.setAttribute('aria-label', '关闭菜单');
+      mCloseBtn.onclick = closeChatMenu;
+      mHead.appendChild(mTitleWrap);
+      mHead.appendChild(mCloseBtn);
+      menuPanel.appendChild(mHead);
+
+      var mScroll = el('div', 'fc-menu-scroll');
+
+      function makeGroup(groupTitle, rows) {
+        var group = el('section', 'fc-menu-group');
+        group.appendChild(el('div', 'fc-menu-group-title', groupTitle));
+        var list = el('div', 'fc-menu-group-list');
+        rows.forEach(function(cfg) {
+          var rowBtn = el('button', 'fc-menu-row');
+          rowBtn.type = 'button';
+          rowBtn.id = cfg.id;
+          var iconBox = el('span', 'fc-menu-row-icon', cfg.icon);
+          var copyCol = el('div', 'fc-menu-row-copy');
+          copyCol.appendChild(el('strong', 'fc-menu-row-title', cfg.title));
+          copyCol.appendChild(el('span', 'fc-menu-row-sub', cfg.sub));
+          var rightCol = el('div', 'fc-menu-row-right');
+          if (cfg.badge) {
+            rightCol.appendChild(el('span', 'fc-menu-row-badge', cfg.badge));
+          }
+          rightCol.appendChild(el('span', 'fc-menu-row-arrow', '›'));
+          rowBtn.appendChild(iconBox);
+          rowBtn.appendChild(copyCol);
+          rowBtn.appendChild(rightCol);
+          rowBtn.onclick = function() {
+            closeChatMenu();
+            cfg.onClick();
+          };
+          list.appendChild(rowBtn);
+        });
+        group.appendChild(list);
+        return group;
+      }
+
+      mScroll.appendChild(makeGroup('创作与 AI', [
+        {
+          id: 'fc-menu-item-mode',
+          icon: '✦',
+          title: '创作模式',
+          sub: '手动创作 / AI 角色互动 / AI 剧情生成',
+          badge: modeDef.title,
+          onClick: openCreationModeSheet
+        },
+        {
+          id: 'fc-menu-item-ai',
+          icon: '◈',
+          title: 'AI 设定',
+          sub: boundPersona ? ('已引用公共人设：' + boundPersona.name) : '角色人设 · 剧情背景 · 公共人设库',
+          badge: boundPersona ? '已绑定' : '',
+          onClick: openAiSettingsPanel
+        }
+      ]));
+
+      var apSummary = ap.bgType === 'image' && ap.bgImageAssetId
+        ? ('图片背景（' + (ap.bgImageFit === 'contain' ? '完整显示' : '铺满') + '）')
+        : (ap.bgColor === DEFAULT_APPEARANCE.bgColor ? '原版晴空蓝' : ('纯色 ' + ap.bgColor));
+
+      mScroll.appendChild(makeGroup('角色与外观', [
+        {
+          id: 'fc-menu-item-role',
+          icon: '☺',
+          title: '角色与身份',
+          sub: '我：' + currentUserName() + ' · 对方：' + currentCharName(),
+          onClick: openRoleIdentityPanel
+        },
+        {
+          id: 'fc-menu-item-appearance',
+          icon: '◐',
+          title: '聊天外观',
+          sub: apSummary + ' · 气泡配色',
+          onClick: openAppearancePanel
+        }
+      ]));
+
+      mScroll.appendChild(makeGroup('作品管理', [
+        {
+          id: 'fc-menu-item-works',
+          icon: '▤',
+          title: '作品管理',
+          sub: '重命名 · 已撤回消息(' + recalledCount + ') · 导出导入记录',
+          badge: visibleCount + ' 条',
+          onClick: openWorkManagePanel
+        }
+      ]));
+
+      menuPanel.appendChild(mScroll);
+      menuMask.classList.add('show');
+      menuMask.setAttribute('aria-hidden', 'false');
+    }
+
+    menuMask.addEventListener('click', function(e) {
+      if (e.target === menuMask) closeChatMenu();
+    });
+
+    function closeSecondarySettingsPanel() {
       settingsPanel.classList.remove('show');
       settingsPanel.setAttribute('aria-hidden', 'true');
       settingsPanel.replaceChildren();
     }
 
-    function openRoleSettingsPanel() {
+    function applyPreviewImage(previewBox, src) {
+      previewBox.replaceChildren();
+      if (src) {
+        var img = document.createElement('img');
+        img.src = src;
+        img.alt = '头像预览';
+        img.onerror = function() {
+          previewBox.replaceChildren();
+          previewBox.classList.remove('has-img');
+        };
+        previewBox.classList.add('has-img');
+        previewBox.appendChild(img);
+      } else {
+        previewBox.classList.remove('has-img');
+      }
+    }
+
+    function openRoleIdentityPanel() {
       if (_panelMode) setPanelMode('');
       closeSheet();
+      closeChatMenu();
       settingsPanel.replaceChildren();
 
-      var curAp = getAppearance(_state && _state.appearance);
       var draft = {
         user: {
           name: currentUserName(),
-          mode: 'keep', // 'keep' | 'replace' | 'clear'
+          mode: 'keep',
           existingAssetId: (_state && _state.userAvatarAssetId) || '',
           dataUrl: '',
           fileName: ''
@@ -1322,17 +1534,6 @@
           existingAssetId: (_state && _state.charAvatarAssetId) || '',
           dataUrl: '',
           fileName: ''
-        },
-        appearance: {
-          bgType: curAp.bgType,
-          bgColor: curAp.bgColor,
-          bgImageMode: curAp.bgType === 'image' && curAp.bgImageAssetId ? 'keep' : 'clear', // 'keep' | 'replace' | 'clear'
-          existingBgAssetId: curAp.bgImageAssetId || '',
-          bgDataUrl: '',
-          bgFileName: '',
-          bgImageFit: curAp.bgImageFit,
-          userBubbleColor: curAp.userBubbleColor,
-          charBubbleColor: curAp.charBubbleColor
         }
       };
       var panelOpenToken = ++_activeResolveSeq;
@@ -1343,32 +1544,15 @@
       sBackBtn.id = 'fc-chat-settings-back';
       sBackBtn.appendChild(el('span', 'fc-works-back-chevron', '‹'));
       sBackBtn.appendChild(el('span', '', '返回'));
-      sBackBtn.onclick = closeRoleSettingsPanel;
+      sBackBtn.onclick = closeSecondarySettingsPanel;
 
-      var sTitle = el('b', 'fc-settings-title', '聊天设置');
+      var sTitle = el('b', 'fc-settings-title', '角色与身份');
       var sSpacer = el('div', 'fc-settings-head-spacer');
       sHead.appendChild(sBackBtn);
       sHead.appendChild(sTitle);
       sHead.appendChild(sSpacer);
 
       var sBody = el('div', 'fc-settings-body');
-
-      function applyPreviewImage(previewBox, src) {
-        previewBox.replaceChildren();
-        if (src) {
-          var img = document.createElement('img');
-          img.src = src;
-          img.alt = '头像预览';
-          img.onerror = function() {
-            previewBox.replaceChildren();
-            previewBox.classList.remove('has-img');
-          };
-          previewBox.classList.add('has-img');
-          previewBox.appendChild(img);
-        } else {
-          previewBox.classList.remove('has-img');
-        }
-      }
 
       function buildRoleCard(roleKey, cardTitle, tagText, placeholderText, isUserSide) {
         var roleDraft = draft[roleKey];
@@ -1484,20 +1668,141 @@
         return card;
       }
 
-      var roleSectionBar = el('div', 'fc-settings-section-bar');
-      roleSectionBar.appendChild(el('span', 'fc-settings-section-label', '角色与头像'));
-      sBody.appendChild(roleSectionBar);
       sBody.appendChild(buildRoleCard('user', '我的身份', '右侧气泡', '输入我的昵称（默认：我）', true));
-      sBody.appendChild(buildRoleCard('char', '对方身份', '左侧气泡', '输入对方昵称（默认：对方）', false));
+      sBody.appendChild(buildRoleCard('char', '对方身份', '左侧气泡 · 顶部标题', '输入对方昵称（默认：对方）', false));
+      sBody.appendChild(el('p', 'fc-settings-note', '说明：每部作品的昵称与头像完全独立；对方昵称会同步显示在聊天页顶部居中标题及消息列表中。'));
 
-      // —— 聊天外观区域 ——
-      var appearSectionBar = el('div', 'fc-settings-section-bar');
-      appearSectionBar.appendChild(el('span', 'fc-settings-section-label', '聊天外观'));
-      var resetAppearBtn = el('button', 'fc-settings-mini-btn', '恢复默认外观');
+      var sFoot = el('div', 'fc-settings-foot');
+      var footBackBtn = el('button', 'fc-chat-btn alt', '返回');
+      footBackBtn.type = 'button';
+      footBackBtn.id = 'fc-chat-settings-cancel';
+      footBackBtn.onclick = closeSecondarySettingsPanel;
+
+      var saveBtn = el('button', 'fc-chat-btn', '保存设置');
+      saveBtn.type = 'button';
+      saveBtn.id = 'fc-chat-settings-save';
+      saveBtn.onclick = async function() {
+        var api = assetsApi();
+        var oldUserAvatarId = (_state && _state.userAvatarAssetId) || '';
+        var oldCharAvatarId = (_state && _state.charAvatarAssetId) || '';
+        var nextUserAvatarId = oldUserAvatarId;
+        var nextCharAvatarId = oldCharAvatarId;
+
+        var needsAssets = draft.user.mode === 'replace' || draft.char.mode === 'replace';
+        if (needsAssets && !api) {
+          notify('本地素材存储模块不可用');
+          return;
+        }
+
+        saveBtn.disabled = true;
+        try {
+          if (draft.user.mode === 'replace' && draft.user.dataUrl) {
+            var savedUserAvatar = await api.putAsset({
+              id: api.uid('avt_'),
+              name: draft.user.fileName || '我的头像',
+              src: draft.user.dataUrl,
+              kind: 'avatar'
+            });
+            nextUserAvatarId = savedUserAvatar.id;
+          } else if (draft.user.mode === 'clear') {
+            nextUserAvatarId = '';
+          }
+
+          if (draft.char.mode === 'replace' && draft.char.dataUrl) {
+            var savedCharAvatar = await api.putAsset({
+              id: api.uid('avt_'),
+              name: draft.char.fileName || '对方头像',
+              src: draft.char.dataUrl,
+              kind: 'avatar'
+            });
+            nextCharAvatarId = savedCharAvatar.id;
+          } else if (draft.char.mode === 'clear') {
+            nextCharAvatarId = '';
+          }
+
+          var prevCharName = currentCharName();
+          var nextCharName = String(draft.char.name || '').trim() || INITIAL_STATE.char;
+          _state.user = String(draft.user.name || '').trim() || INITIAL_STATE.user;
+          _state.char = nextCharName;
+          if (_state.aiSettings && _state.aiSettings.aiRole) {
+            var curAiName = String(_state.aiSettings.aiRole.name || '').trim();
+            if (!curAiName || curAiName === prevCharName) {
+              _state.aiSettings.aiRole.name = nextCharName;
+            }
+          }
+          _state.userAvatarAssetId = nextUserAvatarId;
+          _state.charAvatarAssetId = nextCharAvatarId;
+
+          if (!saveState(_state)) {
+            saveBtn.disabled = false;
+            return;
+          }
+
+          closeSecondarySettingsPanel();
+          syncRoleButton();
+          renderMessages(false);
+          notify('已保存角色与身份设置');
+
+          if (oldUserAvatarId && oldUserAvatarId !== nextUserAvatarId) {
+            cleanupUnreferencedAsset(oldUserAvatarId, 'avatar');
+          }
+          if (oldCharAvatarId && oldCharAvatarId !== nextCharAvatarId && oldCharAvatarId !== oldUserAvatarId) {
+            cleanupUnreferencedAsset(oldCharAvatarId, 'avatar');
+          }
+        } catch (err) {
+          notify(err && err.message ? err.message : '保存设置失败');
+        } finally {
+          saveBtn.disabled = false;
+        }
+      };
+
+      sFoot.appendChild(footBackBtn);
+      sFoot.appendChild(saveBtn);
+
+      settingsPanel.appendChild(sHead);
+      settingsPanel.appendChild(sBody);
+      settingsPanel.appendChild(sFoot);
+      settingsPanel.classList.add('show');
+      settingsPanel.setAttribute('aria-hidden', 'false');
+    }
+
+    function openAppearancePanel() {
+      if (_panelMode) setPanelMode('');
+      closeSheet();
+      closeChatMenu();
+      settingsPanel.replaceChildren();
+
+      var curAp = getAppearance(_state && _state.appearance);
+      var draftAppearance = {
+        bgType: curAp.bgType,
+        bgColor: curAp.bgColor,
+        bgImageMode: curAp.bgType === 'image' && curAp.bgImageAssetId ? 'keep' : 'clear',
+        existingBgAssetId: curAp.bgImageAssetId || '',
+        bgDataUrl: '',
+        bgFileName: '',
+        bgImageFit: curAp.bgImageFit,
+        userBubbleColor: curAp.userBubbleColor,
+        charBubbleColor: curAp.charBubbleColor
+      };
+      var panelOpenToken = ++_activeResolveSeq;
+
+      var sHead = el('header', 'fc-settings-head');
+      var sBackBtn = el('button', 'fc-settings-back');
+      sBackBtn.type = 'button';
+      sBackBtn.id = 'fc-appearance-settings-back';
+      sBackBtn.appendChild(el('span', 'fc-works-back-chevron', '‹'));
+      sBackBtn.appendChild(el('span', '', '返回'));
+      sBackBtn.onclick = closeSecondarySettingsPanel;
+
+      var sTitle = el('b', 'fc-settings-title', '聊天外观');
+      var resetAppearBtn = el('button', 'fc-settings-mini-btn', '恢复默认');
       resetAppearBtn.type = 'button';
       resetAppearBtn.id = 'fc-settings-appearance-reset';
-      appearSectionBar.appendChild(resetAppearBtn);
-      sBody.appendChild(appearSectionBar);
+      sHead.appendChild(sBackBtn);
+      sHead.appendChild(sTitle);
+      sHead.appendChild(resetAppearBtn);
+
+      var sBody = el('div', 'fc-settings-body');
 
       // 实时预览卡片
       var previewCard = el('div', 'fc-appearance-preview');
@@ -1505,13 +1810,13 @@
 
       var previewLeftRow = el('div', 'fc-preview-row');
       previewLeftRow.appendChild(el('span', 'fc-preview-dot'));
-      var previewCharBubble = el('div', 'fc-preview-bubble', '对方：今天的晚风好像很温柔。');
+      var previewCharBubble = el('div', 'fc-preview-bubble', currentCharName() + '：今天的晚风好像很温柔。');
       previewCharBubble.id = 'fc-settings-preview-char-bubble';
       previewLeftRow.appendChild(previewCharBubble);
 
       var previewRightRow = el('div', 'fc-preview-row right');
       previewRightRow.appendChild(el('span', 'fc-preview-dot'));
-      var previewUserBubble = el('div', 'fc-preview-bubble', '我：刚买好冰美式，这就来找你。');
+      var previewUserBubble = el('div', 'fc-preview-bubble', currentUserName() + '：刚买好冰美式，这就来找你。');
       previewUserBubble.id = 'fc-settings-preview-user-bubble';
       previewRightRow.appendChild(previewUserBubble);
 
@@ -1524,7 +1829,7 @@
       bgCard.id = 'fc-settings-bg-card';
       var bgCardHead = el('div', 'fc-settings-card-head');
       bgCardHead.appendChild(el('span', 'fc-settings-card-title', '聊天背景'));
-      var bgStatusTag = el('span', 'fc-settings-card-tag', '默认浅灰绿');
+      var bgStatusTag = el('span', 'fc-settings-card-tag', '原版晴空蓝');
       bgStatusTag.id = 'fc-settings-bg-status-tag';
       bgCardHead.appendChild(bgStatusTag);
       bgCard.appendChild(bgCardHead);
@@ -1544,11 +1849,11 @@
         sw.dataset.bgPreset = preset.color;
         sw.style.backgroundColor = preset.color;
         sw.onclick = function() {
-          draft.appearance.bgType = 'color';
-          draft.appearance.bgColor = preset.color;
-          draft.appearance.bgImageMode = 'clear';
-          draft.appearance.bgDataUrl = '';
-          draft.appearance.bgFileName = '';
+          draftAppearance.bgType = 'color';
+          draftAppearance.bgColor = preset.color;
+          draftAppearance.bgImageMode = 'clear';
+          draftAppearance.bgDataUrl = '';
+          draftAppearance.bgFileName = '';
           syncAppearanceUi();
         };
         bgPresetBtns.push(sw);
@@ -1559,25 +1864,24 @@
       var bgColorInput = document.createElement('input');
       bgColorInput.type = 'color';
       bgColorInput.id = 'fc-settings-bg-color';
-      bgColorInput.value = draft.appearance.bgColor;
-      var bgColorHexText = el('span', '', draft.appearance.bgColor);
+      bgColorInput.value = draftAppearance.bgColor;
+      var bgColorHexText = el('span', '', draftAppearance.bgColor);
       bgColorHexText.id = 'fc-settings-bg-color-label';
       bgPickerChip.appendChild(bgColorInput);
       bgPickerChip.appendChild(el('span', '', '自定义 '));
       bgPickerChip.appendChild(bgColorHexText);
       bgColorInput.addEventListener('input', function() {
-        draft.appearance.bgType = 'color';
-        draft.appearance.bgColor = normalizeHex(bgColorInput.value, DEFAULT_APPEARANCE.bgColor);
-        draft.appearance.bgImageMode = 'clear';
-        draft.appearance.bgDataUrl = '';
-        draft.appearance.bgFileName = '';
+        draftAppearance.bgType = 'color';
+        draftAppearance.bgColor = normalizeHex(bgColorInput.value, DEFAULT_APPEARANCE.bgColor);
+        draftAppearance.bgImageMode = 'clear';
+        draftAppearance.bgDataUrl = '';
+        draftAppearance.bgFileName = '';
         syncAppearanceUi();
       });
       bgSwatchRow.appendChild(bgPickerChip);
       bgColorSub.appendChild(bgSwatchRow);
       bgCard.appendChild(bgColorSub);
 
-      // 背景图片子区域
       var bgImgSub = el('div', 'fc-settings-subblock');
       var bgImgSubHead = el('div', 'fc-settings-subhead');
       bgImgSubHead.appendChild(el('span', 'fc-settings-subhead-title', '相册背景图片与显示方式'));
@@ -1592,7 +1896,7 @@
       bgClearImgBtn.type = 'button';
       bgClearImgBtn.id = 'fc-settings-bg-image-clear';
 
-      var bgResetBtn = el('button', 'fc-settings-mini-btn', '一键恢复默认背景');
+      var bgResetBtn = el('button', 'fc-settings-mini-btn', '恢复默认背景');
       bgResetBtn.type = 'button';
       bgResetBtn.id = 'fc-settings-bg-reset';
 
@@ -1631,12 +1935,12 @@
       bubbleCard.id = 'fc-settings-bubble-card';
       var bubbleHead = el('div', 'fc-settings-card-head');
       bubbleHead.appendChild(el('span', 'fc-settings-card-title', '消息气泡颜色'));
-      bubbleHead.appendChild(el('span', 'fc-settings-card-tag', '自动文字高对比'));
+      bubbleHead.appendChild(el('span', 'fc-settings-card-tag', '高对比可读'));
       bubbleCard.appendChild(bubbleHead);
 
       var pairSub = el('div', 'fc-settings-subblock');
       var pairSubHead = el('div', 'fc-settings-subhead');
-      pairSubHead.appendChild(el('span', 'fc-settings-subhead-title', '韩系柔和配色组合'));
+      pairSubHead.appendChild(el('span', 'fc-settings-subhead-title', '快捷配色组合'));
       pairSub.appendChild(pairSubHead);
 
       var pairList = el('div', 'fc-bubble-preset-list');
@@ -1655,8 +1959,8 @@
         pBtn.appendChild(dots);
         pBtn.appendChild(el('span', '', pair.label));
         pBtn.onclick = function() {
-          draft.appearance.userBubbleColor = pair.user;
-          draft.appearance.charBubbleColor = pair.char;
+          draftAppearance.userBubbleColor = pair.user;
+          draftAppearance.charBubbleColor = pair.char;
           syncAppearanceUi();
         };
         pairBtns.push({ btn: pBtn, pair: pair });
@@ -1717,33 +2021,33 @@
       }
 
       var syncUserBubblePicker = buildBubbleColorPicker(
-        '我的消息气泡（默认 #d9e3d2）',
+        '我的消息气泡（默认 #fff133）',
         'fc-settings-user-bubble-color',
         'fc-settings-user-bubble-label',
         USER_BUBBLE_PRESETS,
-        function() { return draft.appearance.userBubbleColor; },
-        function(val) { draft.appearance.userBubbleColor = val; }
+        function() { return draftAppearance.userBubbleColor; },
+        function(val) { draftAppearance.userBubbleColor = val; }
       );
 
       var syncCharBubblePicker = buildBubbleColorPicker(
-        '对方消息气泡（默认 #fffefa）',
+        '对方消息气泡（默认 #ffffff）',
         'fc-settings-char-bubble-color',
         'fc-settings-char-bubble-label',
         CHAR_BUBBLE_PRESETS,
-        function() { return draft.appearance.charBubbleColor; },
-        function(val) { draft.appearance.charBubbleColor = val; }
+        function() { return draftAppearance.charBubbleColor; },
+        function(val) { draftAppearance.charBubbleColor = val; }
       );
 
       sBody.appendChild(bubbleCard);
 
       var cachedBgDataUrl = '';
-      if (draft.appearance.bgImageMode === 'keep' && draft.appearance.existingBgAssetId) {
+      if (draftAppearance.bgImageMode === 'keep' && draftAppearance.existingBgAssetId) {
         var bgApi = assetsApi();
-        cachedBgDataUrl = bgApi ? bgApi.getCachedSrc(draft.appearance.existingBgAssetId) : '';
+        cachedBgDataUrl = bgApi ? bgApi.getCachedSrc(draftAppearance.existingBgAssetId) : '';
         if (!cachedBgDataUrl && bgApi) {
-          bgApi.getAsset(draft.appearance.existingBgAssetId).then(function(record) {
+          bgApi.getAsset(draftAppearance.existingBgAssetId).then(function(record) {
             if (!settingsPanel.classList.contains('show') || panelOpenToken !== _activeResolveSeq) return;
-            if (draft.appearance.bgImageMode !== 'keep') return;
+            if (draftAppearance.bgImageMode !== 'keep') return;
             if (record && record.src) {
               cachedBgDataUrl = record.src;
               syncAppearanceUi();
@@ -1753,7 +2057,7 @@
       }
 
       function syncAppearanceUi() {
-        var ap = draft.appearance;
+        var ap = draftAppearance;
         var hasBgImage = ap.bgType === 'image' && (
           (ap.bgImageMode === 'replace' && Boolean(ap.bgDataUrl)) ||
           (ap.bgImageMode === 'keep' && Boolean(ap.existingBgAssetId))
@@ -1790,7 +2094,7 @@
         if (hasBgImage) {
           bgStatusTag.textContent = ap.bgImageFit === 'contain' ? '图片 · 完整显示' : '图片 · 铺满';
         } else if (ap.bgColor === DEFAULT_APPEARANCE.bgColor) {
-          bgStatusTag.textContent = '默认浅灰绿';
+          bgStatusTag.textContent = '原版晴空蓝';
         } else {
           bgStatusTag.textContent = '纯色 ' + ap.bgColor;
         }
@@ -1819,10 +2123,10 @@
         }
         try {
           var dataUrl = await api.readImageFile(file, 8);
-          draft.appearance.bgType = 'image';
-          draft.appearance.bgImageMode = 'replace';
-          draft.appearance.bgDataUrl = dataUrl;
-          draft.appearance.bgFileName = file.name || '聊天背景';
+          draftAppearance.bgType = 'image';
+          draftAppearance.bgImageMode = 'replace';
+          draftAppearance.bgDataUrl = dataUrl;
+          draftAppearance.bgFileName = file.name || '聊天背景';
           syncAppearanceUi();
         } catch (err) {
           bgFileInput.value = '';
@@ -1831,69 +2135,62 @@
       });
 
       bgClearImgBtn.onclick = function() {
-        draft.appearance.bgType = 'color';
-        draft.appearance.bgImageMode = 'clear';
-        draft.appearance.bgDataUrl = '';
-        draft.appearance.bgFileName = '';
+        draftAppearance.bgType = 'color';
+        draftAppearance.bgImageMode = 'clear';
+        draftAppearance.bgDataUrl = '';
+        draftAppearance.bgFileName = '';
         syncAppearanceUi();
       };
 
       bgResetBtn.onclick = function() {
-        draft.appearance.bgType = 'color';
-        draft.appearance.bgColor = DEFAULT_APPEARANCE.bgColor;
-        draft.appearance.bgImageMode = 'clear';
-        draft.appearance.bgDataUrl = '';
-        draft.appearance.bgFileName = '';
-        draft.appearance.bgImageFit = 'cover';
+        draftAppearance.bgType = 'color';
+        draftAppearance.bgColor = DEFAULT_APPEARANCE.bgColor;
+        draftAppearance.bgImageMode = 'clear';
+        draftAppearance.bgDataUrl = '';
+        draftAppearance.bgFileName = '';
+        draftAppearance.bgImageFit = 'cover';
         syncAppearanceUi();
       };
 
       fitCoverBtn.onclick = function() {
-        draft.appearance.bgImageFit = 'cover';
+        draftAppearance.bgImageFit = 'cover';
         syncAppearanceUi();
       };
 
       fitContainBtn.onclick = function() {
-        draft.appearance.bgImageFit = 'contain';
+        draftAppearance.bgImageFit = 'contain';
         syncAppearanceUi();
       };
 
       resetAppearBtn.onclick = function() {
-        draft.appearance.bgType = DEFAULT_APPEARANCE.bgType;
-        draft.appearance.bgColor = DEFAULT_APPEARANCE.bgColor;
-        draft.appearance.bgImageMode = 'clear';
-        draft.appearance.bgDataUrl = '';
-        draft.appearance.bgFileName = '';
-        draft.appearance.bgImageFit = DEFAULT_APPEARANCE.bgImageFit;
-        draft.appearance.userBubbleColor = DEFAULT_APPEARANCE.userBubbleColor;
-        draft.appearance.charBubbleColor = DEFAULT_APPEARANCE.charBubbleColor;
+        draftAppearance.bgType = DEFAULT_APPEARANCE.bgType;
+        draftAppearance.bgColor = DEFAULT_APPEARANCE.bgColor;
+        draftAppearance.bgImageMode = 'clear';
+        draftAppearance.bgDataUrl = '';
+        draftAppearance.bgFileName = '';
+        draftAppearance.bgImageFit = DEFAULT_APPEARANCE.bgImageFit;
+        draftAppearance.userBubbleColor = DEFAULT_APPEARANCE.userBubbleColor;
+        draftAppearance.charBubbleColor = DEFAULT_APPEARANCE.charBubbleColor;
         syncAppearanceUi();
       };
 
       syncAppearanceUi();
-
-      sBody.appendChild(el('p', 'fc-settings-note', '说明：每部作品的角色、头像与聊天外观完全独立；支持中文、英文、数字及常见符号。头像与背景图片保存在浏览器 IndexedDB 中，调整后需点击「保存设置」生效。'));
+      sBody.appendChild(el('p', 'fc-settings-note', '背景图片保存在本地 IndexedDB，各作品互相独立，调整后点击「保存外观」生效。'));
 
       var sFoot = el('div', 'fc-settings-foot');
       var footBackBtn = el('button', 'fc-chat-btn alt', '返回');
       footBackBtn.type = 'button';
-      footBackBtn.id = 'fc-chat-settings-cancel';
-      footBackBtn.onclick = closeRoleSettingsPanel;
+      footBackBtn.id = 'fc-appearance-settings-cancel';
+      footBackBtn.onclick = closeSecondarySettingsPanel;
 
-      var saveBtn = el('button', 'fc-chat-btn', '保存设置');
+      var saveBtn = el('button', 'fc-chat-btn', '保存外观');
       saveBtn.type = 'button';
-      saveBtn.id = 'fc-chat-settings-save';
+      saveBtn.id = 'fc-appearance-settings-save';
       saveBtn.onclick = async function() {
         var api = assetsApi();
-        var oldUserAvatarId = (_state && _state.userAvatarAssetId) || '';
-        var oldCharAvatarId = (_state && _state.charAvatarAssetId) || '';
         var oldBgAssetId = (_state && _state.appearance && _state.appearance.bgImageAssetId) || '';
-        var nextUserAvatarId = oldUserAvatarId;
-        var nextCharAvatarId = oldCharAvatarId;
         var nextBgAssetId = oldBgAssetId;
-
-        var needsAssets = draft.user.mode === 'replace' || draft.char.mode === 'replace' ||
-          (draft.appearance.bgType === 'image' && draft.appearance.bgImageMode === 'replace');
+        var needsAssets = draftAppearance.bgType === 'image' && draftAppearance.bgImageMode === 'replace';
         if (needsAssets && !api) {
           notify('本地素材存储模块不可用');
           return;
@@ -1901,90 +2198,46 @@
 
         saveBtn.disabled = true;
         try {
-          if (draft.user.mode === 'replace' && draft.user.dataUrl) {
-            var savedUserAvatar = await api.putAsset({
-              id: api.uid('avt_'),
-              name: draft.user.fileName || '我的头像',
-              src: draft.user.dataUrl,
-              kind: 'avatar'
-            });
-            nextUserAvatarId = savedUserAvatar.id;
-          } else if (draft.user.mode === 'clear') {
-            nextUserAvatarId = '';
-          }
-
-          if (draft.char.mode === 'replace' && draft.char.dataUrl) {
-            var savedCharAvatar = await api.putAsset({
-              id: api.uid('avt_'),
-              name: draft.char.fileName || '对方头像',
-              src: draft.char.dataUrl,
-              kind: 'avatar'
-            });
-            nextCharAvatarId = savedCharAvatar.id;
-          } else if (draft.char.mode === 'clear') {
-            nextCharAvatarId = '';
-          }
-
-          if (draft.appearance.bgType === 'image') {
-            if (draft.appearance.bgImageMode === 'replace' && draft.appearance.bgDataUrl) {
+          if (draftAppearance.bgType === 'image') {
+            if (draftAppearance.bgImageMode === 'replace' && draftAppearance.bgDataUrl) {
               var savedBgImg = await api.putAsset({
                 id: api.uid('bg_'),
-                name: draft.appearance.bgFileName || '聊天背景',
-                src: draft.appearance.bgDataUrl,
+                name: draftAppearance.bgFileName || '聊天背景',
+                src: draftAppearance.bgDataUrl,
                 kind: 'bg'
               });
               nextBgAssetId = savedBgImg.id;
-            } else if (draft.appearance.bgImageMode === 'clear') {
+            } else if (draftAppearance.bgImageMode === 'clear') {
               nextBgAssetId = '';
             }
           } else {
             nextBgAssetId = '';
           }
 
-          var prevCharName = currentCharName();
-          var nextCharName = String(draft.char.name || '').trim() || INITIAL_STATE.char;
-          _state.user = String(draft.user.name || '').trim() || INITIAL_STATE.user;
-          _state.char = nextCharName;
-          if (_state.aiSettings && _state.aiSettings.aiRole) {
-            var curAiName = String(_state.aiSettings.aiRole.name || '').trim();
-            if (!curAiName || curAiName === prevCharName) {
-              _state.aiSettings.aiRole.name = nextCharName;
-            }
-          }
-          _state.userAvatarAssetId = nextUserAvatarId;
-          _state.charAvatarAssetId = nextCharAvatarId;
           _state.appearance = getAppearance({
-            bgType: draft.appearance.bgType === 'image' && nextBgAssetId ? 'image' : 'color',
-            bgColor: draft.appearance.bgColor,
+            bgType: draftAppearance.bgType === 'image' && nextBgAssetId ? 'image' : 'color',
+            bgColor: draftAppearance.bgColor,
             bgImageAssetId: nextBgAssetId,
-            bgImageFit: draft.appearance.bgImageFit,
-            userBubbleColor: draft.appearance.userBubbleColor,
-            charBubbleColor: draft.appearance.charBubbleColor
+            bgImageFit: draftAppearance.bgImageFit,
+            userBubbleColor: draftAppearance.userBubbleColor,
+            charBubbleColor: draftAppearance.charBubbleColor,
+            appearanceVersion: 2
           });
 
-          var savedOk = saveState(_state);
-          if (!savedOk) {
+          if (!saveState(_state)) {
             saveBtn.disabled = false;
             return;
           }
 
-          closeRoleSettingsPanel();
-          syncRoleButton();
+          closeSecondarySettingsPanel();
           applyChatAppearance();
-          renderMessages(false);
-          notify('已保存聊天设置');
+          notify('已保存聊天外观');
 
-          if (oldUserAvatarId && oldUserAvatarId !== nextUserAvatarId) {
-            cleanupUnreferencedAsset(oldUserAvatarId, 'avatar');
-          }
-          if (oldCharAvatarId && oldCharAvatarId !== nextCharAvatarId && oldCharAvatarId !== oldUserAvatarId) {
-            cleanupUnreferencedAsset(oldCharAvatarId, 'avatar');
-          }
           if (oldBgAssetId && oldBgAssetId !== nextBgAssetId) {
             cleanupUnreferencedAsset(oldBgAssetId, 'bg');
           }
         } catch (err) {
-          notify(err && err.message ? err.message : '保存设置失败');
+          notify(err && err.message ? err.message : '保存外观失败');
         } finally {
           saveBtn.disabled = false;
         }
@@ -1992,6 +2245,266 @@
 
       sFoot.appendChild(footBackBtn);
       sFoot.appendChild(saveBtn);
+
+      settingsPanel.appendChild(sHead);
+      settingsPanel.appendChild(sBody);
+      settingsPanel.appendChild(sFoot);
+      settingsPanel.classList.add('show');
+      settingsPanel.setAttribute('aria-hidden', 'false');
+    }
+
+    function openWorkManagePanel() {
+      if (_panelMode) setPanelMode('');
+      closeSheet();
+      closeChatMenu();
+      settingsPanel.replaceChildren();
+
+      var sHead = el('header', 'fc-settings-head');
+      var sBackBtn = el('button', 'fc-settings-back');
+      sBackBtn.type = 'button';
+      sBackBtn.id = 'fc-work-manage-back';
+      sBackBtn.appendChild(el('span', 'fc-works-back-chevron', '‹'));
+      sBackBtn.appendChild(el('span', '', '返回'));
+      sBackBtn.onclick = closeSecondarySettingsPanel;
+
+      var sTitle = el('b', 'fc-settings-title', '作品管理');
+      var sSpacer = el('div', 'fc-settings-head-spacer');
+      sHead.appendChild(sBackBtn);
+      sHead.appendChild(sTitle);
+      sHead.appendChild(sSpacer);
+
+      var sBody = el('div', 'fc-settings-body');
+      sBody.id = 'fc-work-manage-body';
+
+      // 1. 作品信息与重命名
+      var infoCard = el('section', 'fc-settings-card');
+      var infoHead = el('div', 'fc-settings-card-head');
+      infoHead.appendChild(el('span', 'fc-settings-card-title', '作品信息'));
+      var modeDef = getCreationModeDef(_state && _state.creationMode);
+      infoHead.appendChild(el('span', 'fc-settings-card-tag', modeDef.title));
+      infoCard.appendChild(infoHead);
+
+      var nameLabel = el('label', 'fc-settings-field-label', '作品名称');
+      nameLabel.setAttribute('for', 'fc-work-manage-title-input');
+      var titleRow = el('div', 'fc-work-manage-rename-row');
+      var titleInput = document.createElement('input');
+      titleInput.type = 'text';
+      titleInput.id = 'fc-work-manage-title-input';
+      titleInput.className = 'fc-settings-input';
+      titleInput.maxLength = 60;
+      titleInput.value = (_state && _state.title) || '';
+      titleInput.placeholder = '输入作品名称';
+
+      var renameSaveBtn = el('button', 'fc-settings-mini-btn primary', '更新名称');
+      renameSaveBtn.type = 'button';
+      renameSaveBtn.id = 'fc-work-manage-title-save';
+      renameSaveBtn.onclick = function() {
+        var nextTitle = titleInput.value.trim();
+        if (!nextTitle) {
+          notify('作品名称不能为空');
+          return;
+        }
+        var wApi = worksApi();
+        if (wApi && _currentWorkId) {
+          var res = wApi.renameWork(_currentWorkId, nextTitle);
+          if (!res.ok) {
+            notify(res.error || '更新名称失败');
+            return;
+          }
+        }
+        _state.title = nextTitle;
+        saveState(_state);
+        notify('作品名称已更新');
+      };
+
+      titleRow.appendChild(titleInput);
+      titleRow.appendChild(renameSaveBtn);
+      infoCard.appendChild(nameLabel);
+      infoCard.appendChild(titleRow);
+
+      var statLine = el('p', 'fc-settings-note', '当前显示 ' + countVisibleMessages() + ' 条消息，另有 ' + countRecalledMessages() + ' 条已撤回消息隐藏保留在记录中。');
+      statLine.style.marginTop = '10px';
+      infoCard.appendChild(statLine);
+
+      // 常驻消息编辑工具开关
+      var toolsRow = el('div', 'fc-ai-switch-row');
+      var toolsCopy = el('div', 'fc-ai-switch-copy');
+      toolsCopy.appendChild(el('strong', 'fc-ai-switch-title', '常驻显示消息编辑按钮'));
+      toolsCopy.appendChild(el('span', 'fc-ai-switch-sub', '开启后每条消息下方将直接显示「撤回 / 改写 / 删除」快捷按钮'));
+      var toolsSwitchBtn = el('button', 'fc-ai-switch-btn' + (_state.showTools ? ' is-on' : ''));
+      toolsSwitchBtn.type = 'button';
+      toolsSwitchBtn.id = 'fc-work-manage-tools-toggle';
+      toolsSwitchBtn.textContent = _state.showTools ? '已开启' : '已关闭';
+      toolsSwitchBtn.onclick = function() {
+        _state.showTools = !_state.showTools;
+        saveState(_state);
+        renderMessages(false);
+        toolsSwitchBtn.classList.toggle('is-on', Boolean(_state.showTools));
+        toolsSwitchBtn.textContent = _state.showTools ? '已开启' : '已关闭';
+        notify(_state.showTools ? '已展开每条消息工具栏' : '已收起常驻工具栏');
+      };
+      toolsRow.appendChild(toolsCopy);
+      toolsRow.appendChild(toolsSwitchBtn);
+      infoCard.appendChild(toolsRow);
+      sBody.appendChild(infoCard);
+
+      // 2. 已撤回消息列表（撤回后消息彻底在主聊天区隐藏，此处保留原文并支持改写或恢复显示）
+      var recallCard = el('section', 'fc-settings-card');
+      recallCard.id = 'fc-work-manage-recalled-card';
+      var recallListEl = el('div', 'fc-recalled-list');
+
+      function drawRecalledList() {
+        recallCard.replaceChildren();
+        recallListEl.replaceChildren();
+
+        var items = Array.isArray(_state && _state.items) ? _state.items : [];
+        var recalledEntries = [];
+        items.forEach(function(it, idx) {
+          if (!it) return;
+          if (it.fakeRecall || it.type === 'withdraw') {
+            var textVal = it.type === 'withdraw' && it.original ? it.original.text : it.text;
+            var sideVal = it.type === 'withdraw' && it.original ? (it.side || it.original.side) : it.side;
+            recalledEntries.push({
+              index: idx,
+              side: sideVal === 'right' ? 'right' : 'left',
+              text: textVal || '[消息]'
+            });
+          }
+        });
+
+        var rHead = el('div', 'fc-settings-card-head');
+        rHead.appendChild(el('span', 'fc-settings-card-title', '已撤回消息'));
+        rHead.appendChild(el('span', 'fc-settings-card-tag', recalledEntries.length + ' 条'));
+        recallCard.appendChild(rHead);
+
+        if (!recalledEntries.length) {
+          recallCard.appendChild(el('p', 'fc-settings-note', '当前没有已撤回消息。长按聊天消息点击「撤回」后，消息会从聊天界面直接消失，但原始内容仍保存在这里以便恢复或改写。'));
+          return;
+        }
+
+        recalledEntries.slice().reverse().forEach(function(entry) {
+          var itemBox = el('div', 'fc-recalled-item');
+          itemBox.dataset.recalledIndex = String(entry.index);
+          var senderName = entry.side === 'right' ? currentUserName() : currentCharName();
+          var metaLine = el('div', 'fc-recalled-item-meta', senderName + (entry.side === 'right' ? '（我）' : '（对方）'));
+          var textLine = el('div', 'fc-recalled-item-text', entry.text);
+          var ops = el('div', 'fc-recalled-item-ops');
+
+          var rewriteBtn = el('button', 'fc-settings-mini-btn', '改写');
+          rewriteBtn.type = 'button';
+          rewriteBtn.onclick = function() {
+            closeSecondarySettingsPanel();
+            openRewriteSheet(entry.index);
+          };
+
+          var restoreBtn = el('button', 'fc-settings-mini-btn primary', '恢复显示');
+          restoreBtn.type = 'button';
+          restoreBtn.onclick = function() {
+            toggleRecall(entry.index);
+            drawRecalledList();
+            statLine.textContent = '当前显示 ' + countVisibleMessages() + ' 条消息，另有 ' + countRecalledMessages() + ' 条已撤回消息隐藏保留在记录中。';
+          };
+
+          ops.appendChild(rewriteBtn);
+          ops.appendChild(restoreBtn);
+          itemBox.appendChild(metaLine);
+          itemBox.appendChild(textLine);
+          itemBox.appendChild(ops);
+          recallListEl.appendChild(itemBox);
+        });
+        recallCard.appendChild(recallListEl);
+      }
+
+      drawRecalledList();
+      sBody.appendChild(recallCard);
+
+      // 3. 聊天记录导入导出
+      var ioCard = el('section', 'fc-settings-card');
+      var ioHead = el('div', 'fc-settings-card-head');
+      ioHead.appendChild(el('span', 'fc-settings-card-title', '聊天记录备份'));
+      ioHead.appendChild(el('span', 'fc-settings-card-tag', 'JSON'));
+      ioCard.appendChild(ioHead);
+      ioCard.appendChild(el('p', 'fc-settings-note', '可导出当前作品的完整文字与结构数据，或从 JSON 文件导入消息记录。'));
+
+      var ioBtns = el('div', 'fc-settings-avatar-btns');
+      ioBtns.style.marginTop = '12px';
+
+      var exportBtn = el('button', 'fc-settings-mini-btn primary', '导出当前作品 JSON');
+      exportBtn.type = 'button';
+      exportBtn.id = 'fc-work-export-btn';
+      exportBtn.onclick = function() {
+        try {
+          var payload = JSON.stringify(_state, null, 2);
+          var blob = new Blob([payload], { type: 'application/json' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = ((_state && _state.title) || '捡手机文学') + '.json';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+          notify('已导出作品 JSON 数据');
+        } catch (err) {
+          notify('导出失败');
+        }
+      };
+
+      var importInput = document.createElement('input');
+      importInput.type = 'file';
+      importInput.accept = '.json,application/json';
+      importInput.hidden = true;
+      importInput.id = 'fc-work-import-file';
+
+      var importBtn = el('button', 'fc-settings-mini-btn', '导入聊天记录 JSON');
+      importBtn.type = 'button';
+      importBtn.id = 'fc-work-import-btn';
+      importBtn.onclick = function() {
+        importInput.value = '';
+        importInput.click();
+      };
+
+      importInput.addEventListener('change', function() {
+        var file = importInput.files && importInput.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function() {
+          try {
+            var parsed = JSON.parse(String(reader.result || ''));
+            var nextItems = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.items) ? parsed.items : null);
+            if (!nextItems) {
+              notify('JSON 格式不正确，未找到消息列表');
+              return;
+            }
+            _state.items = nextItems;
+            if (parsed && !Array.isArray(parsed)) {
+              if (typeof parsed.char === 'string' && parsed.char.trim()) _state.char = parsed.char.trim();
+              if (typeof parsed.user === 'string' && parsed.user.trim()) _state.user = parsed.user.trim();
+            }
+            saveState(_state);
+            syncRoleButton();
+            renderMessages(true);
+            closeSecondarySettingsPanel();
+            notify('已导入 ' + nextItems.length + ' 条聊天记录');
+          } catch (_) {
+            notify('解析 JSON 文件失败，请检查文件内容');
+          }
+        };
+        reader.readAsText(file, 'utf-8');
+      });
+
+      ioBtns.appendChild(exportBtn);
+      ioBtns.appendChild(importBtn);
+      ioCard.appendChild(ioBtns);
+      ioCard.appendChild(importInput);
+      sBody.appendChild(ioCard);
+
+      var sFoot = el('div', 'fc-settings-foot');
+      var footCloseBtn = el('button', 'fc-chat-btn', '完成返回');
+      footCloseBtn.type = 'button';
+      footCloseBtn.id = 'fc-work-manage-done';
+      footCloseBtn.onclick = closeSecondarySettingsPanel;
+      sFoot.appendChild(footCloseBtn);
 
       settingsPanel.appendChild(sHead);
       settingsPanel.appendChild(sBody);
@@ -2009,7 +2522,8 @@
     function openAiSettingsPanel() {
       if (_panelMode) setPanelMode('');
       closeSheet();
-      closeRoleSettingsPanel();
+      closeChatMenu();
+      closeSecondarySettingsPanel();
       aiSettingsPanel.replaceChildren();
 
       var fallbackChar = currentCharName();
@@ -2457,15 +2971,16 @@
       return m;
     }
 
-    function toggleFakeRecall(index) {
+    function toggleRecall(index) {
       var m = unwrapWithdrawIfNeeded(index);
       if (!m || m.type !== 'text') return;
       if (_state.items[index] === m) {
         m.fakeRecall = !m.fakeRecall;
       }
+      if (_selectedIndex === index) _selectedIndex = -1;
       saveState(_state);
       renderMessages(false);
-      notify(m.fakeRecall ? '已设为假撤回状态' : '已恢复消息显示');
+      notify(m.fakeRecall ? '已撤回该消息' : '已恢复消息显示');
     }
 
     function openEditTextSheet(index) {
@@ -2734,7 +3249,7 @@
         var recalled = Boolean(item.fakeRecall || fromWithdraw);
         return {
           kind: 'text',
-          label: recalled ? '假撤回消息' : '文字消息',
+          label: recalled ? '已撤回消息' : '文字消息',
           preview: shortTxt || '(空内容)',
           isRecalled: recalled,
           copyText: txt
@@ -3419,12 +3934,11 @@
         ['☎', '语音通话', function() { openCallSheet(false); }],
         ['▤', '视频通话', function() { openCallSheet(true); }],
         ['▦', '插入日期', openDateSheet],
-        ['✎', '创作工具', function() {
+        ['✎', '消息工具', function() {
           _state.showTools = !_state.showTools;
-          toolsToggleBtn.classList.toggle('active', Boolean(_state.showTools));
           saveState(_state);
           renderMessages(false);
-          notify(_state.showTools ? '已展开每条消息创作工具' : '已收起常驻工具，点击气泡仍可操作');
+          notify(_state.showTools ? '已展开每条消息快捷工具' : '已收起常驻工具，长按气泡仍可操作');
         }]
       ];
 
@@ -3826,11 +4340,11 @@
     function buildInlineControls(index, item) {
       var controls = el('div', 'fc-chat-controls');
       if (item.type === 'text') {
-        var recallBtn = el('button', 'fc-chat-mini-btn', item.fakeRecall ? '恢复显示' : '假撤回');
+        var recallBtn = el('button', 'fc-chat-mini-btn', '撤回');
         recallBtn.type = 'button';
         recallBtn.onclick = function(e) {
           e.stopPropagation();
-          toggleFakeRecall(index);
+          toggleRecall(index);
         };
         var rewriteBtn = el('button', 'fc-chat-mini-btn', '改写');
         rewriteBtn.type = 'button';
@@ -3924,34 +4438,17 @@
       var charAvatarAssetId = (_state && _state.charAvatarAssetId) || '';
 
       var items = Array.isArray(_state.items) ? _state.items : [];
-      if (!items.length) {
-        var emptyBox = el('div', 'fc-chat-stream-empty');
-        emptyBox.appendChild(el('strong', '', '还没有聊天内容'));
-        emptyBox.appendChild(el('span', '', '可以在下方输入文字，或点击 ⊕ 更多工具添加图片、转账、语音与通话卡片'));
-        streamEl.appendChild(emptyBox);
-      }
+      var visibleCount = 0;
 
       items.forEach(function(rawItem, index) {
         var item = rawItem;
         if (!item) return;
 
-        // 兼容旧版 withdraw + original 格式
-        if (item.type === 'withdraw' && item.original) {
-          item = Object.assign({}, item.original, {
-            side: item.side || item.original.side,
-            fakeRecall: true
-          });
-        }
-
-        if (item.type === 'withdraw') {
-          var recallRow = el('div', 'fc-chat-recall-row');
-          recallRow.dataset.msgIndex = String(index);
-          recallRow.dataset.msgKind = 'withdraw';
-          var noticeText = item.side === 'right' ? '你撤回了一条消息' : (charDisplayName + '撤回了一条消息');
-          recallRow.appendChild(el('div', 'fc-chat-recall-notice', noticeText));
-          streamEl.appendChild(recallRow);
+        // 撤回消息不在聊天界面显示任何气泡或提示文字，底层保留数据供作品管理恢复或改写
+        if (item.fakeRecall || item.type === 'withdraw') {
           return;
         }
+        visibleCount += 1;
 
         if (item.type === 'date') {
           var dateRow = el('div', 'fc-chat-date');
@@ -4097,15 +4594,8 @@
           body.appendChild(imgBubble);
         } else if (item.type === 'text') {
           var wrap = el('div', 'fc-chat-bubble-wrap');
-          var bubble = el('div', 'fc-chat-bubble' + (item.fakeRecall ? ' is-recalled' : ''));
-
-          if (item.fakeRecall) {
-            var tagText = side === 'right' ? '你撤回了一条消息（假撤回）' : '对方撤回了一条消息（假撤回）';
-            bubble.appendChild(el('span', 'fc-chat-recall-tag', tagText));
-            bubble.appendChild(el('span', 'fc-chat-recall-text', item.text || ''));
-          } else {
-            bubble.textContent = item.text || '';
-          }
+          var bubble = el('div', 'fc-chat-bubble');
+          bubble.textContent = item.text || '';
 
           bubble.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -4113,36 +4603,7 @@
             renderMessages(false);
           });
 
-          if (item.fakeRecall) {
-            var flag = el('span', 'fc-chat-fake-recall');
-            var againBtn = el('button', 'fc-recall-again', '↻ 改写');
-            againBtn.type = 'button';
-            againBtn.title = '改写并重新显示';
-            againBtn.onclick = function(e) {
-              e.stopPropagation();
-              openRewriteSheet(index);
-            };
-
-            var crossBtn = el('button', 'fc-recall-cross', '×');
-            crossBtn.type = 'button';
-            crossBtn.title = '删除这条消息';
-            crossBtn.onclick = function(e) {
-              e.stopPropagation();
-              deleteMessageAt(index);
-            };
-
-            flag.appendChild(againBtn);
-            flag.appendChild(crossBtn);
-            if (side === 'right') {
-              wrap.appendChild(flag);
-              wrap.appendChild(bubble);
-            } else {
-              wrap.appendChild(bubble);
-              wrap.appendChild(flag);
-            }
-          } else {
-            wrap.appendChild(bubble);
-          }
+          wrap.appendChild(bubble);
           body.appendChild(wrap);
         } else {
           var summary = item.text || item.alt || (
@@ -4160,6 +4621,17 @@
         row.appendChild(body);
         streamEl.appendChild(row);
       });
+
+      if (visibleCount === 0) {
+        var emptyBox = el('div', 'fc-chat-stream-empty');
+        emptyBox.appendChild(el('strong', '', '还没有聊天内容'));
+        emptyBox.appendChild(el('span', '', '可以在下方输入文字，或点击 ⊕ 更多工具添加图片、表情包、转账、语音与通话卡片'));
+        streamEl.appendChild(emptyBox);
+      }
+
+      if (_searchQuery && !searchBar.hidden) {
+        runMessageSearch(_searchQuery, false);
+      }
 
       if (scrollToBottom) {
         streamEl.scrollTop = streamEl.scrollHeight;
@@ -4232,7 +4704,7 @@
     function openMessageContextMenu(index, clientX, clientY) {
       var items = Array.isArray(_state && _state.items) ? _state.items : [];
       if (index < 0 || index >= items.length) return;
-      if (sheetBack.classList.contains('show') || settingsPanel.classList.contains('show') || lightbox.classList.contains('show')) {
+      if (sheetBack.classList.contains('show') || settingsPanel.classList.contains('show') || aiSettingsPanel.classList.contains('show') || menuMask.classList.contains('show') || lightbox.classList.contains('show')) {
         return;
       }
 
@@ -4276,7 +4748,7 @@
             action: 'restore',
             icon: '↺',
             label: '恢复显示',
-            onClick: function() { toggleFakeRecall(index); }
+            onClick: function() { toggleRecall(index); }
           }));
         } else {
           listEl.appendChild(buildMenuActionButton({
@@ -4286,10 +4758,10 @@
             onClick: function() { openEditTextSheet(index); }
           }));
           listEl.appendChild(buildMenuActionButton({
-            action: 'fakeRecall',
-            icon: '◌',
-            label: '假撤回',
-            onClick: function() { toggleFakeRecall(index); }
+            action: 'recall',
+            icon: '↩',
+            label: '撤回',
+            onClick: function() { toggleRecall(index); }
           }));
         }
         listEl.appendChild(el('div', 'fc-ctx-divider'));
@@ -4398,7 +4870,7 @@
       _suppressUntilFreshPointerDown = false;
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       if (_contextMenuOpen) return;
-      if (sheetBack.classList.contains('show') || settingsPanel.classList.contains('show') || lightbox.classList.contains('show')) {
+      if (sheetBack.classList.contains('show') || settingsPanel.classList.contains('show') || aiSettingsPanel.classList.contains('show') || menuMask.classList.contains('show') || lightbox.classList.contains('show')) {
         return;
       }
       var row = findMessageRowFromEventTarget(e.target);
@@ -4476,27 +4948,36 @@
       }
     });
 
-    toolsToggleBtn.addEventListener('click', function() {
-      closeMessageContextMenu();
-      _state.showTools = !_state.showTools;
-      toolsToggleBtn.classList.toggle('active', Boolean(_state.showTools));
-      saveState(_state);
-      renderMessages(false);
-      notify(_state.showTools ? '已展开每条消息创作工具' : '已收起常驻工具');
+    searchBtn.addEventListener('click', function() {
+      if (searchBar.hidden) openSearchBar();
+      else closeSearchBar();
     });
 
-    settingsBtn.addEventListener('click', function() {
-      closeMessageContextMenu();
-      openRoleSettingsPanel();
+    searchInput.addEventListener('input', function() {
+      runMessageSearch(searchInput.value, true);
+    });
+    searchInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        stepSearchMatch(e.shiftKey ? -1 : 1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSearchBar();
+      }
+    });
+    searchPrevBtn.addEventListener('click', function() { stepSearchMatch(-1); });
+    searchNextBtn.addEventListener('click', function() { stepSearchMatch(1); });
+    searchCloseBtn.addEventListener('click', closeSearchBar);
+
+    menuBtn.addEventListener('click', function() {
+      if (menuMask.classList.contains('show')) closeChatMenu();
+      else openChatMenu();
     });
 
-    modeBtn.addEventListener('click', function() {
-      openCreationModeSheet();
-    });
-
-    aiSettingsBtn.addEventListener('click', function() {
+    voiceBtn.addEventListener('click', function() {
       closeMessageContextMenu();
-      openAiSettingsPanel();
+      if (_panelMode) setPanelMode('');
+      openVoiceSheet();
     });
 
     roleBtn.addEventListener('click', function() {
@@ -4539,11 +5020,15 @@
       } else if (aiSettingsPanel.classList.contains('show')) {
         closeAiSettingsPanel();
       } else if (settingsPanel.classList.contains('show')) {
-        closeRoleSettingsPanel();
+        closeSecondarySettingsPanel();
+      } else if (menuMask.classList.contains('show')) {
+        closeChatMenu();
       } else if (lightbox.classList.contains('show')) {
         closeLightbox();
       } else if (sheetBack.classList.contains('show')) {
         closeSheet();
+      } else if (!searchBar.hidden) {
+        closeSearchBar();
       }
     };
     document.addEventListener('keydown', onDocKeyDown);
