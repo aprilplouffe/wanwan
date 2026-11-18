@@ -76,11 +76,22 @@
             '<div class="fc-page-heading">' +
               '<small>COMMUNITY PREFERENCES</small>' +
               '<h2>社区设置</h2>' +
-              '<p>统一管理阅读字体与捡手机文学的表情包。</p>' +
+              '<p>管理整个同好社区共用的公共人设库与社区偏好设置。</p>' +
             '</div>' +
+            '<button type="button" class="fc-settings-entry-card" id="fc-open-persona-lib-btn">' +
+              '<span class="fc-settings-entry-icon" aria-hidden="true">🪪</span>' +
+              '<div class="fc-settings-entry-main">' +
+                '<div class="fc-settings-entry-head">' +
+                  '<strong class="fc-settings-entry-title">人设库</strong>' +
+                  '<span class="fc-settings-entry-badge" id="fc-persona-count-badge">0 位角色</span>' +
+                '</div>' +
+                '<p class="fc-settings-entry-desc">创建与管理社区公共角色人设，供捡手机文学、论坛体与文游模拟器共用</p>' +
+              '</div>' +
+              '<span class="fc-settings-entry-arrow" aria-hidden="true">›</span>' +
+            '</button>' +
             '<div class="fc-panel-card">' +
-              '<h3>字体与表情包设置</h3>' +
-              '<p>字体调节与表情包库管理将在后续任务中接入。</p>' +
+              '<h3>字体与阅读偏好</h3>' +
+              '<p>更多社区级字体与阅读偏好设置将在后续任务中接入。</p>' +
             '</div>' +
           '</section>' +
         '</div>' +
@@ -101,6 +112,17 @@
       '</div>';
   }
 
+  function updateSettingsStats(page) {
+    if (!page) return;
+    var badge = page.querySelector('#fc-persona-count-badge');
+    if (!badge) return;
+    var count = 0;
+    if (global.FanCommunityPersonas && typeof global.FanCommunityPersonas.listPersonas === 'function') {
+      count = global.FanCommunityPersonas.listPersonas().length;
+    }
+    badge.textContent = count > 0 ? ('已保存 ' + count + ' 位') : '暂无角色';
+  }
+
   function switchTab(page, tab) {
     _activeTab = tab;
     page.querySelectorAll('[data-fc-view]').forEach(function(section) {
@@ -109,6 +131,9 @@
     page.querySelectorAll('[data-fc-tab]').forEach(function(btn) {
       btn.classList.toggle('nav-active', btn.dataset.fcTab === tab);
     });
+    if (tab === 'settings') {
+      updateSettingsStats(page);
+    }
     var scroller = page.querySelector('#fc-main-scroll');
     if (scroller) scroller.scrollTop = 0;
   }
@@ -131,6 +156,20 @@
     function showHomeFromSubview() {
       if (subviewHost) subviewHost.hidden = true;
       if (homeShell) homeShell.hidden = false;
+      updateSettingsStats(page);
+    }
+
+    var personaLibBtn = page.querySelector('#fc-open-persona-lib-btn');
+    if (personaLibBtn) {
+      personaLibBtn.addEventListener('click', function() {
+        if (global.FanCommunityPersonas && typeof global.FanCommunityPersonas.openLibrary === 'function' && subviewHost && homeShell) {
+          homeShell.hidden = true;
+          subviewHost.hidden = false;
+          global.FanCommunityPersonas.openLibrary(subviewHost, { onBack: showHomeFromSubview });
+          return;
+        }
+        notify('公共人设库模块加载中，请稍后再试');
+      });
     }
 
     var entryLabels = {
@@ -164,6 +203,7 @@
 
     _activeTab = 'create';
     bindEvents(page);
+    updateSettingsStats(page);
     switchTab(page, 'create');
 
     if (typeof global.openPage === 'function') {

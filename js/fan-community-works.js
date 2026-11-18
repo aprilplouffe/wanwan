@@ -63,6 +63,92 @@
     return VALID_CREATION_MODES.indexOf(val) !== -1 ? val : DEFAULT_CREATION_MODE;
   }
 
+  var AI_REPLY_LENGTHS = ['short', 'medium', 'detailed'];
+  var AI_LANGUAGE_STYLES = ['natural', 'emotional', 'dramatic'];
+
+  function cleanStr(val, maxLen) {
+    if (typeof val !== 'string') return '';
+    var s = val;
+    if (typeof maxLen === 'number' && maxLen > 0 && s.length > maxLen) {
+      s = s.slice(0, maxLen);
+    }
+    return s;
+  }
+
+  function createDefaultAiSettings(defaultCharName) {
+    var charName = String(defaultCharName || '').trim() || '对方';
+    return {
+      aiRole: {
+        name: charName,
+        personality: '',
+        background: '',
+        speakingStyle: '',
+        relationshipToUser: ''
+      },
+      userRole: {
+        identityBackground: '',
+        personality: '',
+        relationshipNotes: ''
+      },
+      story: {
+        worldBackground: '',
+        currentPlot: '',
+        plotDirection: '',
+        avoidContent: ''
+      },
+      preferences: {
+        replyLength: 'medium',
+        languageStyle: 'natural',
+        allowAdvancePlot: true
+      }
+    };
+  }
+
+  function normalizeAiSettings(raw, defaultCharName) {
+    var fallbackChar = String(defaultCharName || '').trim() || '对方';
+    var base = createDefaultAiSettings(fallbackChar);
+    if (!raw || typeof raw !== 'object') return base;
+
+    var aiRole = raw.aiRole && typeof raw.aiRole === 'object' ? raw.aiRole : {};
+    var userRole = raw.userRole && typeof raw.userRole === 'object' ? raw.userRole : {};
+    var story = raw.story && typeof raw.story === 'object' ? raw.story : {};
+    var prefs = raw.preferences && typeof raw.preferences === 'object' ? raw.preferences : {};
+
+    var rawRoleName = cleanStr(aiRole.name, 40).trim();
+    var replyLen = typeof prefs.replyLength === 'string' && AI_REPLY_LENGTHS.indexOf(prefs.replyLength) !== -1
+      ? prefs.replyLength
+      : base.preferences.replyLength;
+    var langStyle = typeof prefs.languageStyle === 'string' && AI_LANGUAGE_STYLES.indexOf(prefs.languageStyle) !== -1
+      ? prefs.languageStyle
+      : base.preferences.languageStyle;
+
+    return {
+      aiRole: {
+        name: rawRoleName || fallbackChar,
+        personality: cleanStr(aiRole.personality, 1200),
+        background: cleanStr(aiRole.background, 2000),
+        speakingStyle: cleanStr(aiRole.speakingStyle, 1000),
+        relationshipToUser: cleanStr(aiRole.relationshipToUser, 1000)
+      },
+      userRole: {
+        identityBackground: cleanStr(userRole.identityBackground, 1500),
+        personality: cleanStr(userRole.personality, 1000),
+        relationshipNotes: cleanStr(userRole.relationshipNotes, 1000)
+      },
+      story: {
+        worldBackground: cleanStr(story.worldBackground, 2000),
+        currentPlot: cleanStr(story.currentPlot, 2000),
+        plotDirection: cleanStr(story.plotDirection, 1500),
+        avoidContent: cleanStr(story.avoidContent, 1500)
+      },
+      preferences: {
+        replyLength: replyLen,
+        languageStyle: langStyle,
+        allowAdvancePlot: prefs.allowAdvancePlot !== false
+      }
+    };
+  }
+
   var DEFAULT_APPEARANCE = {
     bgType: 'color',
     bgColor: '#e8ede8',
@@ -100,15 +186,18 @@
     var now = Date.now();
     var meta = fallbackMeta || {};
     var src = raw && typeof raw === 'object' ? raw : {};
+    var resolvedChar = String(src.char || meta.char || '对方');
     return {
       id: String(src.id || meta.id || ''),
       title: String(src.title || meta.title || '未命名作品').trim() || '未命名作品',
-      char: String(src.char || meta.char || '对方'),
+      char: resolvedChar,
       user: String(src.user || meta.user || '我'),
       charAvatarAssetId: typeof src.charAvatarAssetId === 'string' ? src.charAvatarAssetId : (typeof meta.charAvatarAssetId === 'string' ? meta.charAvatarAssetId : ''),
       userAvatarAssetId: typeof src.userAvatarAssetId === 'string' ? src.userAvatarAssetId : (typeof meta.userAvatarAssetId === 'string' ? meta.userAvatarAssetId : ''),
       appearance: normalizeAppearance(src.appearance),
       creationMode: normalizeCreationMode(src.creationMode !== undefined ? src.creationMode : meta.creationMode),
+      boundPersonaId: typeof src.boundPersonaId === 'string' ? src.boundPersonaId : (typeof meta.boundPersonaId === 'string' ? meta.boundPersonaId : ''),
+      aiSettings: normalizeAiSettings(src.aiSettings, resolvedChar),
       topic: typeof src.topic === 'string' ? src.topic : '',
       join: src.join !== false,
       showTools: Boolean(src.showTools),
@@ -126,6 +215,7 @@
       char: workData.char || '对方',
       user: workData.user || '我',
       creationMode: normalizeCreationMode(workData.creationMode),
+      boundPersonaId: typeof workData.boundPersonaId === 'string' ? workData.boundPersonaId : '',
       messageCount: Array.isArray(workData.items) ? workData.items.length : 0,
       createdAt: workData.createdAt,
       updatedAt: workData.updatedAt,
@@ -331,6 +421,8 @@
       userAvatarAssetId: '',
       appearance: clone(DEFAULT_APPEARANCE),
       creationMode: DEFAULT_CREATION_MODE,
+      boundPersonaId: '',
+      aiSettings: createDefaultAiSettings('对方'),
       topic: '',
       join: true,
       showTools: false,
@@ -524,6 +616,76 @@
     return false;
   }
 
+  function countWorksUsingPersona(personaId) {
+    if (!personaId) return 0;
+    var listed = listWorks();
+    if (!listed.ok) return 0;
+    var store = storage();
+    var count = 0;
+    listed.works.forEach(function(w) {
+      if (!w || !w.id) return;
+      if (w.boundPersonaId === personaId) {
+        count += 1;
+        return;
+      }
+      if (!store) return;
+      try {
+        var raw = store.getItem(workDataKey(w.id));
+        if (!raw) return;
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.boundPersonaId === personaId) {
+          count += 1;
+        }
+      } catch (_) {}
+    });
+    return count;
+  }
+
+  function unbindPersonaAcrossWorks(personaId) {
+    if (!personaId) return 0;
+    var initRes = ensureInitialized();
+    if (!initRes.ok) return 0;
+    var store = storage();
+    var index = initRes.index;
+    var changedCount = 0;
+
+    for (var i = 0; i < index.works.length; i++) {
+      var meta = index.works[i];
+      if (!meta || !meta.id) continue;
+      var matched = meta.boundPersonaId === personaId;
+      var parsedData = null;
+      if (store) {
+        try {
+          var raw = store.getItem(workDataKey(meta.id));
+          if (raw) {
+            parsedData = JSON.parse(raw);
+            if (parsedData && parsedData.boundPersonaId === personaId) {
+              matched = true;
+            }
+          }
+        } catch (_) {}
+      }
+      if (!matched) continue;
+      changedCount += 1;
+      meta.boundPersonaId = '';
+      if (parsedData && typeof parsedData === 'object') {
+        parsedData.boundPersonaId = '';
+        if (store) {
+          try {
+            store.setItem(workDataKey(meta.id), JSON.stringify(parsedData));
+          } catch (_) {}
+        }
+      }
+    }
+
+    if (changedCount > 0) {
+      try {
+        writeIndex(index);
+      } catch (_) {}
+    }
+    return changedCount;
+  }
+
   global.FanCommunityWorks = {
     LEGACY_STORAGE_KEY: LEGACY_STORAGE_KEY,
     WORKS_INDEX_KEY: WORKS_INDEX_KEY,
@@ -532,6 +694,8 @@
     DEFAULT_CREATION_MODE: DEFAULT_CREATION_MODE,
     CREATION_MODES: clone(CREATION_MODES),
     normalizeCreationMode: normalizeCreationMode,
+    createDefaultAiSettings: createDefaultAiSettings,
+    normalizeAiSettings: normalizeAiSettings,
     DEFAULT_APPEARANCE: clone(DEFAULT_APPEARANCE),
     normalizeAppearance: normalizeAppearance,
     ensureInitialized: ensureInitialized,
@@ -541,6 +705,8 @@
     saveWorkData: saveWorkData,
     setActiveWorkId: setActiveWorkId,
     renameWork: renameWork,
+    countWorksUsingPersona: countWorksUsingPersona,
+    unbindPersonaAcrossWorks: unbindPersonaAcrossWorks,
     getAllReferencedItems: getAllReferencedItems,
     isAssetReferencedInOtherWorks: isAssetReferencedInOtherWorks
   };

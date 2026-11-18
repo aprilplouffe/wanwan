@@ -85,6 +85,89 @@
     return CREATION_MODE_LIST[0];
   }
 
+  var AI_REPLY_LENGTH_OPTIONS = [
+    { id: 'short', label: '简短' },
+    { id: 'medium', label: '适中' },
+    { id: 'detailed', label: '详细' }
+  ];
+
+  var AI_LANGUAGE_STYLE_OPTIONS = [
+    { id: 'natural', label: '自然聊天' },
+    { id: 'emotional', label: '细腻情感' },
+    { id: 'dramatic', label: '戏剧化' }
+  ];
+
+  function createDefaultAiSettings(defaultCharName) {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.createDefaultAiSettings === 'function') {
+      return wApi.createDefaultAiSettings(defaultCharName);
+    }
+    var charName = String(defaultCharName || '').trim() || '对方';
+    return {
+      aiRole: {
+        name: charName,
+        personality: '',
+        background: '',
+        speakingStyle: '',
+        relationshipToUser: ''
+      },
+      userRole: {
+        identityBackground: '',
+        personality: '',
+        relationshipNotes: ''
+      },
+      story: {
+        worldBackground: '',
+        currentPlot: '',
+        plotDirection: '',
+        avoidContent: ''
+      },
+      preferences: {
+        replyLength: 'medium',
+        languageStyle: 'natural',
+        allowAdvancePlot: true
+      }
+    };
+  }
+
+  function getAiSettings(raw, defaultCharName) {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.normalizeAiSettings === 'function') {
+      return wApi.normalizeAiSettings(raw, defaultCharName);
+    }
+    var base = createDefaultAiSettings(defaultCharName);
+    if (!raw || typeof raw !== 'object') return base;
+    var aiRole = raw.aiRole && typeof raw.aiRole === 'object' ? raw.aiRole : {};
+    var userRole = raw.userRole && typeof raw.userRole === 'object' ? raw.userRole : {};
+    var story = raw.story && typeof raw.story === 'object' ? raw.story : {};
+    var prefs = raw.preferences && typeof raw.preferences === 'object' ? raw.preferences : {};
+    return {
+      aiRole: {
+        name: String(aiRole.name || '').trim() || base.aiRole.name,
+        personality: typeof aiRole.personality === 'string' ? aiRole.personality : '',
+        background: typeof aiRole.background === 'string' ? aiRole.background : '',
+        speakingStyle: typeof aiRole.speakingStyle === 'string' ? aiRole.speakingStyle : '',
+        relationshipToUser: typeof aiRole.relationshipToUser === 'string' ? aiRole.relationshipToUser : ''
+      },
+      userRole: {
+        identityBackground: typeof userRole.identityBackground === 'string' ? userRole.identityBackground : '',
+        personality: typeof userRole.personality === 'string' ? userRole.personality : '',
+        relationshipNotes: typeof userRole.relationshipNotes === 'string' ? userRole.relationshipNotes : ''
+      },
+      story: {
+        worldBackground: typeof story.worldBackground === 'string' ? story.worldBackground : '',
+        currentPlot: typeof story.currentPlot === 'string' ? story.currentPlot : '',
+        plotDirection: typeof story.plotDirection === 'string' ? story.plotDirection : '',
+        avoidContent: typeof story.avoidContent === 'string' ? story.avoidContent : ''
+      },
+      preferences: {
+        replyLength: ['short', 'medium', 'detailed'].indexOf(prefs.replyLength) !== -1 ? prefs.replyLength : 'medium',
+        languageStyle: ['natural', 'emotional', 'dramatic'].indexOf(prefs.languageStyle) !== -1 ? prefs.languageStyle : 'natural',
+        allowAdvancePlot: prefs.allowAdvancePlot !== false
+      }
+    };
+  }
+
   var INITIAL_STATE = {
     title: '捡手机文学',
     char: '对方',
@@ -100,6 +183,8 @@
       charBubbleColor: '#fffefa'
     },
     creationMode: DEFAULT_CREATION_MODE,
+    boundPersonaId: '',
+    aiSettings: createDefaultAiSettings('对方'),
     topic: '',
     join: true,
     showTools: false,
@@ -129,6 +214,10 @@
 
   function worksApi() {
     return global.FanCommunityWorks || null;
+  }
+
+  function personasApi() {
+    return global.FanCommunityPersonas || null;
   }
 
   function clone(obj) {
@@ -612,7 +701,7 @@
     head.appendChild(titleEl);
     head.appendChild(headActions);
 
-    // 创作模式状态条与入口（任务 11）
+    // 创作模式状态条与入口（任务 11 & 任务 12）
     var modeBar = el('div', 'fc-chat-mode-bar');
     modeBar.id = 'fc-chat-mode-bar';
     var modeStatus = el('div', 'fc-chat-mode-status');
@@ -620,11 +709,14 @@
     modeStatus.appendChild(el('span', 'fc-chat-mode-prefix', '当前模式'));
     var modeLabelEl = el('strong', 'fc-chat-mode-label', '');
     modeLabelEl.id = 'fc-chat-mode-label';
-    var modeAiTag = el('span', 'fc-chat-mode-ai-tag', 'AI 功能待接入');
-    modeAiTag.id = 'fc-chat-mode-ai-tag';
-    modeAiTag.hidden = true;
     modeStatus.appendChild(modeLabelEl);
-    modeStatus.appendChild(modeAiTag);
+
+    var modeActions = el('div', 'fc-chat-mode-actions');
+    var aiSettingsBtn = el('button', 'fc-chat-ai-settings-btn', 'AI 设定');
+    aiSettingsBtn.type = 'button';
+    aiSettingsBtn.id = 'fc-chat-ai-settings-btn';
+    aiSettingsBtn.setAttribute('aria-label', '编辑 AI 角色设定与剧情背景');
+    aiSettingsBtn.hidden = true;
 
     var modeBtn = el('button', 'fc-chat-mode-btn');
     modeBtn.type = 'button';
@@ -633,10 +725,13 @@
     modeBtn.appendChild(el('span', '', '创作模式'));
     modeBtn.appendChild(el('span', 'fc-chat-mode-caret', '▾'));
 
-    modeBar.appendChild(modeStatus);
-    modeBar.appendChild(modeBtn);
+    modeActions.appendChild(aiSettingsBtn);
+    modeActions.appendChild(modeBtn);
 
-    // AI 模式待接入提示条（仅在 AI 模式下显示）
+    modeBar.appendChild(modeStatus);
+    modeBar.appendChild(modeActions);
+
+    // AI 模式待接入提示条与公共人设绑定区（仅在 AI 模式下显示）
     var aiNoticeEl = el('div', 'fc-chat-ai-notice');
     aiNoticeEl.id = 'fc-chat-ai-notice';
     aiNoticeEl.hidden = true;
@@ -647,8 +742,39 @@
     aiNoticeHead.appendChild(aiNoticeTitle);
     var aiNoticeDesc = el('p', 'fc-chat-ai-notice-desc', '');
     aiNoticeDesc.id = 'fc-chat-ai-notice-desc';
+
+    var personaStripEl = el('div', 'fc-chat-persona-strip');
+    personaStripEl.id = 'fc-chat-persona-strip';
+    var personaStripLeft = el('div', 'fc-chat-bound-left');
+    var boundAvatarEl = el('div', 'fc-chat-bound-avatar');
+    boundAvatarEl.id = 'fc-chat-bound-persona-avatar';
+    var boundInfoEl = el('div', 'fc-chat-bound-info');
+    var boundNameEl = el('strong', 'fc-chat-bound-name', '未选择公共人设');
+    boundNameEl.id = 'fc-chat-bound-persona-name';
+    var boundSubEl = el('span', 'fc-chat-bound-sub', '可从同好社区公共人设库引用 1 位角色');
+    boundSubEl.id = 'fc-chat-bound-persona-sub';
+    boundInfoEl.appendChild(boundNameEl);
+    boundInfoEl.appendChild(boundSubEl);
+    personaStripLeft.appendChild(boundAvatarEl);
+    personaStripLeft.appendChild(boundInfoEl);
+
+    var personaStripActions = el('div', 'fc-chat-bound-actions');
+    var pickPersonaBtn = el('button', 'fc-chat-bound-pick-btn', '从人设库选择');
+    pickPersonaBtn.type = 'button';
+    pickPersonaBtn.id = 'fc-chat-pick-persona-btn';
+    var unbindPersonaBtn = el('button', 'fc-chat-bound-unbind-btn', '解绑');
+    unbindPersonaBtn.type = 'button';
+    unbindPersonaBtn.id = 'fc-chat-unbind-persona-btn';
+    unbindPersonaBtn.hidden = true;
+    personaStripActions.appendChild(pickPersonaBtn);
+    personaStripActions.appendChild(unbindPersonaBtn);
+
+    personaStripEl.appendChild(personaStripLeft);
+    personaStripEl.appendChild(personaStripActions);
+
     aiNoticeEl.appendChild(aiNoticeHead);
     aiNoticeEl.appendChild(aiNoticeDesc);
+    aiNoticeEl.appendChild(personaStripEl);
 
     // 消息流与独立背景图层
     var streamWrap = el('div', 'fc-chat-stream-wrap');
@@ -740,6 +866,11 @@
     settingsPanel.id = 'fc-chat-settings-panel';
     settingsPanel.setAttribute('aria-hidden', 'true');
 
+    // AI 角色设定与剧情背景设置面板（任务 12）
+    var aiSettingsPanel = el('section', 'fc-chat-settings-panel fc-ai-settings-panel');
+    aiSettingsPanel.id = 'fc-chat-ai-settings-panel';
+    aiSettingsPanel.setAttribute('aria-hidden', 'true');
+
     // 长按 / 右键消息操作浮层菜单
     var ctxMask = el('div', 'fc-chat-context-mask');
     ctxMask.id = 'fc-chat-context-mask';
@@ -757,6 +888,7 @@
     app.appendChild(stickerBatchInput);
     app.appendChild(sheetBack);
     app.appendChild(settingsPanel);
+    app.appendChild(aiSettingsPanel);
     app.appendChild(ctxMask);
     app.appendChild(lightbox);
     container.appendChild(app);
@@ -834,11 +966,189 @@
       roleBtn.classList.toggle('is-char', !isUser);
     }
 
+    function getBoundPersona() {
+      var id = _state && typeof _state.boundPersonaId === 'string' ? _state.boundPersonaId : '';
+      if (!id) return null;
+      var pApi = personasApi();
+      if (!pApi || typeof pApi.getPersona !== 'function') return null;
+      return pApi.getPersona(id);
+    }
+
+    function syncBoundPersonaUi() {
+      var pApi = personasApi();
+      var bound = getBoundPersona();
+      if (_state && _state.boundPersonaId && !bound && pApi) {
+        _state.boundPersonaId = '';
+      }
+      if (bound) {
+        boundNameEl.textContent = bound.name;
+        var summaryBits = [];
+        if (bound.background) summaryBits.push(bound.background);
+        else if (bound.personality) summaryBits.push(bound.personality);
+        boundSubEl.textContent = summaryBits.length ? ('公共人设 · ' + summaryBits[0]) : ('已引用公共人设 · ID ' + bound.id.slice(-6));
+        unbindPersonaBtn.hidden = false;
+        personaStripEl.classList.add('has-bound');
+        if (pApi && typeof pApi.renderAvatarBox === 'function') {
+          var expectedId = bound.id;
+          pApi.renderAvatarBox(boundAvatarEl, bound.avatarAssetId, function() {
+            return document.body.contains(app) && _state && _state.boundPersonaId === expectedId;
+          });
+        }
+      } else {
+        boundAvatarEl.replaceChildren();
+        boundAvatarEl.classList.remove('has-img');
+        boundNameEl.textContent = '未选择公共人设（可选）';
+        boundSubEl.textContent = '可从社区「公共人设库」绑定 1 位角色，不覆盖作品聊天昵称与设定';
+        unbindPersonaBtn.hidden = true;
+        personaStripEl.classList.remove('has-bound');
+      }
+    }
+
+    function openPersonaPickerSheet(onChanged) {
+      closeMessageContextMenu();
+      if (_panelMode) setPanelMode('');
+      var pApi = personasApi();
+      openSheet('从人设库选择角色', function(body) {
+        var note = el('p', 'fc-mode-sheet-sub', '仅绑定公共人设 ID（每部作品绑定 1 位），不会覆盖本作品已填写的聊天昵称、头像、AI 设定或消息记录。');
+        body.appendChild(note);
+
+        if (!pApi || typeof pApi.listPersonas !== 'function') {
+          body.appendChild(el('p', 'fc-chat-sheet-note', '公共人设库模块暂未就绪，请刷新后重试。'));
+          var fallbackAct = el('div', 'fc-chat-sheet-actions');
+          var fallbackClose = el('button', 'fc-chat-btn alt', '关闭');
+          fallbackClose.type = 'button';
+          fallbackClose.onclick = closeSheet;
+          fallbackAct.appendChild(fallbackClose);
+          body.appendChild(fallbackAct);
+          return;
+        }
+
+        var allList = pApi.listPersonas();
+        if (!allList.length) {
+          var emptyBox = el('div', 'fc-persona-picker-empty');
+          emptyBox.appendChild(el('strong', '', '公共人设库暂无角色'));
+          emptyBox.appendChild(el('p', '', '请前往「同好社区 → 设置 → 人设库」新建角色后，再回到此处绑定使用。'));
+          body.appendChild(emptyBox);
+          var emptyAct = el('div', 'fc-chat-sheet-actions');
+          var emptyClose = el('button', 'fc-chat-btn alt', '知道了');
+          emptyClose.type = 'button';
+          emptyClose.onclick = closeSheet;
+          emptyAct.appendChild(emptyClose);
+          body.appendChild(emptyAct);
+          return;
+        }
+
+        var searchWrap = el('div', 'fc-persona-picker-search-wrap');
+        var searchInput = document.createElement('input');
+        searchInput.type = 'search';
+        searchInput.id = 'fc-persona-picker-search';
+        searchInput.className = 'fc-settings-input';
+        searchInput.placeholder = '按角色姓名查找…';
+        searchInput.setAttribute('aria-label', '按角色姓名查找公共人设');
+        searchWrap.appendChild(searchInput);
+        body.appendChild(searchWrap);
+
+        var listBox = el('div', 'fc-persona-picker-list');
+        listBox.id = 'fc-persona-picker-list';
+        body.appendChild(listBox);
+
+        function drawPickerList(queryText) {
+          listBox.replaceChildren();
+          var items = pApi.searchPersonas(queryText);
+          if (!items.length) {
+            listBox.appendChild(el('p', 'fc-chat-sheet-note', '未找到姓名匹配「' + String(queryText || '').trim() + '」的人设。'));
+            return;
+          }
+
+          var curBoundId = _state ? (_state.boundPersonaId || '') : '';
+          items.forEach(function(persona) {
+            var isCurrent = persona.id === curBoundId;
+            var card = el('button', 'fc-persona-picker-card' + (isCurrent ? ' is-active' : ''));
+            card.type = 'button';
+            card.dataset.personaId = persona.id;
+
+            var avEl = el('div', 'fc-persona-picker-avatar');
+            pApi.renderAvatarBox(avEl, persona.avatarAssetId, function() {
+              return sheetBack.classList.contains('show') && document.body.contains(card);
+            });
+
+            var infoEl = el('div', 'fc-persona-picker-info');
+            var topLine = el('div', 'fc-persona-picker-top');
+            topLine.appendChild(el('strong', 'fc-persona-picker-name', persona.name));
+            topLine.appendChild(el('span', 'fc-persona-picker-id', 'ID ' + persona.id.slice(-6)));
+            if (isCurrent) {
+              topLine.appendChild(el('span', 'fc-mode-card-tag is-current', '当前绑定'));
+            }
+            infoEl.appendChild(topLine);
+
+            var descBits = [];
+            if (persona.background) descBits.push(persona.background);
+            if (persona.personality) descBits.push(persona.personality);
+            if (persona.notes) descBits.push('备注：' + persona.notes);
+            infoEl.appendChild(el('p', 'fc-persona-picker-desc', descBits.join(' · ') || '暂无详细设定描述'));
+
+            card.appendChild(avEl);
+            card.appendChild(infoEl);
+            card.onclick = function() {
+              if (!_state) return;
+              _state.boundPersonaId = persona.id;
+              saveState(_state);
+              syncBoundPersonaUi();
+              if (typeof onChanged === 'function') onChanged(persona);
+              closeSheet();
+              notify('已绑定公共人设：' + persona.name);
+            };
+            listBox.appendChild(card);
+          });
+        }
+
+        searchInput.addEventListener('input', function() {
+          drawPickerList(searchInput.value);
+        });
+        drawPickerList('');
+
+        var actions = el('div', 'fc-chat-sheet-actions');
+        if (_state && _state.boundPersonaId) {
+          var clearBtn = el('button', 'fc-chat-btn alt', '解除绑定');
+          clearBtn.type = 'button';
+          clearBtn.id = 'fc-persona-picker-unbind';
+          clearBtn.onclick = function() {
+            if (!_state) return;
+            _state.boundPersonaId = '';
+            saveState(_state);
+            syncBoundPersonaUi();
+            if (typeof onChanged === 'function') onChanged(null);
+            closeSheet();
+            notify('已解除当前作品的公共人设绑定');
+          };
+          actions.appendChild(clearBtn);
+        }
+        var closeBtn = el('button', 'fc-chat-btn alt', '关闭');
+        closeBtn.type = 'button';
+        closeBtn.id = 'fc-persona-picker-close';
+        closeBtn.onclick = closeSheet;
+        actions.appendChild(closeBtn);
+        body.appendChild(actions);
+      });
+    }
+
+    pickPersonaBtn.onclick = function() {
+      openPersonaPickerSheet();
+    };
+
+    unbindPersonaBtn.onclick = function() {
+      if (!_state || !_state.boundPersonaId) return;
+      _state.boundPersonaId = '';
+      saveState(_state);
+      syncBoundPersonaUi();
+      notify('已解除当前作品的公共人设绑定');
+    };
+
     function syncCreationModeUi() {
       var def = getCreationModeDef(_state && _state.creationMode);
       modeLabelEl.textContent = def.title;
       modeBar.classList.toggle('is-ai-mode', def.isAi);
-      modeAiTag.hidden = !def.isAi;
+      aiSettingsBtn.hidden = !def.isAi;
       aiNoticeEl.hidden = !def.isAi;
       if (def.isAi) {
         aiNoticeTitle.textContent = def.title;
@@ -847,6 +1157,7 @@
         aiNoticeTitle.textContent = '';
         aiNoticeDesc.textContent = '';
       }
+      syncBoundPersonaUi();
     }
 
     function openCreationModeSheet() {
@@ -967,16 +1278,19 @@
       if (isAssetUsedInCurrentState(assetId)) return;
       var api = assetsApi();
       var wApi = worksApi();
+      var pApi = personasApi();
       if (!api) return;
       var usedElsewhere = wApi ? wApi.isAssetReferencedInOtherWorks(assetId, _currentWorkId) : false;
-      if (usedElsewhere) return;
+      var usedInPersona = pApi && typeof pApi.isAssetReferenced === 'function' ? pApi.isAssetReferenced(assetId) : false;
+      if (usedElsewhere || usedInPersona) return;
 
       api.getAsset(assetId).then(function(record) {
         if (!record) return;
         if (allowedKind && record.kind !== allowedKind) return;
         if (isAssetUsedInCurrentState(assetId)) return;
         var stillOther = wApi ? wApi.isAssetReferencedInOtherWorks(assetId, _currentWorkId) : false;
-        if (!stillOther) {
+        var stillPersona = pApi && typeof pApi.isAssetReferenced === 'function' ? pApi.isAssetReferenced(assetId) : false;
+        if (!stillOther && !stillPersona) {
           return api.deleteAsset(assetId);
         }
       }).catch(function() {});
@@ -1627,8 +1941,16 @@
             nextBgAssetId = '';
           }
 
+          var prevCharName = currentCharName();
+          var nextCharName = String(draft.char.name || '').trim() || INITIAL_STATE.char;
           _state.user = String(draft.user.name || '').trim() || INITIAL_STATE.user;
-          _state.char = String(draft.char.name || '').trim() || INITIAL_STATE.char;
+          _state.char = nextCharName;
+          if (_state.aiSettings && _state.aiSettings.aiRole) {
+            var curAiName = String(_state.aiSettings.aiRole.name || '').trim();
+            if (!curAiName || curAiName === prevCharName) {
+              _state.aiSettings.aiRole.name = nextCharName;
+            }
+          }
           _state.userAvatarAssetId = nextUserAvatarId;
           _state.charAvatarAssetId = nextCharAvatarId;
           _state.appearance = getAppearance({
@@ -1676,6 +1998,431 @@
       settingsPanel.appendChild(sFoot);
       settingsPanel.classList.add('show');
       settingsPanel.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeAiSettingsPanel() {
+      aiSettingsPanel.classList.remove('show');
+      aiSettingsPanel.setAttribute('aria-hidden', 'true');
+      aiSettingsPanel.replaceChildren();
+    }
+
+    function openAiSettingsPanel() {
+      if (_panelMode) setPanelMode('');
+      closeSheet();
+      closeRoleSettingsPanel();
+      aiSettingsPanel.replaceChildren();
+
+      var fallbackChar = currentCharName();
+      var draft = clone(getAiSettings(_state && _state.aiSettings, fallbackChar));
+
+      var aHead = el('header', 'fc-settings-head');
+      var aBackBtn = el('button', 'fc-settings-back');
+      aBackBtn.type = 'button';
+      aBackBtn.id = 'fc-ai-settings-back';
+      aBackBtn.appendChild(el('span', 'fc-works-back-chevron', '‹'));
+      aBackBtn.appendChild(el('span', '', '取消'));
+      aBackBtn.onclick = closeAiSettingsPanel;
+
+      var aTitle = el('b', 'fc-settings-title', 'AI 设定');
+
+      var aResetBtn = el('button', 'fc-settings-mini-btn', '恢复默认');
+      aResetBtn.type = 'button';
+      aResetBtn.id = 'fc-ai-settings-reset';
+
+      aHead.appendChild(aBackBtn);
+      aHead.appendChild(aTitle);
+      aHead.appendChild(aResetBtn);
+
+      var aBody = el('div', 'fc-settings-body fc-ai-settings-body');
+      aBody.id = 'fc-ai-settings-body';
+
+      var fieldRegistry = [];
+
+      function scrollFieldOnFocus(control) {
+        control.addEventListener('focus', function() {
+          setTimeout(function() {
+            if (!aiSettingsPanel.classList.contains('show')) return;
+            try {
+              control.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            } catch (_) {
+              control.scrollIntoView();
+            }
+          }, 200);
+        });
+      }
+
+      function createTextField(opts) {
+        var group = el('div', 'fc-ai-field-group');
+        var labelEl = el('label', 'fc-settings-field-label', opts.label);
+        labelEl.setAttribute('for', opts.id);
+
+        var control;
+        if (opts.multiline) {
+          control = document.createElement('textarea');
+          control.className = 'fc-settings-input fc-ai-textarea';
+          control.rows = opts.rows || 3;
+          control.maxLength = opts.maxLength || 1500;
+        } else {
+          control = document.createElement('input');
+          control.type = 'text';
+          control.className = 'fc-settings-input';
+          control.maxLength = opts.maxLength || 40;
+        }
+        control.id = opts.id;
+        control.placeholder = opts.placeholder || '';
+        control.value = opts.getValue();
+        control.addEventListener('input', function() {
+          opts.setValue(control.value);
+        });
+        scrollFieldOnFocus(control);
+
+        group.appendChild(labelEl);
+        group.appendChild(control);
+        if (opts.hint) {
+          group.appendChild(el('p', 'fc-ai-field-hint', opts.hint));
+        }
+
+        fieldRegistry.push(function() {
+          control.value = opts.getValue();
+        });
+        return group;
+      }
+
+      var curModeDef = getCreationModeDef(_state && _state.creationMode);
+      var modeHintCard = el('div', 'fc-ai-settings-banner');
+      modeHintCard.appendChild(el('span', 'fc-ai-settings-banner-tag', '共用设定 · ' + curModeDef.title));
+      modeHintCard.appendChild(el('p', 'fc-ai-settings-banner-text', '此设定由当前作品的「AI 角色互动」与「AI 剧情生成」共同使用；仅本地保存，不会自动覆盖聊天昵称、头像或触发 AI 请求。'));
+      aBody.appendChild(modeHintCard);
+
+      // 公共人设库引用状态卡（任务 13：以 ID 引用，不覆盖本作品 aiSettings）
+      var refPersonaCard = el('section', 'fc-settings-card fc-ai-bound-card');
+      refPersonaCard.id = 'fc-ai-bound-persona-card';
+      function renderRefPersonaCard() {
+        refPersonaCard.replaceChildren();
+        var refHead = el('div', 'fc-settings-card-head');
+        refHead.appendChild(el('span', 'fc-settings-card-title', '引用的公共人设'));
+        refHead.appendChild(el('span', 'fc-settings-card-tag', '独立引用'));
+        refPersonaCard.appendChild(refHead);
+
+        var pApi = personasApi();
+        var bound = getBoundPersona();
+        var row = el('div', 'fc-ai-bound-row');
+        var avBox = el('div', 'fc-chat-bound-avatar');
+        var infoBox = el('div', 'fc-chat-bound-info');
+
+        if (bound) {
+          infoBox.appendChild(el('strong', 'fc-chat-bound-name', bound.name + '（ID ' + bound.id.slice(-6) + '）'));
+          var desc = bound.background || bound.personality || '来自同好社区公共人设库，修改原人设会实时同步';
+          infoBox.appendChild(el('span', 'fc-chat-bound-sub', desc));
+          if (pApi && typeof pApi.renderAvatarBox === 'function') {
+            pApi.renderAvatarBox(avBox, bound.avatarAssetId, function() {
+              return aiSettingsPanel.classList.contains('show') && document.body.contains(avBox);
+            });
+          }
+        } else {
+          infoBox.appendChild(el('strong', 'fc-chat-bound-name', '尚未引用公共人设（可选）'));
+          infoBox.appendChild(el('span', 'fc-chat-bound-sub', '可随时从社区人设库绑定 1 位角色，后续 AI 将结合公共人设与下方作品设定使用'));
+        }
+        row.appendChild(avBox);
+        row.appendChild(infoBox);
+
+        var opsRow = el('div', 'fc-ai-bound-ops');
+        var chooseBtn = el('button', 'fc-settings-mini-btn primary', '从人设库选择');
+        chooseBtn.type = 'button';
+        chooseBtn.id = 'fc-ai-pick-persona-btn';
+        chooseBtn.onclick = function() {
+          openPersonaPickerSheet(function() {
+            renderRefPersonaCard();
+          });
+        };
+        opsRow.appendChild(chooseBtn);
+
+        if (bound) {
+          var clearBindBtn = el('button', 'fc-settings-mini-btn', '解除绑定');
+          clearBindBtn.type = 'button';
+          clearBindBtn.id = 'fc-ai-unbind-persona-btn';
+          clearBindBtn.onclick = function() {
+            if (!_state) return;
+            _state.boundPersonaId = '';
+            saveState(_state);
+            syncBoundPersonaUi();
+            renderRefPersonaCard();
+            notify('已解除公共人设绑定');
+          };
+          opsRow.appendChild(clearBindBtn);
+        }
+
+        refPersonaCard.appendChild(row);
+        refPersonaCard.appendChild(opsRow);
+      }
+      renderRefPersonaCard();
+      aBody.appendChild(refPersonaCard);
+
+      // 1. AI 角色设定
+      var aiRoleCard = el('section', 'fc-settings-card');
+      var aiRoleHead = el('div', 'fc-settings-card-head');
+      aiRoleHead.appendChild(el('span', 'fc-settings-card-title', '1. AI 角色设定'));
+      aiRoleHead.appendChild(el('span', 'fc-settings-card-tag', '对方人设'));
+      aiRoleCard.appendChild(aiRoleHead);
+
+      aiRoleCard.appendChild(createTextField({
+        id: 'fc-ai-role-name',
+        label: '角色姓名',
+        multiline: false,
+        maxLength: 40,
+        placeholder: '默认使用对方昵称：' + fallbackChar,
+        hint: '默认带入当前作品的「对方昵称」，可独立修改，不会影响聊天页头像与昵称。',
+        getValue: function() { return draft.aiRole.name; },
+        setValue: function(v) { draft.aiRole.name = v; }
+      }));
+      aiRoleCard.appendChild(createTextField({
+        id: 'fc-ai-role-personality',
+        label: '角色性格',
+        multiline: true,
+        rows: 3,
+        maxLength: 1200,
+        placeholder: '例如：表面冷淡克制，私下细心嘴硬，偶尔会吃醋……',
+        getValue: function() { return draft.aiRole.personality; },
+        setValue: function(v) { draft.aiRole.personality = v; }
+      }));
+      aiRoleCard.appendChild(createTextField({
+        id: 'fc-ai-role-background',
+        label: '角色背景与经历',
+        multiline: true,
+        rows: 3,
+        maxLength: 2000,
+        placeholder: '角色的职业、过往经历、生活习惯或重要背景信息……',
+        getValue: function() { return draft.aiRole.background; },
+        setValue: function(v) { draft.aiRole.background = v; }
+      }));
+      aiRoleCard.appendChild(createTextField({
+        id: 'fc-ai-role-speaking-style',
+        label: '说话风格',
+        multiline: true,
+        rows: 2,
+        maxLength: 1000,
+        placeholder: '例如：喜欢发短句、很少用感叹号、熟人面前会带点调侃……',
+        getValue: function() { return draft.aiRole.speakingStyle; },
+        setValue: function(v) { draft.aiRole.speakingStyle = v; }
+      }));
+      aiRoleCard.appendChild(createTextField({
+        id: 'fc-ai-role-relationship',
+        label: '角色与「我」的关系',
+        multiline: true,
+        rows: 2,
+        maxLength: 1000,
+        placeholder: '例如：暗恋多年的竹马、合租室友、上下级或前任……',
+        getValue: function() { return draft.aiRole.relationshipToUser; },
+        setValue: function(v) { draft.aiRole.relationshipToUser = v; }
+      }));
+      aBody.appendChild(aiRoleCard);
+
+      // 2. 我的角色设定
+      var userRoleCard = el('section', 'fc-settings-card');
+      var userRoleHead = el('div', 'fc-settings-card-head');
+      userRoleHead.appendChild(el('span', 'fc-settings-card-title', '2. 我的角色设定'));
+      userRoleHead.appendChild(el('span', 'fc-settings-card-tag', '我的视角'));
+      userRoleCard.appendChild(userRoleHead);
+
+      userRoleCard.appendChild(createTextField({
+        id: 'fc-ai-user-identity',
+        label: '我的身份与背景',
+        multiline: true,
+        rows: 3,
+        maxLength: 1500,
+        placeholder: '我在故事中的职业、身份或当前处境……',
+        getValue: function() { return draft.userRole.identityBackground; },
+        setValue: function(v) { draft.userRole.identityBackground = v; }
+      }));
+      userRoleCard.appendChild(createTextField({
+        id: 'fc-ai-user-personality',
+        label: '我的性格',
+        multiline: true,
+        rows: 2,
+        maxLength: 1000,
+        placeholder: '例如：直球坦率、有点怕麻烦但重感情……',
+        getValue: function() { return draft.userRole.personality; },
+        setValue: function(v) { draft.userRole.personality = v; }
+      }));
+      userRoleCard.appendChild(createTextField({
+        id: 'fc-ai-user-relationship-notes',
+        label: '我和 AI 角色之间的关系补充',
+        multiline: true,
+        rows: 2,
+        maxLength: 1000,
+        placeholder: '双方近期相处默契、隐藏心结或彼此称呼习惯……',
+        getValue: function() { return draft.userRole.relationshipNotes; },
+        setValue: function(v) { draft.userRole.relationshipNotes = v; }
+      }));
+      aBody.appendChild(userRoleCard);
+
+      // 3. 剧情设定
+      var storyCard = el('section', 'fc-settings-card');
+      var storyHead = el('div', 'fc-settings-card-head');
+      storyHead.appendChild(el('span', 'fc-settings-card-title', '3. 剧情设定'));
+      storyHead.appendChild(el('span', 'fc-settings-card-tag', '世界观与走势'));
+      storyCard.appendChild(storyHead);
+
+      storyCard.appendChild(createTextField({
+        id: 'fc-ai-story-world',
+        label: '故事背景',
+        multiline: true,
+        rows: 3,
+        maxLength: 2000,
+        placeholder: '时间地点、世界观设定或故事发生的大环境……',
+        getValue: function() { return draft.story.worldBackground; },
+        setValue: function(v) { draft.story.worldBackground = v; }
+      }));
+      storyCard.appendChild(createTextField({
+        id: 'fc-ai-story-current',
+        label: '当前剧情',
+        multiline: true,
+        rows: 3,
+        maxLength: 2000,
+        placeholder: '对话开始前刚刚发生的事或当下所处的节点……',
+        getValue: function() { return draft.story.currentPlot; },
+        setValue: function(v) { draft.story.currentPlot = v; }
+      }));
+      storyCard.appendChild(createTextField({
+        id: 'fc-ai-story-direction',
+        label: '剧情发展方向',
+        multiline: true,
+        rows: 2,
+        maxLength: 1500,
+        placeholder: '期待接下来发生的互动氛围、转折或关系推进方向……',
+        getValue: function() { return draft.story.plotDirection; },
+        setValue: function(v) { draft.story.plotDirection = v; }
+      }));
+      storyCard.appendChild(createTextField({
+        id: 'fc-ai-story-avoid',
+        label: '需要避免的剧情内容',
+        multiline: true,
+        rows: 2,
+        maxLength: 1500,
+        placeholder: '例如：避免 OOC、避免强行虐恋或特定雷区元素……',
+        getValue: function() { return draft.story.avoidContent; },
+        setValue: function(v) { draft.story.avoidContent = v; }
+      }));
+      aBody.appendChild(storyCard);
+
+      // 4. AI 创作偏好
+      var prefCard = el('section', 'fc-settings-card');
+      var prefHead = el('div', 'fc-settings-card-head');
+      prefHead.appendChild(el('span', 'fc-settings-card-title', '4. AI 创作偏好'));
+      prefHead.appendChild(el('span', 'fc-settings-card-tag', '表达与节奏'));
+      prefCard.appendChild(prefHead);
+
+      var replyLenBlock = el('div', 'fc-ai-pref-block');
+      replyLenBlock.appendChild(el('span', 'fc-settings-field-label', '回复长度'));
+      var replyLenRow = el('div', 'fc-ai-seg-group');
+      replyLenRow.id = 'fc-ai-pref-reply-length';
+      var replyLenBtns = [];
+      AI_REPLY_LENGTH_OPTIONS.forEach(function(opt) {
+        var btn = el('button', 'fc-ai-seg-btn', opt.label);
+        btn.type = 'button';
+        btn.dataset.replyLength = opt.id;
+        btn.onclick = function() {
+          draft.preferences.replyLength = opt.id;
+          syncPrefControls();
+        };
+        replyLenBtns.push({ id: opt.id, btn: btn });
+        replyLenRow.appendChild(btn);
+      });
+      replyLenBlock.appendChild(replyLenRow);
+      prefCard.appendChild(replyLenBlock);
+
+      var langStyleBlock = el('div', 'fc-ai-pref-block');
+      langStyleBlock.appendChild(el('span', 'fc-settings-field-label', '语言风格'));
+      var langStyleRow = el('div', 'fc-ai-seg-group');
+      langStyleRow.id = 'fc-ai-pref-language-style';
+      var langStyleBtns = [];
+      AI_LANGUAGE_STYLE_OPTIONS.forEach(function(opt) {
+        var btn = el('button', 'fc-ai-seg-btn', opt.label);
+        btn.type = 'button';
+        btn.dataset.languageStyle = opt.id;
+        btn.onclick = function() {
+          draft.preferences.languageStyle = opt.id;
+          syncPrefControls();
+        };
+        langStyleBtns.push({ id: opt.id, btn: btn });
+        langStyleRow.appendChild(btn);
+      });
+      langStyleBlock.appendChild(langStyleRow);
+      prefCard.appendChild(langStyleBlock);
+
+      var advanceBlock = el('div', 'fc-ai-switch-row');
+      var advanceText = el('div', 'fc-ai-switch-copy');
+      advanceText.appendChild(el('strong', 'fc-ai-switch-title', '允许 AI 主动推动剧情'));
+      advanceText.appendChild(el('span', 'fc-ai-switch-sub', '开启后 AI 可在对话中主动引出新事件或推进场景节奏'));
+      var advanceBtn = el('button', 'fc-ai-switch-btn');
+      advanceBtn.type = 'button';
+      advanceBtn.id = 'fc-ai-pref-advance-plot';
+      advanceBtn.setAttribute('role', 'switch');
+      advanceBtn.onclick = function() {
+        draft.preferences.allowAdvancePlot = !draft.preferences.allowAdvancePlot;
+        syncPrefControls();
+      };
+      advanceBlock.appendChild(advanceText);
+      advanceBlock.appendChild(advanceBtn);
+      prefCard.appendChild(advanceBlock);
+
+      function syncPrefControls() {
+        replyLenBtns.forEach(function(item) {
+          var active = draft.preferences.replyLength === item.id;
+          item.btn.classList.toggle('is-active', active);
+          item.btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+        langStyleBtns.forEach(function(item) {
+          var active = draft.preferences.languageStyle === item.id;
+          item.btn.classList.toggle('is-active', active);
+          item.btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+        var allow = draft.preferences.allowAdvancePlot !== false;
+        advanceBtn.classList.toggle('is-on', allow);
+        advanceBtn.setAttribute('aria-checked', allow ? 'true' : 'false');
+        advanceBtn.textContent = allow ? '已开启' : '已关闭';
+      }
+
+      function syncAllAiFormControls() {
+        fieldRegistry.forEach(function(fn) { fn(); });
+        syncPrefControls();
+      }
+
+      aResetBtn.onclick = function() {
+        draft = clone(createDefaultAiSettings(currentCharName()));
+        syncAllAiFormControls();
+        notify('已恢复默认 AI 设定，点击「保存设定」后生效');
+      };
+
+      syncAllAiFormControls();
+      aBody.appendChild(prefCard);
+
+      var aFoot = el('div', 'fc-settings-foot');
+      var aCancelBtn = el('button', 'fc-chat-btn alt', '取消');
+      aCancelBtn.type = 'button';
+      aCancelBtn.id = 'fc-ai-settings-cancel';
+      aCancelBtn.onclick = closeAiSettingsPanel;
+
+      var aSaveBtn = el('button', 'fc-chat-btn', '保存设定');
+      aSaveBtn.type = 'button';
+      aSaveBtn.id = 'fc-ai-settings-save';
+      aSaveBtn.onclick = function() {
+        if (!_state) return;
+        _state.aiSettings = getAiSettings(draft, currentCharName());
+        var ok = saveState(_state);
+        if (!ok) return;
+        closeAiSettingsPanel();
+        notify('已保存 AI 设定');
+      };
+
+      aFoot.appendChild(aCancelBtn);
+      aFoot.appendChild(aSaveBtn);
+
+      aiSettingsPanel.appendChild(aHead);
+      aiSettingsPanel.appendChild(aBody);
+      aiSettingsPanel.appendChild(aFoot);
+      aiSettingsPanel.classList.add('show');
+      aiSettingsPanel.setAttribute('aria-hidden', 'false');
     }
 
     function setPanelMode(mode) {
@@ -3747,6 +4494,11 @@
       openCreationModeSheet();
     });
 
+    aiSettingsBtn.addEventListener('click', function() {
+      closeMessageContextMenu();
+      openAiSettingsPanel();
+    });
+
     roleBtn.addEventListener('click', function() {
       _sendSide = _sendSide === 'right' ? 'left' : 'right';
       syncRoleButton();
@@ -3784,6 +4536,10 @@
       if (e.key !== 'Escape') return;
       if (_contextMenuOpen) {
         closeMessageContextMenu();
+      } else if (aiSettingsPanel.classList.contains('show')) {
+        closeAiSettingsPanel();
+      } else if (settingsPanel.classList.contains('show')) {
+        closeRoleSettingsPanel();
       } else if (lightbox.classList.contains('show')) {
         closeLightbox();
       } else if (sheetBack.classList.contains('show')) {
@@ -3805,6 +4561,12 @@
         }
         if (document.activeElement === input) {
           streamEl.scrollTop = streamEl.scrollHeight;
+        } else if (aiSettingsPanel.classList.contains('show') &&
+          document.activeElement &&
+          aiSettingsPanel.contains(document.activeElement)) {
+          try {
+            document.activeElement.scrollIntoView({ block: 'nearest' });
+          } catch (_) {}
         }
       };
       global.visualViewport.addEventListener('resize', onViewportResize, { passive: true });
