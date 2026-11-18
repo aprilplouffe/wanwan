@@ -2547,6 +2547,141 @@
       });
     }
 
+    function formatDiagBytes(bytes) {
+      var n = Number(bytes || 0);
+      if (!n) return '0 B';
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / (1024 * 1024)).toFixed(2) + ' MB';
+    }
+
+    function openStickerDiagnosticSheet() {
+      var api = assetsApi();
+      openSheet('表情包导入诊断（仅本地查看）', function(body) {
+        if (!api || typeof api.getDiagnostics !== 'function') {
+          body.appendChild(el('p', 'fc-chat-sheet-note', '本地素材模块未提供诊断信息。'));
+          var fallbackAct = el('div', 'fc-chat-sheet-actions');
+          var closeOnly = el('button', 'fc-chat-btn', '关闭');
+          closeOnly.type = 'button';
+          closeOnly.onclick = closeSheet;
+          fallbackAct.appendChild(closeOnly);
+          body.appendChild(fallbackAct);
+          return;
+        }
+
+        var snapshot = api.getDiagnostics();
+        var env = snapshot.env || {};
+        var entries = snapshot.entries || [];
+
+        var list = el('div', 'fc-diag-list');
+        list.id = 'fc-sticker-diag-list';
+
+        var envCard = el('div', 'fc-diag-card');
+        var envHead = el('div', 'fc-diag-head');
+        envHead.appendChild(el('span', '', '设备与浏览器支持'));
+        envHead.appendChild(el('span', 'fc-diag-badge', env.indexedDB ? 'IDB 可用' : 'IDB 不可用'));
+        envCard.appendChild(envHead);
+        envCard.appendChild(el('div', 'fc-diag-line', '系统/内核：' + (env.platform || '未知') + ' · ' + (env.userAgent || '未知')));
+        envCard.appendChild(el('div', 'fc-diag-line',
+          '能力：FileReader=' + (env.fileReader ? '是' : '否') +
+          ' / ObjectURL=' + (env.objectURL ? '是' : '否') +
+          ' / ImageBitmap=' + (env.imageBitmap ? '是' : '否') +
+          ' / Canvas=' + (env.canvas2d ? '是' : '否') +
+          ' / WebP编码=' + (env.webpEncode ? '是' : '否')
+        ));
+        list.appendChild(envCard);
+
+        if (!entries.length) {
+          list.appendChild(el('p', 'fc-chat-sheet-note', '暂无导入或读取记录，请先尝试选择图片导入表情包。'));
+        } else {
+          entries.forEach(function(item) {
+            var hasError = Boolean(item.failedStage || item.errorMessage);
+            var card = el('div', 'fc-diag-card' + (hasError ? ' is-error' : ''));
+            var head = el('div', 'fc-diag-head');
+            head.appendChild(el('span', '', (item.fileName || item.action || '记录') + (item.ext ? ' (.' + item.ext + ')' : '')));
+            var badgeText = hasError ? ('失败: ' + (item.failedStage || 'error')) : '通过';
+            head.appendChild(el('span', 'fc-diag-badge' + (hasError ? ' fail' : ''), badgeText));
+            card.appendChild(head);
+
+            if (item.action === 'stickerImport' || item.action === 'imageImport' || item.fileName) {
+              card.appendChild(el('div', 'fc-diag-line',
+                '原始：type=' + (item.rawFileType || '(空)') +
+                ' · 魔数=' + (item.magicMime || '(未识别)') +
+                ' · 判定=' + (item.effectiveMime || '(未知)') +
+                ' · 大小=' + formatDiagBytes(item.sizeBytes)
+              ));
+              card.appendChild(el('div', 'fc-diag-line',
+                '阶段：读取=' + (item.readOk ? '成功' : '未完成') +
+                ' / 解码=' + (item.decodeOk ? ('成功(' + (item.decodePath || '') + (item.dimensions ? ' ' + item.dimensions : '') + ')') : '失败') +
+                ' / 保存IDB=' + (item.saveOk === null ? '未执行' : (item.saveOk ? '成功' : '失败'))
+              ));
+              if (item.outputMime || item.notes) {
+                card.appendChild(el('div', 'fc-diag-line',
+                  '输出：' + (item.outputMime || '-') +
+                  (item.outputBytes ? (' · 约' + formatDiagBytes(item.outputBytes)) : '') +
+                  (item.notes ? (' · ' + item.notes) : '')
+                ));
+              }
+            } else if (item.notes) {
+              card.appendChild(el('div', 'fc-diag-line', item.notes));
+            }
+            if (hasError) {
+              card.appendChild(el('div', 'fc-diag-line',
+                '错误：[' + (item.errorName || 'Error') + '] ' + (item.errorMessage || '未知错误')
+              ));
+            }
+            list.appendChild(card);
+          });
+        }
+
+        var note = el('p', 'fc-chat-sheet-note', '诊断信息仅缓存在本地内存，不上传服务器，也不包含图片内容或 base64 数据。');
+        var actions = el('div', 'fc-chat-sheet-actions');
+
+        var clearBtn = el('button', 'fc-chat-btn alt', '清空');
+        clearBtn.type = 'button';
+        clearBtn.onclick = function() {
+          api.clearDiagnostics();
+          openStickerDiagnosticSheet();
+        };
+
+        var copyBtn = el('button', 'fc-chat-btn alt', '复制诊断');
+        copyBtn.type = 'button';
+        copyBtn.id = 'fc-sticker-diag-copy';
+        copyBtn.onclick = function() {
+          var lines = [
+            '[Env] platform=' + (env.platform || '') + ', ua=' + (env.userAgent || ''),
+            '[Caps] idb=' + env.indexedDB + ', fr=' + env.fileReader + ', objUrl=' + env.objectURL + ', bmp=' + env.imageBitmap + ', canvas=' + env.canvas2d + ', webpEnc=' + env.webpEncode
+          ];
+          entries.forEach(function(it, idx) {
+            lines.push(
+              '#' + (idx + 1) + ' ' + (it.fileName || it.action) +
+              ' | rawType=' + (it.rawFileType || 'empty') +
+              ' | magic=' + (it.magicMime || 'none') +
+              ' | eff=' + (it.effectiveMime || 'none') +
+              ' | size=' + it.sizeBytes +
+              ' | read=' + it.readOk +
+              ' | decode=' + it.decodeOk + '(' + (it.decodePath || '-') + ' ' + (it.dimensions || '') + ')' +
+              ' | save=' + it.saveOk +
+              (it.failedStage ? (' | failStage=' + it.failedStage + ' | err=' + it.errorName + ': ' + it.errorMessage) : '') +
+              (it.notes ? (' | notes=' + it.notes) : '')
+            );
+          });
+          copyMessageText(lines.join('\n'));
+        };
+
+        var closeBtn = el('button', 'fc-chat-btn', '关闭');
+        closeBtn.type = 'button';
+        closeBtn.onclick = closeSheet;
+
+        actions.appendChild(clearBtn);
+        actions.appendChild(copyBtn);
+        actions.appendChild(closeBtn);
+        body.appendChild(list);
+        body.appendChild(note);
+        body.appendChild(actions);
+      });
+    }
+
     async function renderStickerPanel() {
       var renderSeq = ++_stickerRenderSeq;
       panelEl.replaceChildren();
@@ -2554,12 +2689,22 @@
       var headRow = el('div', 'fc-chat-panel-head');
       headRow.appendChild(el('span', 'fc-chat-panel-title', '我的表情包'));
 
+      var headRight = el('div', 'fc-chat-panel-actions');
+      var diagBtn = el('button', 'fc-chat-panel-action subtle', '诊断');
+      diagBtn.type = 'button';
+      diagBtn.id = 'fc-chat-sticker-diag-btn';
+      diagBtn.title = '查看表情包本地导入与解码诊断信息';
+      diagBtn.onclick = openStickerDiagnosticSheet;
+
       var importBtn = document.createElement('label');
       importBtn.className = 'fc-chat-panel-action' + (_importingStickers ? ' is-busy' : '');
       importBtn.id = 'fc-chat-sticker-import-btn';
       importBtn.textContent = _importingStickers ? '导入中…' : '＋ 批量导入';
       bindStickerPickerTrigger(importBtn);
-      headRow.appendChild(importBtn);
+
+      headRight.appendChild(diagBtn);
+      headRight.appendChild(importBtn);
+      headRow.appendChild(headRight);
       panelEl.appendChild(headRow);
 
       var grid = el('div', 'fc-chat-stickers');
@@ -2580,6 +2725,17 @@
       try {
         stickers = await api.listAssets('sticker');
       } catch (err) {
+        if (typeof api.recordDiagnostic === 'function') {
+          api.recordDiagnostic({
+            action: 'listStickers',
+            readOk: false,
+            decodeOk: false,
+            saveOk: null,
+            failedStage: 'indexeddb_list',
+            errorName: (err && (err.code || err.name)) || 'IndexedDBError',
+            errorMessage: (err && err.message) ? err.message : '读取表情包库失败'
+          });
+        }
         if (renderSeq !== _stickerRenderSeq || _panelMode !== 'emoji' || !document.body.contains(app)) return;
         var errMsg = (err && err.message) ? err.message : '读取表情包库失败';
         grid.replaceChildren();
@@ -2698,15 +2854,33 @@
       var lastErrorMsg = '';
       try {
         for (var i = 0; i < files.length; i++) {
+          var latestDiag = null;
           try {
-            var dataUrl = await api.readImageFile(files[i], 6);
-            await api.putAsset({
-              id: api.uid('stk_'),
-              name: files[i].name || '表情包',
-              src: dataUrl,
-              kind: 'sticker'
+            var dataUrl = await api.readImageFile(files[i], 15, {
+              purpose: 'sticker',
+              maxDimension: 960,
+              action: 'stickerImport',
+              onDiagnostic: function(entry) {
+                latestDiag = entry;
+              }
             });
-            added += 1;
+            try {
+              var savedAsset = await api.putAsset({
+                id: api.uid('stk_'),
+                name: files[i].name || '表情包',
+                src: dataUrl,
+                kind: 'sticker'
+              });
+              if (typeof api.updateDiagnosticSaveStatus === 'function') {
+                api.updateDiagnosticSaveStatus(latestDiag, true, savedAsset && savedAsset.id);
+              }
+              added += 1;
+            } catch (dbErr) {
+              if (typeof api.updateDiagnosticSaveStatus === 'function') {
+                api.updateDiagnosticSaveStatus(latestDiag, false, '', dbErr);
+              }
+              throw dbErr;
+            }
           } catch (err) {
             failed += 1;
             if (err && err.message) {
@@ -2728,7 +2902,7 @@
       } else if (added > 0) {
         notify('已导入 ' + added + ' 个表情包（' + failed + ' 个失败' + (lastErrorMsg ? '：' + lastErrorMsg : '') + '）');
       } else {
-        notify(lastErrorMsg ? ('导入失败：' + lastErrorMsg) : '导入失败，请确认选择的是小于 6MB 的图片');
+        notify(lastErrorMsg ? ('导入失败：' + lastErrorMsg) : '导入失败，请确认选择的是支持的图片文件');
       }
     });
 

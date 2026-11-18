@@ -973,6 +973,12 @@
   color: #5b6959;
 }
 
+#fan-community-page .fc-chat-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 #fan-community-page .fc-chat-panel-action {
   display: inline-flex;
   align-items: center;
@@ -987,6 +993,13 @@
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+#fan-community-page .fc-chat-panel-action.subtle {
+  background: #f2f4ee;
+  color: #778375;
+  border-color: #e2e7dc;
+  padding: 5px 8px;
 }
 
 #fan-community-page .fc-chat-panel-action:active {
@@ -1153,6 +1166,61 @@
   color: #9e5c5f;
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* 手机端本地诊断日志面板 */
+#fan-community-page .fc-diag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+#fan-community-page .fc-diag-card {
+  background: #f6f7f2;
+  border: 1px solid #e2e6dc;
+  border-radius: 11px;
+  padding: 9px 11px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #465347;
+  overflow-wrap: anywhere;
+}
+
+#fan-community-page .fc-diag-card.is-error {
+  background: #fff8f6;
+  border-color: #ebd0ca;
+}
+
+#fan-community-page .fc-diag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #364338;
+}
+
+#fan-community-page .fc-diag-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 7px;
+  background: #e2ebe0;
+  color: #4b614b;
+  flex: none;
+}
+
+#fan-community-page .fc-diag-badge.fail {
+  background: #f7dfd9;
+  color: #9e4b4f;
+}
+
+#fan-community-page .fc-diag-line {
+  color: #637063;
 }
 
 /* 底部弹窗 Sheet（韩系奶油风） */

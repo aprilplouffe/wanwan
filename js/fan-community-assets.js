@@ -222,93 +222,563 @@
     return (id && _memCache[id]) || '';
   }
 
+  var MAX_DIAGNOSTICS = 30;
+  var _diagnostics = [];
+  var _cachedWebpEncode = null;
+
+  function checkWebpEncodeSupport() {
+    if (_cachedWebpEncode !== null) return _cachedWebpEncode;
+    try {
+      if (typeof document === 'undefined') {
+        _cachedWebpEncode = false;
+        return false;
+      }
+      var c = document.createElement('canvas');
+      c.width = 2;
+      c.height = 2;
+      if (!c.getContext || !c.getContext('2d')) {
+        _cachedWebpEncode = false;
+        return false;
+      }
+      _cachedWebpEncode = c.toDataURL('image/webp').indexOf('data:image/webp') === 0;
+    } catch (_) {
+      _cachedWebpEncode = false;
+    }
+    return _cachedWebpEncode;
+  }
+
+  function sanitizeDiagString(str) {
+    if (!str) return '';
+    return String(str).replace(/data:[^;\s]+;base64,[A-Za-z0-9+/=]+/gi, '[data-url-omitted]');
+  }
+
+  function recordDiagnostic(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    var clean = {
+      id: uid('diag_'),
+      timestamp: new Date().toISOString(),
+      action: sanitizeDiagString(entry.action || 'import'),
+      fileName: sanitizeDiagString(entry.fileName || ''),
+      ext: sanitizeDiagString(entry.ext || ''),
+      rawFileType: sanitizeDiagString(entry.rawFileType || ''),
+      magicMime: sanitizeDiagString(entry.magicMime || ''),
+      effectiveMime: sanitizeDiagString(entry.effectiveMime || ''),
+      sizeBytes: Number(entry.sizeBytes || 0),
+      dimensions: sanitizeDiagString(entry.dimensions || ''),
+      decodePath: sanitizeDiagString(entry.decodePath || ''),
+      outputMime: sanitizeDiagString(entry.outputMime || ''),
+      outputBytes: Number(entry.outputBytes || 0),
+      readOk: Boolean(entry.readOk),
+      decodeOk: Boolean(entry.decodeOk),
+      saveOk: (entry.saveOk === undefined || entry.saveOk === null) ? null : Boolean(entry.saveOk),
+      assetId: sanitizeDiagString(entry.assetId || ''),
+      failedStage: sanitizeDiagString(entry.failedStage || ''),
+      errorName: sanitizeDiagString(entry.errorName || ''),
+      errorMessage: sanitizeDiagString(entry.errorMessage || ''),
+      notes: sanitizeDiagString(entry.notes || '')
+    };
+    _diagnostics.push(clean);
+    if (_diagnostics.length > MAX_DIAGNOSTICS) {
+      _diagnostics.splice(0, _diagnostics.length - MAX_DIAGNOSTICS);
+    }
+    return clean;
+  }
+
+  function getEnvironmentInfo() {
+    var nav = global.navigator || {};
+    var canvasOk = false;
+    try {
+      var testCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+      canvasOk = Boolean(testCanvas && testCanvas.getContext && testCanvas.getContext('2d'));
+    } catch (_) {
+      canvasOk = false;
+    }
+    return {
+      userAgent: String(nav.userAgent || ''),
+      platform: String(nav.platform || ''),
+      indexedDB: Boolean(global.indexedDB),
+      fileReader: typeof global.FileReader === 'function',
+      objectURL: Boolean(global.URL && typeof global.URL.createObjectURL === 'function'),
+      imageBitmap: typeof global.createImageBitmap === 'function',
+      canvas2d: canvasOk,
+      webpEncode: checkWebpEncodeSupport()
+    };
+  }
+
+  function getDiagnostics() {
+    return {
+      env: getEnvironmentInfo(),
+      entries: _diagnostics.slice().reverse()
+    };
+  }
+
+  function clearDiagnostics() {
+    _diagnostics = [];
+  }
+
   var EXT_MIME_MAP = {
     png: 'image/png',
     jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
+    jpe: 'image/jpeg',
     webp: 'image/webp',
     gif: 'image/gif',
     bmp: 'image/bmp',
     avif: 'image/avif',
-    svg: 'image/svg+xml'
+    svg: 'image/svg+xml',
+    heic: 'image/heic',
+    heif: 'image/heic'
   };
 
-  function inferImageMime(file) {
-    var rawType = (file && file.type ? String(file.type) : '').trim().toLowerCase();
-    if (rawType.indexOf('image/') === 0) {
-      return rawType;
+  function getFileExt(name) {
+    var s = (name ? String(name) : '').trim().toLowerCase();
+    var m = s.match(/\.([a-z0-9]+)$/);
+    return m ? m[1] : '';
+  }
+
+  function normalizeMime(raw) {
+    var t = (raw ? String(raw) : '').trim().toLowerCase();
+    if (t === 'image/jpg' || t === 'image/pjpeg') return 'image/jpeg';
+    if (t === 'image/x-png') return 'image/png';
+    if (t === 'image/x-webp') return 'image/webp';
+    if (t === 'image/heif' || t === 'image/heic-sequence' || t === 'image/heif-sequence') return 'image/heic';
+    return t;
+  }
+
+  function readBlobSliceBuffer(blob, start, end) {
+    var sliced = blob.slice(start, end);
+    if (typeof sliced.arrayBuffer === 'function') {
+      return sliced.arrayBuffer();
     }
-    var name = (file && file.name ? String(file.name) : '').trim().toLowerCase();
-    var m = name.match(/\.([a-z0-9]+)$/);
-    if (m && EXT_MIME_MAP[m[1]]) {
-      return EXT_MIME_MAP[m[1]];
+    return new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function() {
+        resolve(reader.result || new ArrayBuffer(0));
+      };
+      reader.onerror = function() {
+        reject(reader.error || new Error('文件头读取失败'));
+      };
+      reader.readAsArrayBuffer(sliced);
+    });
+  }
+
+  function bytesToAscii(bytes, start, end) {
+    var out = '';
+    var max = Math.min(bytes.length, end);
+    for (var i = start; i < max; i++) {
+      var code = bytes[i];
+      out += (code >= 32 && code <= 126) ? String.fromCharCode(code) : ' ';
+    }
+    return out;
+  }
+
+  function detectMagicMime(buffer) {
+    if (!buffer || !buffer.byteLength) return '';
+    var b = new Uint8Array(buffer);
+    if (b.length >= 8 &&
+      b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47 &&
+      b[4] === 0x0D && b[5] === 0x0A && b[6] === 0x1A && b[7] === 0x0A) {
+      return 'image/png';
+    }
+    if (b.length >= 3 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) {
+      return 'image/jpeg';
+    }
+    if (b.length >= 6) {
+      var gifHead = bytesToAscii(b, 0, 6);
+      if (gifHead === 'GIF87a' || gifHead === 'GIF89a') {
+        return 'image/gif';
+      }
+    }
+    if (b.length >= 12 && bytesToAscii(b, 0, 4) === 'RIFF' && bytesToAscii(b, 8, 12) === 'WEBP') {
+      return 'image/webp';
+    }
+    if (b.length >= 2 && b[0] === 0x42 && b[1] === 0x4D) {
+      return 'image/bmp';
+    }
+    if (b.length >= 12 && bytesToAscii(b, 4, 8) === 'ftyp') {
+      var brandRegion = bytesToAscii(b, 8, Math.min(b.length, 64)).toLowerCase();
+      if (/(heic|heix|hevc|hevx|heim|heis|hevm|hevs|mif1|msf1|heif)/.test(brandRegion)) {
+        return 'image/heic';
+      }
+      if (/(avif|avis)/.test(brandRegion)) {
+        return 'image/avif';
+      }
+    }
+    var textHead = bytesToAscii(b, 0, Math.min(b.length, 64)).trim().toLowerCase();
+    if (textHead.indexOf('<svg') === 0 || (textHead.indexOf('<?xml') === 0 && textHead.indexOf('svg') >= 0)) {
+      return 'image/svg+xml';
     }
     return '';
   }
 
-  function normalizeImageDataUrl(rawUrl, fallbackMime) {
-    var s = String(rawUrl || '');
-    if (!s) return '';
-    if (s.indexOf('data:image/') === 0) return s;
-    if (fallbackMime && /^data:(application\/octet-stream|text\/plain)?;base64,/i.test(s)) {
-      return s.replace(/^data:(?:application\/octet-stream|text\/plain)?;base64,/i, 'data:' + fallbackMime + ';base64,');
-    }
-    return s;
-  }
-
-  function verifyImageDecodable(dataUrl) {
+  function readBlobAsDataUrl(blob, fallbackMime) {
     return new Promise(function(resolve, reject) {
-      if (typeof global.Image !== 'function') {
-        resolve(dataUrl);
-        return;
-      }
-      var probe = new global.Image();
-      probe.onload = function() {
-        resolve(dataUrl);
-      };
-      probe.onerror = function() {
-        reject(new Error('图片已损坏或浏览器暂不支持该格式'));
-      };
-      probe.src = dataUrl;
-    });
-  }
-
-  function readImageFile(file, maxMb) {
-    var limitMb = maxMb || 8;
-    return new Promise(function(resolve, reject) {
-      if (!file) {
-        reject(new Error('未选择文件'));
-        return;
-      }
-      var rawType = (file.type ? String(file.type) : '').trim().toLowerCase();
-      var inferredMime = inferImageMime(file);
-      var isGenericMime = !rawType || rawType === 'application/octet-stream';
-      if (!inferredMime || (rawType && rawType.indexOf('image/') !== 0 && !isGenericMime)) {
-        reject(new Error('请选择图片文件（支持 PNG / JPG / WebP / GIF）'));
-        return;
-      }
-      if (!file.size) {
-        reject(new Error('选择的图片文件为空'));
-        return;
-      }
-      if (file.size > limitMb * 1024 * 1024) {
-        reject(new Error('图片文件请小于 ' + limitMb + 'MB'));
-        return;
-      }
       var reader = new FileReader();
       reader.onload = function() {
-        var normalized = normalizeImageDataUrl(reader.result, inferredMime);
-        if (!normalized || normalized.indexOf('data:image/') !== 0) {
-          reject(new Error('无法识别该图片文件内容'));
+        var s = String(reader.result || '');
+        if (!s) {
+          reject(new Error('图片数据读取为空'));
           return;
         }
-        verifyImageDecodable(normalized).then(resolve, reject);
+        if (s.indexOf('data:image/') !== 0 && fallbackMime && /^data:([^;]*);base64,/i.test(s)) {
+          s = s.replace(/^data:([^;]*);base64,/i, 'data:' + fallbackMime + ';base64,');
+        }
+        if (s.indexOf('data:image/') !== 0) {
+          reject(new Error('无法识别的图片 DataURL 格式'));
+          return;
+        }
+        resolve(s);
       };
       reader.onerror = function() {
-        reject(new Error('图片读取失败'));
+        reject(reader.error || new Error('FileReader 读取图片失败'));
       };
-      reader.readAsDataURL(file);
+      reader.readAsDataURL(blob);
     });
+  }
+
+  function loadImageFromSrc(src, isSvg) {
+    return new Promise(function(resolve, reject) {
+      if (typeof global.Image !== 'function') {
+        reject(new Error('当前环境不支持 Image 解码'));
+        return;
+      }
+      var settled = false;
+      var img = new global.Image();
+      img.onload = function() {
+        if (settled) return;
+        settled = true;
+        var w = img.naturalWidth || img.width || 0;
+        var h = img.naturalHeight || img.height || 0;
+        if (!isSvg && (w <= 0 || h <= 0)) {
+          reject(new Error('图片尺寸无效（0×0）'));
+          return;
+        }
+        resolve({ img: img, width: w, height: h });
+      };
+      img.onerror = function() {
+        if (settled) return;
+        settled = true;
+        reject(new Error('Image 解码触发 onerror'));
+      };
+      img.src = src;
+    });
+  }
+
+  async function decodeImageBlob(blob, effectiveMime) {
+    var isSvg = effectiveMime === 'image/svg+xml';
+    var errors = [];
+
+    // 路径 1：优先使用 URL.createObjectURL(blob)，避免移动端 WebKit 对大尺寸 DataURL 的解码内存限制
+    if (global.URL && typeof global.URL.createObjectURL === 'function') {
+      var objUrl = '';
+      try {
+        objUrl = global.URL.createObjectURL(blob);
+        var loadedObj = await loadImageFromSrc(objUrl, isSvg);
+        return {
+          source: loadedObj.img,
+          width: loadedObj.width,
+          height: loadedObj.height,
+          path: 'objectUrl',
+          cleanup: function() {
+            try { global.URL.revokeObjectURL(objUrl); } catch (_) {}
+          }
+        };
+      } catch (err1) {
+        if (objUrl) {
+          try { global.URL.revokeObjectURL(objUrl); } catch (_) {}
+        }
+        errors.push('ObjectURL: ' + (err1 && err1.message ? err1.message : '失败'));
+      }
+    }
+
+    // 路径 2：部分安卓/移动端 WebView 可通过 createImageBitmap 直接硬件解码 Blob
+    if (!isSvg && typeof global.createImageBitmap === 'function') {
+      try {
+        var bitmap = await global.createImageBitmap(blob);
+        if (bitmap && bitmap.width > 0 && bitmap.height > 0) {
+          return {
+            source: bitmap,
+            width: bitmap.width,
+            height: bitmap.height,
+            path: 'imageBitmap',
+            cleanup: function() {
+              try { if (typeof bitmap.close === 'function') bitmap.close(); } catch (_) {}
+            }
+          };
+        }
+        if (bitmap && typeof bitmap.close === 'function') {
+          try { bitmap.close(); } catch (_) {}
+        }
+        errors.push('ImageBitmap: 尺寸无效');
+      } catch (err2) {
+        errors.push('ImageBitmap: ' + (err2 && err2.message ? err2.message : '失败'));
+      }
+    }
+
+    // 路径 3：若运行环境限制 blob: URL（如部分 WebView CSP），回退为 DataURL + Image
+    try {
+      var rawDataUrl = await readBlobAsDataUrl(blob, effectiveMime);
+      var loadedData = await loadImageFromSrc(rawDataUrl, isSvg);
+      return {
+        source: loadedData.img,
+        width: loadedData.width,
+        height: loadedData.height,
+        path: 'dataUrl',
+        preReadDataUrl: rawDataUrl,
+        cleanup: function() {}
+      };
+    } catch (err3) {
+      errors.push('DataURL: ' + (err3 && err3.message ? err3.message : '失败'));
+    }
+
+    var finalErr = new Error(errors.join('；') || '图片解码失败');
+    finalErr.name = 'ImageDecodeError';
+    throw finalErr;
+  }
+
+  function canvasToBlobPromise(canvas, mime, quality) {
+    return new Promise(function(resolve, reject) {
+      if (typeof canvas.toBlob === 'function') {
+        try {
+          canvas.toBlob(function(blob) {
+            if (blob && blob.size > 0) {
+              resolve(blob);
+            } else {
+              reject(new Error('canvas.toBlob 返回空数据'));
+            }
+          }, mime, quality);
+          return;
+        } catch (err) {
+          reject(err);
+          return;
+        }
+      }
+      try {
+        var url = canvas.toDataURL(mime, quality);
+        var parts = url.split(',');
+        var byteStr = atob(parts[1] || '');
+        var arr = new Uint8Array(byteStr.length);
+        for (var i = 0; i < byteStr.length; i++) {
+          arr[i] = byteStr.charCodeAt(i);
+        }
+        var mimeMatch = (parts[0] || '').match(/data:([^;]+);/i);
+        resolve(new Blob([arr], { type: (mimeMatch && mimeMatch[1]) || mime }));
+      } catch (err2) {
+        reject(err2);
+      }
+    });
+  }
+
+  async function renderToCompatibleDataUrl(decoded, sourceBlob, effectiveMime, options) {
+    var purpose = (options && options.purpose) || 'image';
+    var maxDimension = Number(options && options.maxDimension) || (purpose === 'sticker' ? 960 : 1800);
+    var isHeic = effectiveMime === 'image/heic';
+    var isGif = effectiveMime === 'image/gif';
+    var isSvg = effectiveMime === 'image/svg+xml';
+
+    // 保留 GIF 动画帧与矢量 SVG，不经由 Canvas 栅格化破坏动画
+    if (isGif || isSvg) {
+      if (decoded.preReadDataUrl) {
+        return { dataUrl: decoded.preReadDataUrl, outputMime: effectiveMime, notes: isGif ? '保留 GIF 动画原图' : '保留 SVG 原图' };
+      }
+      var directDataUrl = await readBlobAsDataUrl(sourceBlob, effectiveMime);
+      return { dataUrl: directDataUrl, outputMime: effectiveMime, notes: isGif ? '保留 GIF 动画原图' : '保留 SVG 原图' };
+    }
+
+    var w = decoded.width || 0;
+    var h = decoded.height || 0;
+    var sizeThreshold = purpose === 'sticker' ? (420 * 1024) : (1536 * 1024);
+    var needsTranscode = isHeic ||
+      effectiveMime === 'image/bmp' ||
+      effectiveMime === 'image/avif' ||
+      w > maxDimension ||
+      h > maxDimension ||
+      sourceBlob.size > sizeThreshold;
+
+    if (!needsTranscode) {
+      if (decoded.preReadDataUrl) {
+        return { dataUrl: decoded.preReadDataUrl, outputMime: effectiveMime, notes: '原图尺寸适中，直接保存' };
+      }
+      var origUrl = await readBlobAsDataUrl(sourceBlob, effectiveMime);
+      return { dataUrl: origUrl, outputMime: effectiveMime, notes: '原图尺寸适中，直接保存' };
+    }
+
+    var scale = Math.min(1, maxDimension / Math.max(w || 1, h || 1));
+    var targetW = Math.max(1, Math.round((w || 1) * scale));
+    var targetH = Math.max(1, Math.round((h || 1) * scale));
+
+    var canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = targetH;
+    var ctx = canvas.getContext('2d');
+    if (!ctx) {
+      if (isHeic) {
+        throw new Error('当前浏览器不支持 Canvas 转码 HEIC 图片');
+      }
+      var fallbackUrl = decoded.preReadDataUrl || await readBlobAsDataUrl(sourceBlob, effectiveMime);
+      return { dataUrl: fallbackUrl, outputMime: effectiveMime, notes: 'Canvas 不可用，回退原图' };
+    }
+
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) {
+      ctx.imageSmoothingQuality = 'high';
+    }
+    ctx.drawImage(decoded.source, 0, 0, targetW, targetH);
+
+    var targetMime = 'image/png';
+    var quality = 0.92;
+    if (effectiveMime === 'image/jpeg' || effectiveMime === 'image/bmp' || isHeic) {
+      targetMime = 'image/jpeg';
+      quality = 0.9;
+    } else if (effectiveMime === 'image/webp' && checkWebpEncodeSupport()) {
+      targetMime = 'image/webp';
+      quality = 0.9;
+    }
+
+    var outBlob = await canvasToBlobPromise(canvas, targetMime, quality);
+    if (targetMime === 'image/png' && outBlob.size > 1200 * 1024 && checkWebpEncodeSupport()) {
+      try {
+        var webpBlob = await canvasToBlobPromise(canvas, 'image/webp', 0.92);
+        if (webpBlob.size > 0 && webpBlob.size < outBlob.size) {
+          outBlob = webpBlob;
+        }
+      } catch (_) {}
+    }
+
+    var actualMime = normalizeMime(outBlob.type) || targetMime;
+    var outDataUrl = await readBlobAsDataUrl(outBlob, actualMime);
+    return {
+      dataUrl: outDataUrl,
+      outputMime: actualMime,
+      notes: '已真实重编码为 ' + actualMime + '（' + targetW + '×' + targetH + '）'
+    };
+  }
+
+  async function readImageFile(file, maxMb, options) {
+    var opts = options || {};
+    var limitMb = maxMb || 12;
+    var actionName = opts.action || (opts.purpose === 'sticker' ? 'stickerImport' : 'imageImport');
+
+    var diag = {
+      action: actionName,
+      fileName: file && file.name ? String(file.name) : '',
+      ext: getFileExt(file && file.name),
+      rawFileType: file && file.type ? String(file.type) : '',
+      magicMime: '',
+      effectiveMime: '',
+      sizeBytes: file && typeof file.size === 'number' ? file.size : 0,
+      dimensions: '',
+      decodePath: '',
+      outputMime: '',
+      outputBytes: 0,
+      readOk: false,
+      decodeOk: false,
+      saveOk: null,
+      failedStage: '',
+      errorName: '',
+      errorMessage: '',
+      notes: ''
+    };
+
+    function fail(stage, err) {
+      diag.failedStage = stage;
+      diag.errorName = (err && (err.code || err.name)) || 'Error';
+      diag.errorMessage = (err && err.message) || '图片处理失败';
+      var savedDiag = recordDiagnostic(diag);
+      if (typeof opts.onDiagnostic === 'function') {
+        try { opts.onDiagnostic(savedDiag); } catch (_) {}
+      }
+      throw err;
+    }
+
+    if (!file) {
+      fail('validate', new Error('未选择文件'));
+    }
+    if (!file.size) {
+      fail('validate', new Error('选择的图片文件为空（0 字节）'));
+    }
+    if (file.size > limitMb * 1024 * 1024) {
+      fail('validate', new Error('图片文件请小于 ' + limitMb + 'MB'));
+    }
+
+    var headerBuf = null;
+    try {
+      headerBuf = await readBlobSliceBuffer(file, 0, Math.min(file.size, 64));
+      diag.readOk = true;
+    } catch (readErr) {
+      fail('read', new Error('无法读取本地文件内容：' + ((readErr && readErr.message) || '文件不可访问')));
+    }
+
+    var magicMime = detectMagicMime(headerBuf);
+    var declaredMime = normalizeMime(file.type);
+    var extMime = EXT_MIME_MAP[diag.ext] || '';
+    diag.magicMime = magicMime;
+
+    var isHeic = (magicMime === 'image/heic') ||
+      (!magicMime && (declaredMime === 'image/heic' || extMime === 'image/heic'));
+
+    var effectiveMime = magicMime ||
+      (declaredMime && declaredMime.indexOf('image/') === 0 ? declaredMime : '') ||
+      extMime;
+    diag.effectiveMime = effectiveMime;
+
+    if (!effectiveMime || effectiveMime.indexOf('image/') !== 0) {
+      fail('header', new Error('请选择图片文件（支持 PNG / JPG / WebP / GIF）'));
+    }
+
+    var typedBlob = (normalizeMime(file.type) === effectiveMime && file.type)
+      ? file
+      : file.slice(0, file.size, effectiveMime);
+
+    var decoded = null;
+    try {
+      decoded = await decodeImageBlob(typedBlob, effectiveMime);
+      diag.decodeOk = true;
+      diag.decodePath = decoded.path || '';
+      diag.dimensions = (decoded.width || 0) + '×' + (decoded.height || 0);
+    } catch (decErr) {
+      if (isHeic) {
+        var heicErr = new Error('暂不支持苹果 HEIC 格式，请截图或转为 JPG/PNG 后导入');
+        heicErr.code = 'HEIC_UNSUPPORTED';
+        diag.notes = '检测到苹果相册 HEIC/HEIF 高效格式且当前浏览器无法直接解码；请在系统相册设为「兼容性最佳」或截图后重试。';
+        fail('decode', heicErr);
+      }
+      var userDecodeErr = new Error('图片无法解析（' + effectiveMime + '），请尝试转为 PNG 或 JPG');
+      userDecodeErr.code = (decErr && (decErr.code || decErr.name)) || 'ImageDecodeError';
+      diag.notes = (decErr && decErr.message) || '';
+      fail('decode', userDecodeErr);
+    }
+
+    var result = null;
+    try {
+      result = await renderToCompatibleDataUrl(decoded, typedBlob, effectiveMime, opts);
+      diag.outputMime = result.outputMime || effectiveMime;
+      diag.outputBytes = Math.round(((result.dataUrl || '').length * 3) / 4);
+      diag.notes = result.notes || '';
+    } catch (compErr) {
+      fail('compress', compErr instanceof Error ? compErr : new Error('图片格式兼容处理失败'));
+    } finally {
+      if (decoded && typeof decoded.cleanup === 'function') {
+        decoded.cleanup();
+      }
+    }
+
+    var savedDiag = recordDiagnostic(diag);
+    if (typeof opts.onDiagnostic === 'function') {
+      try { opts.onDiagnostic(savedDiag); } catch (_) {}
+    }
+    return result.dataUrl;
+  }
+
+  function updateDiagnosticSaveStatus(diagEntry, ok, assetId, err) {
+    if (!diagEntry) return;
+    diagEntry.saveOk = Boolean(ok);
+    if (assetId) diagEntry.assetId = sanitizeDiagString(assetId);
+    if (!ok && err) {
+      diagEntry.failedStage = 'indexeddb_put';
+      diagEntry.errorName = sanitizeDiagString((err.code || err.name) || 'IndexedDBError');
+      diagEntry.errorMessage = sanitizeDiagString(err.message || 'IndexedDB 保存失败');
+    }
   }
 
   function readAudioFile(file, maxMb) {
@@ -350,6 +820,11 @@
     isAssetReferenced: isAssetReferenced,
     getCachedSrc: getCachedSrc,
     readImageFile: readImageFile,
-    readAudioFile: readAudioFile
+    readAudioFile: readAudioFile,
+    recordDiagnostic: recordDiagnostic,
+    updateDiagnosticSaveStatus: updateDiagnosticSaveStatus,
+    getDiagnostics: getDiagnostics,
+    clearDiagnostics: clearDiagnostics,
+    getEnvironmentInfo: getEnvironmentInfo
   };
 })(window);
