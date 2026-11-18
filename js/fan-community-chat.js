@@ -186,6 +186,7 @@
     },
     creationMode: DEFAULT_CREATION_MODE,
     boundPersonaId: '',
+    boundRoleRef: null,
     aiSettings: createDefaultAiSettings('对方'),
     topic: '',
     join: true,
@@ -424,14 +425,21 @@
     backBtn.appendChild(el('span', 'fc-works-back-chevron', '‹'));
     backBtn.appendChild(el('span', '', '社区'));
 
+    var titleGroup = el('div', 'fc-works-title-group');
+    var brandLink = el('button', 'fc-works-brand-link', '同好社区');
+    brandLink.type = 'button';
+    brandLink.dataset.fcHomeTrigger = '1';
+    brandLink.setAttribute('aria-label', '点击同好社区返回弯弯机桌面');
     var titleEl = el('b', 'fc-works-title', '捡手机文学');
+    titleGroup.appendChild(brandLink);
+    titleGroup.appendChild(titleEl);
 
     var newBtn = el('button', 'fc-works-new-btn', '＋ 新建');
     newBtn.type = 'button';
     newBtn.id = 'fc-works-new-btn';
 
     head.appendChild(backBtn);
-    head.appendChild(titleEl);
+    head.appendChild(titleGroup);
     head.appendChild(newBtn);
 
     var scrollEl = el('div', 'fc-works-scroll');
@@ -985,20 +993,44 @@
       syncHeaderTitle();
     }
 
+    function getWorkBoundRoleRef() {
+      if (!_state) return null;
+      var pApi = personasApi();
+      if (pApi && typeof pApi.normalizeRoleRef === 'function') {
+        return pApi.normalizeRoleRef(_state.boundRoleRef, _state.boundPersonaId);
+      }
+      var wApi = worksApi();
+      if (wApi && typeof wApi.normalizeBoundRoleRef === 'function') {
+        return wApi.normalizeBoundRoleRef(_state.boundRoleRef, _state.boundPersonaId);
+      }
+      return null;
+    }
+
+    function setWorkBoundRoleRef(ref) {
+      if (!_state) return;
+      if (ref && ref.source && ref.id) {
+        _state.boundRoleRef = { source: String(ref.source), id: String(ref.id) };
+        _state.boundPersonaId = _state.boundRoleRef.source === 'community_persona' ? _state.boundRoleRef.id : '';
+      } else {
+        _state.boundRoleRef = null;
+        _state.boundPersonaId = '';
+      }
+    }
+
     function getBoundPersona() {
-      var id = _state && typeof _state.boundPersonaId === 'string' ? _state.boundPersonaId : '';
-      if (!id) return null;
+      var ref = getWorkBoundRoleRef();
+      if (!ref || ref.source !== 'community_persona') return null;
       var pApi = personasApi();
       if (!pApi || typeof pApi.getPersona !== 'function') return null;
-      return pApi.getPersona(id);
+      return pApi.getPersona(ref.id);
     }
 
     function syncBoundPersonaUi() {
-      var pApi = personasApi();
-      var bound = getBoundPersona();
-      if (_state && _state.boundPersonaId && !bound && pApi) {
-        _state.boundPersonaId = '';
-      }
+      // 仅确保旧字段 boundPersonaId 与 boundRoleRef 保持一致，不自动清除缺失角色的引用以便安全提示用户重新选择
+      if (!_state) return;
+      var ref = getWorkBoundRoleRef();
+      _state.boundRoleRef = ref;
+      _state.boundPersonaId = (ref && ref.source === 'community_persona') ? ref.id : '';
     }
 
     function countRecalledMessages() {
@@ -1027,12 +1059,20 @@
       closeChatMenu();
       if (_panelMode) setPanelMode('');
       var pApi = personasApi();
-      openSheet('从人设库选择角色', function(body) {
-        var note = el('p', 'fc-mode-sheet-sub', '仅绑定公共人设 ID（每部作品绑定 1 位），不会覆盖本作品已填写的聊天昵称、头像、AI 设定或消息记录。');
+      var currentRef = getWorkBoundRoleRef();
+      var activeSource = (currentRef && (currentRef.source === 'char' || currentRef.source === 'npc'))
+        ? 'archive'
+        : 'community_persona';
+      var activeArchiveType = (currentRef && currentRef.source === 'npc') ? 'npc' : 'char';
+      var searchQuery = '';
+      var drawSeq = 0;
+
+      openSheet('选择绑定角色', function(body) {
+        var note = el('p', 'fc-mode-sheet-sub', '仅记录角色稳定 ID 引用（公共人设库与弯弯机 Char/NPC 并存），不会修改原角色档案，也不会覆盖本作品昵称与 AI 补充设定。');
         body.appendChild(note);
 
         if (!pApi || typeof pApi.listPersonas !== 'function') {
-          body.appendChild(el('p', 'fc-chat-sheet-note', '公共人设库模块暂未就绪，请刷新后重试。'));
+          body.appendChild(el('p', 'fc-chat-sheet-note', '角色服务模块暂未就绪，请刷新后重试。'));
           var fallbackAct = el('div', 'fc-chat-sheet-actions');
           var fallbackClose = el('button', 'fc-chat-btn alt', '关闭');
           fallbackClose.type = 'button';
@@ -1042,20 +1082,43 @@
           return;
         }
 
-        var allList = pApi.listPersonas();
-        if (!allList.length) {
-          var emptyBox = el('div', 'fc-persona-picker-empty');
-          emptyBox.appendChild(el('strong', '', '公共人设库暂无角色'));
-          emptyBox.appendChild(el('p', '', '请前往「同好社区 → 设置 → 人设库」新建角色后，再回到此处绑定使用。'));
-          body.appendChild(emptyBox);
-          var emptyAct = el('div', 'fc-chat-sheet-actions');
-          var emptyClose = el('button', 'fc-chat-btn alt', '知道了');
-          emptyClose.type = 'button';
-          emptyClose.onclick = closeSheet;
-          emptyAct.appendChild(emptyClose);
-          body.appendChild(emptyAct);
-          return;
-        }
+        // 来源切换：来源 A（公共人设库） vs 来源 B（弯弯机角色档案）
+        var sourceTabs = el('div', 'fc-role-source-tabs');
+        sourceTabs.id = 'fc-role-source-tabs';
+        sourceTabs.setAttribute('role', 'tablist');
+
+        var srcPersonaBtn = el('button', 'fc-role-source-tab', '公共人设库');
+        srcPersonaBtn.type = 'button';
+        srcPersonaBtn.id = 'fc-role-tab-community';
+        srcPersonaBtn.dataset.roleSource = 'community_persona';
+
+        var srcArchiveBtn = el('button', 'fc-role-source-tab', '弯弯机角色档案');
+        srcArchiveBtn.type = 'button';
+        srcArchiveBtn.id = 'fc-role-tab-archive';
+        srcArchiveBtn.dataset.roleSource = 'archive';
+
+        sourceTabs.appendChild(srcPersonaBtn);
+        sourceTabs.appendChild(srcArchiveBtn);
+        body.appendChild(sourceTabs);
+
+        // 来源 B 下的 Char / NPC 分类切换（不将两类数据混在一起）
+        var archiveTypeBar = el('div', 'fc-role-archive-tabs');
+        archiveTypeBar.id = 'fc-role-archive-tabs';
+        archiveTypeBar.hidden = activeSource !== 'archive';
+
+        var charTypeBtn = el('button', 'fc-role-archive-tab', 'Char');
+        charTypeBtn.type = 'button';
+        charTypeBtn.id = 'fc-role-archive-char';
+        charTypeBtn.dataset.archiveType = 'char';
+
+        var npcTypeBtn = el('button', 'fc-role-archive-tab', 'NPC');
+        npcTypeBtn.type = 'button';
+        npcTypeBtn.id = 'fc-role-archive-npc';
+        npcTypeBtn.dataset.archiveType = 'npc';
+
+        archiveTypeBar.appendChild(charTypeBtn);
+        archiveTypeBar.appendChild(npcTypeBtn);
+        body.appendChild(archiveTypeBar);
 
         var searchWrap = el('div', 'fc-persona-picker-search-wrap');
         var searchInputEl = document.createElement('input');
@@ -1063,7 +1126,7 @@
         searchInputEl.id = 'fc-persona-picker-search';
         searchInputEl.className = 'fc-settings-input';
         searchInputEl.placeholder = '按角色姓名查找…';
-        searchInputEl.setAttribute('aria-label', '按角色姓名查找公共人设');
+        searchInputEl.setAttribute('aria-label', '按角色姓名查找角色');
         searchWrap.appendChild(searchInputEl);
         body.appendChild(searchWrap);
 
@@ -1071,74 +1134,203 @@
         listBox.id = 'fc-persona-picker-list';
         body.appendChild(listBox);
 
-        function drawPickerList(queryText) {
+        function syncTabButtons() {
+          srcPersonaBtn.classList.toggle('is-active', activeSource === 'community_persona');
+          srcPersonaBtn.setAttribute('aria-selected', activeSource === 'community_persona' ? 'true' : 'false');
+          srcArchiveBtn.classList.toggle('is-active', activeSource === 'archive');
+          srcArchiveBtn.setAttribute('aria-selected', activeSource === 'archive' ? 'true' : 'false');
+          archiveTypeBar.hidden = activeSource !== 'archive';
+          charTypeBtn.classList.toggle('is-active', activeArchiveType === 'char');
+          npcTypeBtn.classList.toggle('is-active', activeArchiveType === 'npc');
+        }
+
+        function bindSelectedRole(ref, displayName, sourceLabel) {
+          if (!_state) return;
+          setWorkBoundRoleRef(ref);
+          saveState(_state);
+          syncBoundPersonaUi();
+          if (typeof onChanged === 'function') onChanged(ref);
+          closeSheet();
+          notify('已绑定' + sourceLabel + '：' + displayName);
+        }
+
+        function buildRoleCard(opts) {
+          var isCurrent = Boolean(currentRef && currentRef.source === opts.source && currentRef.id === opts.id);
+          var card = el('button', 'fc-persona-picker-card' + (isCurrent ? ' is-active' : ''));
+          card.type = 'button';
+          card.dataset.roleSource = opts.source;
+          card.dataset.roleId = opts.id;
+          if (opts.source === 'community_persona') {
+            card.dataset.personaId = opts.id;
+          } else {
+            card.dataset.archiveId = opts.id;
+          }
+
+          var avEl = el('div', 'fc-persona-picker-avatar');
+          if (typeof pApi.renderRoleAvatarBox === 'function') {
+            pApi.renderRoleAvatarBox(avEl, opts.avatarRoleObj, function() {
+              return sheetBack.classList.contains('show') && document.body.contains(card);
+            });
+          } else if (opts.source === 'community_persona') {
+            pApi.renderAvatarBox(avEl, opts.avatarAssetId || '', function() {
+              return sheetBack.classList.contains('show') && document.body.contains(card);
+            });
+          }
+
+          var infoEl = el('div', 'fc-persona-picker-info');
+          var topLine = el('div', 'fc-persona-picker-top');
+          topLine.appendChild(el('strong', 'fc-persona-picker-name', opts.name));
+          topLine.appendChild(el('span', 'fc-role-source-tag ' + opts.sourceClass, opts.sourceLabel));
+          topLine.appendChild(el('span', 'fc-persona-picker-id', opts.idLabel));
+          if (isCurrent) {
+            topLine.appendChild(el('span', 'fc-mode-card-tag is-current', '当前绑定'));
+          }
+          infoEl.appendChild(topLine);
+          infoEl.appendChild(el('p', 'fc-persona-picker-desc', opts.desc || '暂无详细设定描述'));
+
+          var pickActionLabel = el('span', 'fc-role-pick-action', isCurrent ? '已选' : '选择');
+
+          card.appendChild(avEl);
+          card.appendChild(infoEl);
+          card.appendChild(pickActionLabel);
+          card.onclick = function() {
+            bindSelectedRole({ source: opts.source, id: opts.id }, opts.name, opts.sourceLabel);
+          };
+          return card;
+        }
+
+        async function drawPickerList() {
+          var token = ++drawSeq;
+          syncTabButtons();
           listBox.replaceChildren();
-          var items = pApi.searchPersonas(queryText);
-          if (!items.length) {
-            listBox.appendChild(el('p', 'fc-chat-sheet-note', '未找到姓名匹配「' + String(queryText || '').trim() + '」的人设。'));
+
+          if (activeSource === 'community_persona') {
+            var allCommunity = pApi.listPersonas();
+            if (!allCommunity.length) {
+              var emptyBox = el('div', 'fc-persona-picker-empty');
+              emptyBox.appendChild(el('strong', '', '公共人设库暂无角色'));
+              emptyBox.appendChild(el('p', '', '可切换上方「弯弯机角色档案」直接选用已有 Char / NPC，或前往「同好社区 → 设置 → 人设库」新建公共人设。'));
+              listBox.appendChild(emptyBox);
+              return;
+            }
+            var items = pApi.searchPersonas(searchQuery);
+            if (!items.length) {
+              listBox.appendChild(el('p', 'fc-chat-sheet-note', '未找到姓名匹配「' + String(searchQuery || '').trim() + '」的公共人设。'));
+              return;
+            }
+            items.forEach(function(persona) {
+              var descBits = [];
+              if (persona.background) descBits.push(persona.background);
+              if (persona.personality) descBits.push(persona.personality);
+              if (persona.notes) descBits.push('备注：' + persona.notes);
+              listBox.appendChild(buildRoleCard({
+                source: 'community_persona',
+                sourceLabel: '公共人设',
+                sourceClass: 'is-persona',
+                id: persona.id,
+                idLabel: 'ID ' + persona.id.slice(-6),
+                name: persona.name,
+                desc: descBits.join(' · '),
+                avatarAssetId: persona.avatarAssetId || '',
+                avatarRoleObj: {
+                  source: 'community_persona',
+                  name: persona.name,
+                  avatarAssetId: persona.avatarAssetId || ''
+                }
+              }));
+            });
             return;
           }
 
-          var curBoundId = _state ? (_state.boundPersonaId || '') : '';
-          items.forEach(function(persona) {
-            var isCurrent = persona.id === curBoundId;
-            var card = el('button', 'fc-persona-picker-card' + (isCurrent ? ' is-active' : ''));
-            card.type = 'button';
-            card.dataset.personaId = persona.id;
+          // 来源 B：直接只读读取弯弯机原有 Char / NPC
+          listBox.appendChild(el('p', 'fc-chat-sheet-note', '正在读取弯弯机角色档案…'));
+          var allChars = typeof pApi.listArchiveRoles === 'function' ? await pApi.listArchiveRoles('char', '') : [];
+          var allNpcs = typeof pApi.listArchiveRoles === 'function' ? await pApi.listArchiveRoles('npc', '') : [];
+          if (token !== drawSeq || !sheetBack.classList.contains('show')) return;
 
-            var avEl = el('div', 'fc-persona-picker-avatar');
-            pApi.renderAvatarBox(avEl, persona.avatarAssetId, function() {
-              return sheetBack.classList.contains('show') && document.body.contains(card);
-            });
+          charTypeBtn.textContent = 'Char (' + allChars.length + ')';
+          npcTypeBtn.textContent = 'NPC (' + allNpcs.length + ')';
 
-            var infoEl = el('div', 'fc-persona-picker-info');
-            var topLine = el('div', 'fc-persona-picker-top');
-            topLine.appendChild(el('strong', 'fc-persona-picker-name', persona.name));
-            topLine.appendChild(el('span', 'fc-persona-picker-id', 'ID ' + persona.id.slice(-6)));
-            if (isCurrent) {
-              topLine.appendChild(el('span', 'fc-mode-card-tag is-current', '当前绑定'));
-            }
-            infoEl.appendChild(topLine);
+          listBox.replaceChildren();
+          var sourceRows = activeArchiveType === 'npc' ? allNpcs : allChars;
+          if (!sourceRows.length) {
+            var arcEmpty = el('div', 'fc-persona-picker-empty');
+            arcEmpty.appendChild(el('strong', '', '弯弯机暂无 ' + (activeArchiveType === 'npc' ? 'NPC' : 'Char') + ' 角色'));
+            arcEmpty.appendChild(el('p', '', '在弯弯机「角色档案」中创建角色后，即可在此直接绑定引用。'));
+            listBox.appendChild(arcEmpty);
+            return;
+          }
 
-            var descBits = [];
-            if (persona.background) descBits.push(persona.background);
-            if (persona.personality) descBits.push(persona.personality);
-            if (persona.notes) descBits.push('备注：' + persona.notes);
-            infoEl.appendChild(el('p', 'fc-persona-picker-desc', descBits.join(' · ') || '暂无详细设定描述'));
+          var q = String(searchQuery || '').trim().toLowerCase();
+          var filteredArchive = q
+            ? sourceRows.filter(function(item) {
+                return String(item.name || '').toLowerCase().indexOf(q) !== -1;
+              })
+            : sourceRows;
 
-            card.appendChild(avEl);
-            card.appendChild(infoEl);
-            card.onclick = function() {
-              if (!_state) return;
-              _state.boundPersonaId = persona.id;
-              saveState(_state);
-              syncBoundPersonaUi();
-              if (typeof onChanged === 'function') onChanged(persona);
-              closeSheet();
-              notify('已绑定公共人设：' + persona.name);
-            };
-            listBox.appendChild(card);
+          if (!filteredArchive.length) {
+            listBox.appendChild(el('p', 'fc-chat-sheet-note', '未找到姓名匹配「' + String(searchQuery || '').trim() + '」的 ' + (activeArchiveType === 'npc' ? 'NPC' : 'Char') + ' 角色。'));
+            return;
+          }
+
+          filteredArchive.forEach(function(item) {
+            var metaBits = [];
+            if (item.nick) metaBits.push('昵称：' + item.nick);
+            if (item.role) metaBits.push(item.role);
+            if (item.group) metaBits.push(item.group);
+            if (item.description) metaBits.push(item.description);
+            listBox.appendChild(buildRoleCard({
+              source: item.source,
+              sourceLabel: item.sourceLabel,
+              sourceClass: item.source === 'npc' ? 'is-npc' : 'is-char',
+              id: item.id,
+              idLabel: 'ID #' + item.id,
+              name: item.name,
+              desc: metaBits.join(' · '),
+              avatarRoleObj: item
+            }));
           });
         }
 
+        srcPersonaBtn.onclick = function() {
+          if (activeSource === 'community_persona') return;
+          activeSource = 'community_persona';
+          drawPickerList();
+        };
+        srcArchiveBtn.onclick = function() {
+          if (activeSource === 'archive') return;
+          activeSource = 'archive';
+          drawPickerList();
+        };
+        charTypeBtn.onclick = function() {
+          if (activeArchiveType === 'char') return;
+          activeArchiveType = 'char';
+          drawPickerList();
+        };
+        npcTypeBtn.onclick = function() {
+          if (activeArchiveType === 'npc') return;
+          activeArchiveType = 'npc';
+          drawPickerList();
+        };
         searchInputEl.addEventListener('input', function() {
-          drawPickerList(searchInputEl.value);
+          searchQuery = searchInputEl.value;
+          drawPickerList();
         });
-        drawPickerList('');
+        drawPickerList();
 
         var actions = el('div', 'fc-chat-sheet-actions');
-        if (_state && _state.boundPersonaId) {
+        if (currentRef) {
           var clearBtn = el('button', 'fc-chat-btn alt', '解除绑定');
           clearBtn.type = 'button';
           clearBtn.id = 'fc-persona-picker-unbind';
           clearBtn.onclick = function() {
             if (!_state) return;
-            _state.boundPersonaId = '';
+            setWorkBoundRoleRef(null);
             saveState(_state);
             syncBoundPersonaUi();
             if (typeof onChanged === 'function') onChanged(null);
             closeSheet();
-            notify('已解除当前作品的公共人设绑定');
+            notify('已解除当前作品的角色绑定');
           };
           actions.appendChild(clearBtn);
         }
@@ -1162,7 +1354,7 @@
       if (_panelMode) setPanelMode('');
       openSheet('创作模式', function(body) {
         var curId = normalizeMode(_state && _state.creationMode);
-        var sub = el('p', 'fc-mode-sheet-sub', '每部作品独立保存创作模式，切换模式不会清空已有聊天记录。');
+        var sub = el('p', 'fc-mode-sheet-sub', '每部作品独立保存创作模式，切换模式不会清空已有聊天记录或已绑定的角色。');
         var cards = el('div', 'fc-mode-cards');
         cards.id = 'fc-mode-cards';
 
@@ -1205,10 +1397,19 @@
         });
 
         var actions = el('div', 'fc-chat-sheet-actions');
+        var aiEntryBtn = el('button', 'fc-chat-btn', 'AI 设定 / 选择角色');
+        aiEntryBtn.type = 'button';
+        aiEntryBtn.id = 'fc-mode-open-ai-settings-btn';
+        aiEntryBtn.onclick = function() {
+          closeSheet();
+          openAiSettingsPanel();
+        };
+
         var closeBtn = el('button', 'fc-chat-btn alt', '关闭');
         closeBtn.type = 'button';
         closeBtn.id = 'fc-mode-sheet-close';
         closeBtn.onclick = closeSheet;
+        actions.appendChild(aiEntryBtn);
         actions.appendChild(closeBtn);
 
         body.appendChild(sub);
@@ -1381,6 +1582,7 @@
       menuPanel.replaceChildren();
 
       var modeDef = getCreationModeDef(_state && _state.creationMode);
+      var boundRef = getWorkBoundRoleRef();
       var boundPersona = getBoundPersona();
       var ap = getAppearance(_state && _state.appearance);
       var visibleCount = countVisibleMessages();
@@ -1431,6 +1633,23 @@
         return group;
       }
 
+      var initialAiSub = '角色人设 · 剧情背景 · 公共/弯弯机角色档案';
+      var initialAiBadge = '';
+      if (boundRef) {
+        if (boundRef.source === 'community_persona') {
+          if (boundPersona) {
+            initialAiSub = '已绑定公共人设：' + boundPersona.name;
+            initialAiBadge = '已绑定';
+          } else {
+            initialAiSub = '原角色已不存在，请重新选择';
+            initialAiBadge = '需重选';
+          }
+        } else {
+          initialAiSub = '正在读取弯弯机角色档案…';
+          initialAiBadge = boundRef.source === 'npc' ? 'NPC' : 'Char';
+        }
+      }
+
       mScroll.appendChild(makeGroup('创作与 AI', [
         {
           id: 'fc-menu-item-mode',
@@ -1444,8 +1663,8 @@
           id: 'fc-menu-item-ai',
           icon: '◈',
           title: 'AI 设定',
-          sub: boundPersona ? ('已引用公共人设：' + boundPersona.name) : '角色人设 · 剧情背景 · 公共人设库',
-          badge: boundPersona ? '已绑定' : '',
+          sub: initialAiSub,
+          badge: initialAiBadge,
           onClick: openAiSettingsPanel
         }
       ]));
@@ -1485,6 +1704,26 @@
       menuPanel.appendChild(mScroll);
       menuMask.classList.add('show');
       menuMask.setAttribute('aria-hidden', 'false');
+
+      if (boundRef && boundRef.source !== 'community_persona') {
+        var pApiMenu = personasApi();
+        if (pApiMenu && typeof pApiMenu.resolveRoleRef === 'function') {
+          pApiMenu.resolveRoleRef(boundRef).then(function(res) {
+            if (!menuMask.classList.contains('show')) return;
+            var aiRow = menuPanel.querySelector('#fc-menu-item-ai');
+            if (!aiRow) return;
+            var subEl = aiRow.querySelector('.fc-menu-row-sub');
+            var badgeEl = aiRow.querySelector('.fc-menu-row-badge');
+            if (res.status === 'ok' && res.role) {
+              if (subEl) subEl.textContent = '已绑定 ' + res.sourceLabel + '：' + res.role.name;
+              if (badgeEl) badgeEl.textContent = res.sourceLabel;
+            } else if (res.status === 'missing') {
+              if (subEl) subEl.textContent = '原角色已不存在（' + res.sourceLabel + ' · ID #' + res.ref.id + '）';
+              if (badgeEl) badgeEl.textContent = '已缺失';
+            }
+          }).catch(function() {});
+        }
+      }
     }
 
     menuMask.addEventListener('click', function(e) {
@@ -2608,40 +2847,61 @@
       modeHintCard.appendChild(el('p', 'fc-ai-settings-banner-text', '此设定由当前作品的「AI 角色互动」与「AI 剧情生成」共同使用；仅本地保存，不会自动覆盖聊天昵称、头像或触发 AI 请求。'));
       aBody.appendChild(modeHintCard);
 
-      // 公共人设库引用状态卡（任务 13：以 ID 引用，不覆盖本作品 aiSettings）
+      // 角色档案绑定状态卡（支持同好社区公共人设库 + 弯弯机 Char/NPC，只读引用，不写回原档案，也不覆盖下方作品 aiSettings）
       var refPersonaCard = el('section', 'fc-settings-card fc-ai-bound-card');
       refPersonaCard.id = 'fc-ai-bound-persona-card';
-      function renderRefPersonaCard() {
+      var bindRenderSeq = 0;
+
+      function paintRefCardState(stateObj) {
         refPersonaCard.replaceChildren();
+        refPersonaCard.classList.toggle('is-missing', stateObj.status === 'missing');
+        var pApi = personasApi();
+
         var refHead = el('div', 'fc-settings-card-head');
-        refHead.appendChild(el('span', 'fc-settings-card-title', '引用的公共人设'));
-        refHead.appendChild(el('span', 'fc-settings-card-tag', '独立引用'));
+        refHead.appendChild(el('span', 'fc-settings-card-title', '引用的 AI 角色档案'));
+        var tagText = stateObj.status === 'ok'
+          ? stateObj.sourceLabel
+          : (stateObj.status === 'missing' ? '原角色已不存在' : '可选绑定');
+        var tagEl = el('span', 'fc-settings-card-tag' + (stateObj.status === 'missing' ? ' is-warn' : ''), tagText);
+        refHead.appendChild(tagEl);
         refPersonaCard.appendChild(refHead);
 
-        var pApi = personasApi();
-        var bound = getBoundPersona();
         var row = el('div', 'fc-ai-bound-row');
         var avBox = el('div', 'fc-chat-bound-avatar');
         var infoBox = el('div', 'fc-chat-bound-info');
 
-        if (bound) {
-          infoBox.appendChild(el('strong', 'fc-chat-bound-name', bound.name + '（ID ' + bound.id.slice(-6) + '）'));
-          var desc = bound.background || bound.personality || '来自同好社区公共人设库，修改原人设会实时同步';
-          infoBox.appendChild(el('span', 'fc-chat-bound-sub', desc));
-          if (pApi && typeof pApi.renderAvatarBox === 'function') {
-            pApi.renderAvatarBox(avBox, bound.avatarAssetId, function() {
+        if (stateObj.status === 'ok' && stateObj.role) {
+          var role = stateObj.role;
+          var idLabel = role.source === 'community_persona' ? ('ID ' + role.id.slice(-6)) : ('ID #' + role.id);
+          infoBox.appendChild(el('strong', 'fc-chat-bound-name', role.name + '（' + stateObj.sourceLabel + ' · ' + idLabel + '）'));
+          var liveDesc = role.description || role.background || role.personality || '暂无详细设定';
+          infoBox.appendChild(el('span', 'fc-chat-bound-sub', liveDesc));
+          if (pApi && typeof pApi.renderRoleAvatarBox === 'function') {
+            pApi.renderRoleAvatarBox(avBox, role, function() {
+              return aiSettingsPanel.classList.contains('show') && document.body.contains(avBox);
+            });
+          } else if (pApi && typeof pApi.renderAvatarBox === 'function' && role.avatarAssetId) {
+            pApi.renderAvatarBox(avBox, role.avatarAssetId, function() {
               return aiSettingsPanel.classList.contains('show') && document.body.contains(avBox);
             });
           }
+        } else if (stateObj.status === 'missing' && stateObj.ref) {
+          var missIdLabel = stateObj.ref.source === 'community_persona' ? ('ID ' + stateObj.ref.id.slice(-6)) : ('ID #' + stateObj.ref.id);
+          infoBox.appendChild(el('strong', 'fc-chat-bound-name', '原角色已不存在（' + stateObj.sourceLabel + ' · ' + missIdLabel + '）'));
+          infoBox.appendChild(el('span', 'fc-chat-bound-sub', '原档案可能已被删除；本作品聊天记录与下方补充设定已完整保留，请重新选择或解除绑定'));
+        } else if (stateObj.status === 'loading') {
+          infoBox.appendChild(el('strong', 'fc-chat-bound-name', '正在读取角色档案…'));
+          infoBox.appendChild(el('span', 'fc-chat-bound-sub', '实时同步原角色资料中'));
         } else {
-          infoBox.appendChild(el('strong', 'fc-chat-bound-name', '尚未引用公共人设（可选）'));
-          infoBox.appendChild(el('span', 'fc-chat-bound-sub', '可随时从社区人设库绑定 1 位角色，后续 AI 将结合公共人设与下方作品设定使用'));
+          infoBox.appendChild(el('strong', 'fc-chat-bound-name', '尚未引用角色档案（可选）'));
+          infoBox.appendChild(el('span', 'fc-chat-bound-sub', '支持从「公共人设库」或「弯弯机 Char / NPC」绑定 1 位角色，下方作品设定可随时独立补充'));
         }
         row.appendChild(avBox);
         row.appendChild(infoBox);
 
         var opsRow = el('div', 'fc-ai-bound-ops');
-        var chooseBtn = el('button', 'fc-settings-mini-btn primary', '从人设库选择');
+        var chooseLabel = stateObj.status === 'missing' ? '重新选择' : '从人设库选择';
+        var chooseBtn = el('button', 'fc-settings-mini-btn primary', chooseLabel);
         chooseBtn.type = 'button';
         chooseBtn.id = 'fc-ai-pick-persona-btn';
         chooseBtn.onclick = function() {
@@ -2651,23 +2911,55 @@
         };
         opsRow.appendChild(chooseBtn);
 
-        if (bound) {
+        if (stateObj.status === 'ok' || stateObj.status === 'missing') {
           var clearBindBtn = el('button', 'fc-settings-mini-btn', '解除绑定');
           clearBindBtn.type = 'button';
           clearBindBtn.id = 'fc-ai-unbind-persona-btn';
           clearBindBtn.onclick = function() {
             if (!_state) return;
-            _state.boundPersonaId = '';
+            setWorkBoundRoleRef(null);
             saveState(_state);
             syncBoundPersonaUi();
             renderRefPersonaCard();
-            notify('已解除公共人设绑定');
+            notify('已解除当前作品的角色绑定');
           };
           opsRow.appendChild(clearBindBtn);
         }
 
         refPersonaCard.appendChild(row);
         refPersonaCard.appendChild(opsRow);
+        if (stateObj.status === 'ok') {
+          refPersonaCard.appendChild(el('p', 'fc-ai-field-hint', '基础人设实时读取自原档案；下方「AI 角色设定」与「剧情设定」仅作用于本作品补充，不会修改原档案。'));
+        }
+      }
+
+      function renderRefPersonaCard() {
+        var seq = ++bindRenderSeq;
+        var pApi = personasApi();
+        var ref = getWorkBoundRoleRef();
+        if (!ref) {
+          paintRefCardState({ status: 'unbound' });
+          return;
+        }
+        if (pApi && typeof pApi.resolveRoleRef === 'function') {
+          paintRefCardState({ status: 'loading' });
+          pApi.resolveRoleRef(ref).then(function(res) {
+            if (seq !== bindRenderSeq || !aiSettingsPanel.classList.contains('show')) return;
+            paintRefCardState(res);
+          }).catch(function() {
+            if (seq !== bindRenderSeq || !aiSettingsPanel.classList.contains('show')) return;
+            paintRefCardState({
+              status: 'missing',
+              ref: ref,
+              sourceLabel: pApi.getRoleSourceLabel ? pApi.getRoleSourceLabel(ref.source) : '角色'
+            });
+          });
+        } else {
+          var bound = getBoundPersona();
+          paintRefCardState(bound
+            ? { status: 'ok', ref: ref, sourceLabel: '公共人设', role: bound }
+            : { status: 'missing', ref: ref, sourceLabel: '公共人设' });
+        }
       }
       renderRefPersonaCard();
       aBody.appendChild(refPersonaCard);

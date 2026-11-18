@@ -32,6 +32,19 @@
   font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Noto Sans KR", "PingFang SC", sans-serif;
 }
 
+#fan-community-page.full-page.is-closing,
+:root.theme-dark #app #fan-community-page.full-page.is-closing {
+  pointer-events: none;
+}
+
+.fc-close-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 65;
+  background: transparent;
+  pointer-events: auto;
+}
+
 #fan-community-page *,
 #fan-community-page *::before,
 #fan-community-page *::after {
@@ -68,38 +81,56 @@
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
-  padding: calc(16px + var(--fc-safe-top)) 22px calc(98px + var(--fc-safe-bottom));
+  padding: 12px 22px calc(98px + var(--fc-safe-bottom));
 }
 
 .fc-topbar {
+  flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  min-height: 36px;
+  justify-content: flex-start;
+  padding: calc(10px + var(--fc-safe-top)) 20px 8px;
+  min-height: 52px;
+  background: var(--fc-cream);
+  border-bottom: 1px solid var(--fc-line);
+  z-index: 4;
 }
 
-.fc-back-btn {
+.fc-brand-home-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  border: 1px solid #e5e9df;
-  background: var(--fc-paper);
-  color: #677961;
-  border-radius: 10px;
-  padding: 6px 12px;
-  font-size: 13px;
+  gap: 6px;
+  min-height: 44px;
+  padding: 6px 10px 6px 2px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--fc-ink);
+  text-align: left;
+  transition: opacity 0.14s ease, transform 0.14s ease, background-color 0.14s ease;
+}
+
+.fc-brand-home-btn:hover {
+  opacity: 0.84;
+}
+
+.fc-brand-home-btn:active {
+  transform: scale(0.98);
+  background: rgba(141, 154, 132, 0.12);
+}
+
+.fc-brand-home-title {
+  font-size: 21px;
+  letter-spacing: -0.6px;
+  font-weight: 650;
+  color: var(--fc-ink);
   line-height: 1.2;
-  transition: background-color 0.14s ease, border-color 0.14s ease;
 }
 
-.fc-back-btn:active {
-  background: #f4f5ef;
-}
-
-.fc-back-chevron {
-  font-size: 17px;
+.fc-brand-home-mark {
+  font-size: 15px;
   line-height: 1;
-  margin-top: -1px;
+  color: var(--fc-accent);
 }
 
 .fc-view[hidden] {
@@ -111,7 +142,7 @@
   color: #9a9d91;
   letter-spacing: 2.5px;
   font-weight: 600;
-  margin-top: 18px;
+  margin-top: 6px;
 }
 
 .fc-heading {

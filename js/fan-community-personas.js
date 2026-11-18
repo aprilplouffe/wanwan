@@ -305,6 +305,203 @@
     }).catch(function() {});
   }
 
+  var VALID_ROLE_SOURCES = ['community_persona', 'char', 'npc'];
+
+  function normalizeRoleRef(rawRef, legacyPersonaId) {
+    if (rawRef && typeof rawRef === 'object') {
+      var src = typeof rawRef.source === 'string' ? rawRef.source.trim() : '';
+      var idStr = rawRef.id !== undefined && rawRef.id !== null ? String(rawRef.id).trim() : '';
+      if (VALID_ROLE_SOURCES.indexOf(src) !== -1 && idStr) {
+        return { source: src, id: idStr };
+      }
+    }
+    var legacyId = typeof legacyPersonaId === 'string' ? legacyPersonaId.trim() : '';
+    if (legacyId) {
+      return { source: 'community_persona', id: legacyId };
+    }
+    return null;
+  }
+
+  function getRoleSourceLabel(source) {
+    if (source === 'char') return 'Char';
+    if (source === 'npc') return 'NPC';
+    return '公共人设';
+  }
+
+  async function readRawWanwanCharacters() {
+    var rows = [];
+    try {
+      if (global.db && global.db.characters) {
+        if (typeof global.runWanWanDBRead === 'function') {
+          rows = await global.runWanWanDBRead(function() {
+            return global.db.characters.toArray();
+          });
+        } else {
+          rows = await global.db.characters.toArray();
+        }
+      } else if (global._charCache && typeof global._charCache === 'object') {
+        rows = Object.keys(global._charCache).map(function(k) {
+          return global._charCache[k];
+        });
+      }
+    } catch (_) {
+      rows = [];
+    }
+    if (!Array.isArray(rows)) return [];
+    return rows.filter(function(c) {
+      return c && !c.deleted && (c.type === 'char' || c.type === 'npc') && c.id !== undefined && c.id !== null;
+    });
+  }
+
+  function projectArchiveRole(raw) {
+    var src = raw.type === 'npc' ? 'npc' : 'char';
+    return {
+      source: src,
+      sourceLabel: src === 'npc' ? 'NPC' : 'Char',
+      id: String(raw.id),
+      rawId: raw.id,
+      name: String(raw.name || '').trim() || '未命名角色',
+      nick: String(raw.nick || '').trim(),
+      gender: String(raw.gender || '').trim(),
+      role: String(raw.role || '').trim(),
+      group: String(raw.group || '').trim(),
+      description: String(raw.description || '').trim(),
+      avatar: typeof raw.avatar === 'string' ? raw.avatar : '',
+      avatarAssetId: ''
+    };
+  }
+
+  async function listArchiveRoles(typeFilter, queryText) {
+    var rows = await readRawWanwanCharacters();
+    var targetType = typeFilter === 'char' || typeFilter === 'npc' ? typeFilter : '';
+    var q = String(queryText || '').trim().toLowerCase();
+    var projected = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (targetType && r.type !== targetType) continue;
+      var item = projectArchiveRole(r);
+      if (q && item.name.toLowerCase().indexOf(q) === -1) continue;
+      projected.push(item);
+    }
+    projected.sort(function(a, b) {
+      var na = Number(a.id);
+      var nb = Number(b.id);
+      if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+      return String(a.id).localeCompare(String(b.id));
+    });
+    return projected;
+  }
+
+  async function getArchiveRole(source, id) {
+    var idStr = id !== undefined && id !== null ? String(id).trim() : '';
+    if (!idStr) return null;
+    var found = null;
+    try {
+      if (global.db && global.db.characters) {
+        var numId = Number(idStr);
+        if (Number.isFinite(numId) && String(numId) === idStr) {
+          if (typeof global.runWanWanDBRead === 'function') {
+            found = await global.runWanWanDBRead(function() {
+              return global.db.characters.get(numId);
+            });
+          } else {
+            found = await global.db.characters.get(numId);
+          }
+        }
+        if (!found) {
+          var all = await readRawWanwanCharacters();
+          for (var i = 0; i < all.length; i++) {
+            if (String(all[i].id) === idStr) {
+              found = all[i];
+              break;
+            }
+          }
+        }
+      } else if (global._charCache && typeof global._charCache === 'object') {
+        found = global._charCache[idStr] || global._charCache[Number(idStr)] || null;
+      }
+    } catch (_) {
+      found = null;
+    }
+    if (!found || found.deleted) return null;
+    if (found.type !== 'char' && found.type !== 'npc') return null;
+    return projectArchiveRole(found);
+  }
+
+  async function resolveRoleRef(rawRef, legacyPersonaId) {
+    var ref = normalizeRoleRef(rawRef, legacyPersonaId);
+    if (!ref) {
+      return { status: 'unbound', ref: null, sourceLabel: '', role: null };
+    }
+    if (ref.source === 'community_persona') {
+      var p = getPersona(ref.id);
+      if (!p) {
+        return { status: 'missing', ref: ref, sourceLabel: '公共人设', role: null };
+      }
+      var descParts = [];
+      if (p.background) descParts.push(p.background);
+      if (p.personality) descParts.push(p.personality);
+      return {
+        status: 'ok',
+        ref: ref,
+        sourceLabel: '公共人设',
+        role: {
+          source: 'community_persona',
+          sourceLabel: '公共人设',
+          id: p.id,
+          name: p.name,
+          avatar: '',
+          avatarAssetId: p.avatarAssetId || '',
+          description: descParts.join(' · '),
+          personality: p.personality || '',
+          background: p.background || '',
+          speakingStyle: p.speakingStyle || '',
+          experience: p.experience || '',
+          notes: p.notes || ''
+        }
+      };
+    }
+
+    var arc = await getArchiveRole(ref.source, ref.id);
+    var srcLabel = getRoleSourceLabel(ref.source);
+    if (!arc) {
+      return { status: 'missing', ref: ref, sourceLabel: srcLabel, role: null };
+    }
+    return {
+      status: 'ok',
+      ref: { source: arc.source, id: arc.id },
+      sourceLabel: arc.sourceLabel,
+      role: arc
+    };
+  }
+
+  function renderRoleAvatarBox(boxEl, role, tokenCheckFn) {
+    if (!boxEl) return;
+    if (!role) {
+      boxEl.replaceChildren();
+      boxEl.classList.remove('has-img');
+      return;
+    }
+    if (role.source === 'community_persona') {
+      renderAvatarBox(boxEl, role.avatarAssetId, tokenCheckFn);
+      return;
+    }
+    boxEl.replaceChildren();
+    boxEl.classList.remove('has-img');
+    var src = typeof role.avatar === 'string' ? role.avatar.trim() : '';
+    if (!src) return;
+    var img = document.createElement('img');
+    img.src = src;
+    img.alt = (role.name || '角色') + '头像';
+    img.referrerPolicy = 'no-referrer';
+    img.onerror = function() {
+      boxEl.replaceChildren();
+      boxEl.classList.remove('has-img');
+    };
+    boxEl.classList.add('has-img');
+    boxEl.appendChild(img);
+  }
+
   // 打开「同好社区 → 设置 → 人设库」独立管理界面
   function openLibrary(container, options) {
     if (!container) return;
@@ -324,14 +521,21 @@
     backBtn.appendChild(el('span', 'fc-works-back-chevron', '‹'));
     backBtn.appendChild(el('span', '', '设置'));
 
+    var titleGroup = el('div', 'fc-works-title-group');
+    var brandLink = el('button', 'fc-works-brand-link', '同好社区');
+    brandLink.type = 'button';
+    brandLink.dataset.fcHomeTrigger = '1';
+    brandLink.setAttribute('aria-label', '点击同好社区返回弯弯机桌面');
     var titleEl = el('b', 'fc-works-title', '公共人设库');
+    titleGroup.appendChild(brandLink);
+    titleGroup.appendChild(titleEl);
 
     var newBtn = el('button', 'fc-works-new-btn', '＋ 新建');
     newBtn.type = 'button';
     newBtn.id = 'fc-persona-new-btn';
 
     head.appendChild(backBtn);
-    head.appendChild(titleEl);
+    head.appendChild(titleGroup);
     head.appendChild(newBtn);
 
     var searchWrap = el('div', 'fc-persona-search-wrap');
@@ -891,9 +1095,16 @@
 
   global.FanCommunityPersonas = {
     STORAGE_KEY: STORAGE_KEY,
+    VALID_ROLE_SOURCES: VALID_ROLE_SOURCES.slice(),
+    normalizeRoleRef: normalizeRoleRef,
+    getRoleSourceLabel: getRoleSourceLabel,
     listPersonas: listPersonas,
     getPersona: getPersona,
     searchPersonas: searchPersonas,
+    listArchiveRoles: listArchiveRoles,
+    getArchiveRole: getArchiveRole,
+    resolveRoleRef: resolveRoleRef,
+    renderRoleAvatarBox: renderRoleAvatarBox,
     createPersona: createPersona,
     updatePersona: updatePersona,
     deletePersona: deletePersona,

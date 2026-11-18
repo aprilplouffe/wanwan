@@ -1433,14 +1433,47 @@
   margin-top: -1px;
 }
 
-#fan-community-page .fc-works-title {
+#fan-community-page .fc-works-title-group {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+#fan-community-page .fc-works-brand-link {
+  border: 0;
+  background: transparent;
+  color: #788473;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  padding: 2px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.4px;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+
+#fan-community-page .fc-works-brand-link:hover {
+  color: #4f614c;
+  background: rgba(125, 141, 118, 0.1);
+}
+
+#fan-community-page .fc-works-brand-link:active {
+  background: rgba(125, 141, 118, 0.18);
+}
+
+#fan-community-page .fc-works-title {
+  width: 100%;
   min-width: 0;
   text-align: center;
   font-size: 17px;
   font-weight: 650;
   color: #393b35;
   letter-spacing: -0.3px;
+  line-height: 1.25;
 }
 
 #fan-community-page .fc-works-new-btn {
@@ -2893,6 +2926,129 @@
   align-items: center;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* 任务 14：双角色来源切换（公共人设库 / 弯弯机原有 Char & NPC）与失效提示 */
+#fan-community-page .fc-role-source-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  margin-bottom: 10px;
+  border-radius: 13px;
+  background: #f1f2ec;
+  border: 1px solid #e2e5da;
+}
+
+#fan-community-page .fc-role-source-tab {
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #6b7468;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 8px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
+}
+
+#fan-community-page .fc-role-source-tab.is-active {
+  background: #fffefa;
+  border-color: #c8d3c1;
+  color: #465742;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(64, 77, 60, 0.08);
+}
+
+#fan-community-page .fc-role-archive-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+#fan-community-page .fc-role-archive-tabs[hidden] {
+  display: none;
+}
+
+#fan-community-page .fc-role-archive-tab {
+  min-height: 34px;
+  border: 1px solid #e1e5da;
+  border-radius: 10px;
+  background: #f8f8f3;
+  color: #677064;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  line-height: 1.2;
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+#fan-community-page .fc-role-archive-tab.is-active {
+  background: #eef4eb;
+  border-color: #7d8d76;
+  color: #41513e;
+  font-weight: 600;
+}
+
+#fan-community-page .fc-role-source-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 1px 6px;
+  line-height: 1.4;
+}
+
+#fan-community-page .fc-role-source-tag.is-persona {
+  color: #546650;
+  background: #edf3ea;
+  border: 1px solid #d1decb;
+}
+
+#fan-community-page .fc-role-source-tag.is-char {
+  color: #365d78;
+  background: #eaf2f7;
+  border: 1px solid #cbdeeb;
+}
+
+#fan-community-page .fc-role-source-tag.is-npc {
+  color: #775b3c;
+  background: #f5efe6;
+  border: 1px solid #e3d3bf;
+}
+
+#fan-community-page .fc-role-pick-action {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: #5a6c56;
+  background: #eff3ec;
+  border: 1px solid #d3dfd0;
+  border-radius: 8px;
+  padding: 4px 8px;
+  line-height: 1.2;
+}
+
+#fan-community-page .fc-persona-picker-card.is-active .fc-role-pick-action {
+  background: #7d8d76;
+  border-color: #7d8d76;
+  color: #ffffff;
+}
+
+#fan-community-page .fc-ai-bound-card.is-missing {
+  background: #fdf8f6;
+  border-color: #e8cbc5;
+}
+
+#fan-community-page .fc-settings-card-tag.is-warn {
+  color: #9e5456;
+  background: #faeaea;
+  border-color: #ebc9ca;
 }
 
 /* 右上角三横线分组设置菜单与作品管理样式 */

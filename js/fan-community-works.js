@@ -202,11 +202,40 @@
     };
   }
 
+  var VALID_ROLE_SOURCES = ['community_persona', 'char', 'npc'];
+
+  function normalizeBoundRoleRef(rawRef, legacyPersonaId) {
+    if (rawRef && typeof rawRef === 'object') {
+      var src = typeof rawRef.source === 'string' ? rawRef.source.trim() : '';
+      var idStr = rawRef.id !== undefined && rawRef.id !== null ? String(rawRef.id).trim() : '';
+      if (VALID_ROLE_SOURCES.indexOf(src) !== -1 && idStr) {
+        return { source: src, id: idStr };
+      }
+    }
+    var legacyId = typeof legacyPersonaId === 'string' ? legacyPersonaId.trim() : '';
+    if (legacyId) {
+      return { source: 'community_persona', id: legacyId };
+    }
+    return null;
+  }
+
+  function cloneBoundRoleRef(ref) {
+    return ref ? { source: ref.source, id: ref.id } : null;
+  }
+
   function normalizeWorkData(raw, fallbackMeta) {
     var now = Date.now();
     var meta = fallbackMeta || {};
     var src = raw && typeof raw === 'object' ? raw : {};
     var resolvedChar = String(src.char || meta.char || '对方');
+
+    var hasExplicitRef = Object.prototype.hasOwnProperty.call(src, 'boundRoleRef');
+    var hasExplicitLegacy = Object.prototype.hasOwnProperty.call(src, 'boundPersonaId');
+    var rawRef = hasExplicitRef ? src.boundRoleRef : meta.boundRoleRef;
+    var rawLegacy = hasExplicitLegacy ? src.boundPersonaId : (hasExplicitRef ? '' : meta.boundPersonaId);
+    var boundRoleRef = normalizeBoundRoleRef(rawRef, rawLegacy);
+    var syncedPersonaId = (boundRoleRef && boundRoleRef.source === 'community_persona') ? boundRoleRef.id : '';
+
     return {
       id: String(src.id || meta.id || ''),
       title: String(src.title || meta.title || '未命名作品').trim() || '未命名作品',
@@ -216,7 +245,8 @@
       userAvatarAssetId: typeof src.userAvatarAssetId === 'string' ? src.userAvatarAssetId : (typeof meta.userAvatarAssetId === 'string' ? meta.userAvatarAssetId : ''),
       appearance: normalizeAppearance(src.appearance),
       creationMode: normalizeCreationMode(src.creationMode !== undefined ? src.creationMode : meta.creationMode),
-      boundPersonaId: typeof src.boundPersonaId === 'string' ? src.boundPersonaId : (typeof meta.boundPersonaId === 'string' ? meta.boundPersonaId : ''),
+      boundPersonaId: syncedPersonaId,
+      boundRoleRef: boundRoleRef,
       aiSettings: normalizeAiSettings(src.aiSettings, resolvedChar),
       topic: typeof src.topic === 'string' ? src.topic : '',
       join: src.join !== false,
@@ -229,13 +259,15 @@
   }
 
   function toMeta(workData) {
+    var ref = normalizeBoundRoleRef(workData.boundRoleRef, workData.boundPersonaId);
     return {
       id: workData.id,
       title: workData.title,
       char: workData.char || '对方',
       user: workData.user || '我',
       creationMode: normalizeCreationMode(workData.creationMode),
-      boundPersonaId: typeof workData.boundPersonaId === 'string' ? workData.boundPersonaId : '',
+      boundPersonaId: (ref && ref.source === 'community_persona') ? ref.id : '',
+      boundRoleRef: cloneBoundRoleRef(ref),
       messageCount: Array.isArray(workData.items) ? workData.items.length : 0,
       createdAt: workData.createdAt,
       updatedAt: workData.updatedAt,
@@ -442,6 +474,7 @@
       appearance: clone(DEFAULT_APPEARANCE),
       creationMode: DEFAULT_CREATION_MODE,
       boundPersonaId: '',
+      boundRoleRef: null,
       aiSettings: createDefaultAiSettings('对方'),
       topic: '',
       join: true,
@@ -636,6 +669,16 @@
     return false;
   }
 
+  function matchesCommunityPersonaBinding(record, personaId) {
+    if (!record || !personaId) return false;
+    if (record.boundRoleRef && typeof record.boundRoleRef === 'object') {
+      if (record.boundRoleRef.source === 'community_persona' && String(record.boundRoleRef.id) === personaId) {
+        return true;
+      }
+    }
+    return record.boundPersonaId === personaId;
+  }
+
   function countWorksUsingPersona(personaId) {
     if (!personaId) return 0;
     var listed = listWorks();
@@ -644,7 +687,7 @@
     var count = 0;
     listed.works.forEach(function(w) {
       if (!w || !w.id) return;
-      if (w.boundPersonaId === personaId) {
+      if (matchesCommunityPersonaBinding(w, personaId)) {
         count += 1;
         return;
       }
@@ -653,7 +696,7 @@
         var raw = store.getItem(workDataKey(w.id));
         if (!raw) return;
         var parsed = JSON.parse(raw);
-        if (parsed && parsed.boundPersonaId === personaId) {
+        if (matchesCommunityPersonaBinding(parsed, personaId)) {
           count += 1;
         }
       } catch (_) {}
@@ -672,14 +715,14 @@
     for (var i = 0; i < index.works.length; i++) {
       var meta = index.works[i];
       if (!meta || !meta.id) continue;
-      var matched = meta.boundPersonaId === personaId;
+      var matched = matchesCommunityPersonaBinding(meta, personaId);
       var parsedData = null;
       if (store) {
         try {
           var raw = store.getItem(workDataKey(meta.id));
           if (raw) {
             parsedData = JSON.parse(raw);
-            if (parsedData && parsedData.boundPersonaId === personaId) {
+            if (matchesCommunityPersonaBinding(parsedData, personaId)) {
               matched = true;
             }
           }
@@ -688,8 +731,10 @@
       if (!matched) continue;
       changedCount += 1;
       meta.boundPersonaId = '';
+      meta.boundRoleRef = null;
       if (parsedData && typeof parsedData === 'object') {
         parsedData.boundPersonaId = '';
+        parsedData.boundRoleRef = null;
         if (store) {
           try {
             store.setItem(workDataKey(meta.id), JSON.stringify(parsedData));
@@ -713,6 +758,8 @@
     LEGACY_WORK_ID: LEGACY_WORK_ID,
     DEFAULT_CREATION_MODE: DEFAULT_CREATION_MODE,
     CREATION_MODES: clone(CREATION_MODES),
+    VALID_ROLE_SOURCES: VALID_ROLE_SOURCES.slice(),
+    normalizeBoundRoleRef: normalizeBoundRoleRef,
     normalizeCreationMode: normalizeCreationMode,
     createDefaultAiSettings: createDefaultAiSettings,
     normalizeAiSettings: normalizeAiSettings,
