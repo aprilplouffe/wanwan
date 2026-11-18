@@ -35,6 +35,39 @@
     return 'work_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
   }
 
+  var DEFAULT_APPEARANCE = {
+    bgType: 'color',
+    bgColor: '#e8ede8',
+    bgImageAssetId: '',
+    bgImageFit: 'cover',
+    userBubbleColor: '#d9e3d2',
+    charBubbleColor: '#fffefa'
+  };
+
+  function normalizeHexColor(val, fallback) {
+    if (typeof val !== 'string') return fallback;
+    var trimmed = val.trim().toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(trimmed)) return trimmed;
+    if (/^#[0-9a-f]{3}$/.test(trimmed)) {
+      return '#' + trimmed[1] + trimmed[1] + trimmed[2] + trimmed[2] + trimmed[3] + trimmed[3];
+    }
+    return fallback;
+  }
+
+  function normalizeAppearance(raw) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var bgImageAssetId = typeof src.bgImageAssetId === 'string' ? src.bgImageAssetId : '';
+    var bgType = src.bgType === 'image' && bgImageAssetId ? 'image' : 'color';
+    return {
+      bgType: bgType,
+      bgColor: normalizeHexColor(src.bgColor, DEFAULT_APPEARANCE.bgColor),
+      bgImageAssetId: bgImageAssetId,
+      bgImageFit: src.bgImageFit === 'contain' ? 'contain' : 'cover',
+      userBubbleColor: normalizeHexColor(src.userBubbleColor, DEFAULT_APPEARANCE.userBubbleColor),
+      charBubbleColor: normalizeHexColor(src.charBubbleColor, DEFAULT_APPEARANCE.charBubbleColor)
+    };
+  }
+
   function normalizeWorkData(raw, fallbackMeta) {
     var now = Date.now();
     var meta = fallbackMeta || {};
@@ -44,6 +77,9 @@
       title: String(src.title || meta.title || '未命名作品').trim() || '未命名作品',
       char: String(src.char || meta.char || '对方'),
       user: String(src.user || meta.user || '我'),
+      charAvatarAssetId: typeof src.charAvatarAssetId === 'string' ? src.charAvatarAssetId : (typeof meta.charAvatarAssetId === 'string' ? meta.charAvatarAssetId : ''),
+      userAvatarAssetId: typeof src.userAvatarAssetId === 'string' ? src.userAvatarAssetId : (typeof meta.userAvatarAssetId === 'string' ? meta.userAvatarAssetId : ''),
+      appearance: normalizeAppearance(src.appearance),
       topic: typeof src.topic === 'string' ? src.topic : '',
       join: src.join !== false,
       showTools: Boolean(src.showTools),
@@ -261,6 +297,9 @@
       title: cleanTitle,
       char: '对方',
       user: '我',
+      charAvatarAssetId: '',
+      userAvatarAssetId: '',
+      appearance: clone(DEFAULT_APPEARANCE),
       topic: '',
       join: true,
       showTools: false,
@@ -402,9 +441,16 @@
         var raw = store.getItem(workDataKey(w.id));
         if (!raw) return;
         var parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.items)) {
-          for (var i = 0; i < parsed.items.length; i++) {
-            combined.push(parsed.items[i]);
+        if (parsed) {
+          if (parsed.charAvatarAssetId) combined.push({ assetId: parsed.charAvatarAssetId });
+          if (parsed.userAvatarAssetId) combined.push({ assetId: parsed.userAvatarAssetId });
+          if (parsed.appearance && parsed.appearance.bgImageAssetId) {
+            combined.push({ assetId: parsed.appearance.bgImageAssetId });
+          }
+          if (Array.isArray(parsed.items)) {
+            for (var i = 0; i < parsed.items.length; i++) {
+              combined.push(parsed.items[i]);
+            }
           }
         }
       } catch (_) {}
@@ -426,6 +472,13 @@
         var raw = store.getItem(workDataKey(w.id));
         if (!raw) continue;
         var parsed = JSON.parse(raw);
+        if (parsed && (
+          parsed.charAvatarAssetId === assetId ||
+          parsed.userAvatarAssetId === assetId ||
+          (parsed.appearance && parsed.appearance.bgImageAssetId === assetId)
+        )) {
+          return true;
+        }
         var items = parsed && Array.isArray(parsed.items) ? parsed.items : [];
         for (var j = 0; j < items.length; j++) {
           var m = items[j];
@@ -445,6 +498,8 @@
     WORKS_INDEX_KEY: WORKS_INDEX_KEY,
     WORK_DATA_PREFIX: WORK_DATA_PREFIX,
     LEGACY_WORK_ID: LEGACY_WORK_ID,
+    DEFAULT_APPEARANCE: clone(DEFAULT_APPEARANCE),
+    normalizeAppearance: normalizeAppearance,
     ensureInitialized: ensureInitialized,
     listWorks: listWorks,
     createWork: createWork,
