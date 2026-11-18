@@ -35,6 +35,34 @@
     return 'work_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
   }
 
+  var DEFAULT_CREATION_MODE = 'manual';
+  var VALID_CREATION_MODES = ['manual', 'ai_roleplay', 'ai_story'];
+  var CREATION_MODES = [
+    {
+      id: 'manual',
+      title: '手动创作',
+      description: '自己编辑双方聊天消息',
+      pendingAi: false
+    },
+    {
+      id: 'ai_roleplay',
+      title: 'AI 角色互动',
+      description: '自己发送消息，AI 扮演指定角色回复',
+      pendingAi: true
+    },
+    {
+      id: 'ai_story',
+      title: 'AI 剧情生成',
+      description: '根据设定自动生成双方聊天剧情',
+      pendingAi: true
+    }
+  ];
+
+  function normalizeCreationMode(raw) {
+    var val = typeof raw === 'string' ? raw.trim() : '';
+    return VALID_CREATION_MODES.indexOf(val) !== -1 ? val : DEFAULT_CREATION_MODE;
+  }
+
   var DEFAULT_APPEARANCE = {
     bgType: 'color',
     bgColor: '#e8ede8',
@@ -80,6 +108,7 @@
       charAvatarAssetId: typeof src.charAvatarAssetId === 'string' ? src.charAvatarAssetId : (typeof meta.charAvatarAssetId === 'string' ? meta.charAvatarAssetId : ''),
       userAvatarAssetId: typeof src.userAvatarAssetId === 'string' ? src.userAvatarAssetId : (typeof meta.userAvatarAssetId === 'string' ? meta.userAvatarAssetId : ''),
       appearance: normalizeAppearance(src.appearance),
+      creationMode: normalizeCreationMode(src.creationMode !== undefined ? src.creationMode : meta.creationMode),
       topic: typeof src.topic === 'string' ? src.topic : '',
       join: src.join !== false,
       showTools: Boolean(src.showTools),
@@ -96,6 +125,7 @@
       title: workData.title,
       char: workData.char || '对方',
       user: workData.user || '我',
+      creationMode: normalizeCreationMode(workData.creationMode),
       messageCount: Array.isArray(workData.items) ? workData.items.length : 0,
       createdAt: workData.createdAt,
       updatedAt: workData.updatedAt,
@@ -300,6 +330,7 @@
       charAvatarAssetId: '',
       userAvatarAssetId: '',
       appearance: clone(DEFAULT_APPEARANCE),
+      creationMode: DEFAULT_CREATION_MODE,
       topic: '',
       join: true,
       showTools: false,
@@ -498,6 +529,9 @@
     WORKS_INDEX_KEY: WORKS_INDEX_KEY,
     WORK_DATA_PREFIX: WORK_DATA_PREFIX,
     LEGACY_WORK_ID: LEGACY_WORK_ID,
+    DEFAULT_CREATION_MODE: DEFAULT_CREATION_MODE,
+    CREATION_MODES: clone(CREATION_MODES),
+    normalizeCreationMode: normalizeCreationMode,
     DEFAULT_APPEARANCE: clone(DEFAULT_APPEARANCE),
     normalizeAppearance: normalizeAppearance,
     ensureInitialized: ensureInitialized,

@@ -37,6 +37,54 @@
   var USER_BUBBLE_PRESETS = ['#d9e3d2', '#efe3d0', '#d6e4ee', '#eedce0', '#dce6dc', '#3f5243'];
   var CHAR_BUBBLE_PRESETS = ['#fffefa', '#fffdf9', '#fcfdff', '#f4f2ec', '#edf1ea', '#2d342e'];
 
+  var DEFAULT_CREATION_MODE = 'manual';
+
+  var CREATION_MODE_LIST = [
+    {
+      id: 'manual',
+      title: '手动创作',
+      desc: '自己编辑双方聊天消息',
+      isAi: false,
+      noticeText: ''
+    },
+    {
+      id: 'ai_roleplay',
+      title: 'AI 角色互动',
+      desc: '自己发送消息，AI 扮演指定角色回复',
+      isAi: true,
+      noticeText: 'AI 角色互动接口暂未接入，当前版本不会发起真实 AI 请求；您仍可正常使用下方输入框与工具手动创作，已有聊天记录不会丢失。'
+    },
+    {
+      id: 'ai_story',
+      title: 'AI 剧情生成',
+      desc: '根据设定自动生成双方聊天剧情',
+      isAi: true,
+      noticeText: 'AI 剧情生成接口暂未接入，当前版本不会自动生成剧情内容；您仍可正常使用下方工具手动创作，已有聊天记录不会丢失。'
+    }
+  ];
+
+  function normalizeMode(raw) {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.normalizeCreationMode === 'function') {
+      return wApi.normalizeCreationMode(raw);
+    }
+    var val = typeof raw === 'string' ? raw.trim() : '';
+    for (var i = 0; i < CREATION_MODE_LIST.length; i++) {
+      if (CREATION_MODE_LIST[i].id === val) return val;
+    }
+    return DEFAULT_CREATION_MODE;
+  }
+
+  function getCreationModeDef(modeId) {
+    var normalized = normalizeMode(modeId);
+    for (var i = 0; i < CREATION_MODE_LIST.length; i++) {
+      if (CREATION_MODE_LIST[i].id === normalized) {
+        return CREATION_MODE_LIST[i];
+      }
+    }
+    return CREATION_MODE_LIST[0];
+  }
+
   var INITIAL_STATE = {
     title: '捡手机文学',
     char: '对方',
@@ -51,6 +99,7 @@
       userBubbleColor: '#d9e3d2',
       charBubbleColor: '#fffefa'
     },
+    creationMode: DEFAULT_CREATION_MODE,
     topic: '',
     join: true,
     showTools: false,
@@ -454,6 +503,9 @@
 
         var titleRow = el('div', 'fc-work-title-row');
         titleRow.appendChild(el('strong', 'fc-work-title', work.title || '未命名作品'));
+        var modeDef = getCreationModeDef(work.creationMode);
+        var modeTag = el('span', 'fc-work-mode-tag' + (modeDef.isAi ? ' is-ai' : ''), modeDef.title);
+        titleRow.appendChild(modeTag);
         if (work.isLegacy) {
           titleRow.appendChild(el('span', 'fc-work-legacy-tag', '旧版'));
         }
@@ -522,6 +574,7 @@
       wApi.setActiveWorkId(workId);
     }
     _state = loaded;
+    _state.creationMode = normalizeMode(_state.creationMode);
     _sendSide = 'right';
     _panelMode = '';
     _selectedIndex = -1;
@@ -558,6 +611,44 @@
     head.appendChild(backBtn);
     head.appendChild(titleEl);
     head.appendChild(headActions);
+
+    // 创作模式状态条与入口（任务 11）
+    var modeBar = el('div', 'fc-chat-mode-bar');
+    modeBar.id = 'fc-chat-mode-bar';
+    var modeStatus = el('div', 'fc-chat-mode-status');
+    modeStatus.appendChild(el('span', 'fc-chat-mode-dot'));
+    modeStatus.appendChild(el('span', 'fc-chat-mode-prefix', '当前模式'));
+    var modeLabelEl = el('strong', 'fc-chat-mode-label', '');
+    modeLabelEl.id = 'fc-chat-mode-label';
+    var modeAiTag = el('span', 'fc-chat-mode-ai-tag', 'AI 功能待接入');
+    modeAiTag.id = 'fc-chat-mode-ai-tag';
+    modeAiTag.hidden = true;
+    modeStatus.appendChild(modeLabelEl);
+    modeStatus.appendChild(modeAiTag);
+
+    var modeBtn = el('button', 'fc-chat-mode-btn');
+    modeBtn.type = 'button';
+    modeBtn.id = 'fc-chat-mode-btn';
+    modeBtn.setAttribute('aria-label', '选择创作模式');
+    modeBtn.appendChild(el('span', '', '创作模式'));
+    modeBtn.appendChild(el('span', 'fc-chat-mode-caret', '▾'));
+
+    modeBar.appendChild(modeStatus);
+    modeBar.appendChild(modeBtn);
+
+    // AI 模式待接入提示条（仅在 AI 模式下显示）
+    var aiNoticeEl = el('div', 'fc-chat-ai-notice');
+    aiNoticeEl.id = 'fc-chat-ai-notice';
+    aiNoticeEl.hidden = true;
+    var aiNoticeHead = el('div', 'fc-chat-ai-notice-head');
+    aiNoticeHead.appendChild(el('span', 'fc-chat-ai-notice-badge', 'AI 功能待接入'));
+    var aiNoticeTitle = el('span', 'fc-chat-ai-notice-title', '');
+    aiNoticeTitle.id = 'fc-chat-ai-notice-title';
+    aiNoticeHead.appendChild(aiNoticeTitle);
+    var aiNoticeDesc = el('p', 'fc-chat-ai-notice-desc', '');
+    aiNoticeDesc.id = 'fc-chat-ai-notice-desc';
+    aiNoticeEl.appendChild(aiNoticeHead);
+    aiNoticeEl.appendChild(aiNoticeDesc);
 
     // 消息流与独立背景图层
     var streamWrap = el('div', 'fc-chat-stream-wrap');
@@ -659,6 +750,8 @@
     ctxMask.appendChild(ctxMenu);
 
     app.appendChild(head);
+    app.appendChild(modeBar);
+    app.appendChild(aiNoticeEl);
     app.appendChild(streamWrap);
     app.appendChild(bottom);
     app.appendChild(stickerBatchInput);
@@ -740,6 +833,83 @@
       roleBtn.textContent = labelName + ' ⌄';
       roleBtn.classList.toggle('is-char', !isUser);
     }
+
+    function syncCreationModeUi() {
+      var def = getCreationModeDef(_state && _state.creationMode);
+      modeLabelEl.textContent = def.title;
+      modeBar.classList.toggle('is-ai-mode', def.isAi);
+      modeAiTag.hidden = !def.isAi;
+      aiNoticeEl.hidden = !def.isAi;
+      if (def.isAi) {
+        aiNoticeTitle.textContent = def.title;
+        aiNoticeDesc.textContent = def.noticeText;
+      } else {
+        aiNoticeTitle.textContent = '';
+        aiNoticeDesc.textContent = '';
+      }
+    }
+
+    function openCreationModeSheet() {
+      closeMessageContextMenu();
+      if (_panelMode) setPanelMode('');
+      openSheet('选择创作模式', function(body) {
+        var curId = normalizeMode(_state && _state.creationMode);
+        var sub = el('p', 'fc-mode-sheet-sub', '每部作品独立保存创作模式，切换模式不会清空已有聊天记录。');
+        var cards = el('div', 'fc-mode-cards');
+        cards.id = 'fc-mode-cards';
+
+        CREATION_MODE_LIST.forEach(function(def) {
+          var isActive = def.id === curId;
+          var card = el('button', 'fc-mode-card' + (isActive ? ' is-active' : '') + (def.isAi ? ' is-ai' : ''));
+          card.type = 'button';
+          card.dataset.creationMode = def.id;
+
+          var top = el('div', 'fc-mode-card-top');
+          var titleWrap = el('div', 'fc-mode-card-title-wrap');
+          titleWrap.appendChild(el('span', 'fc-mode-card-radio'));
+          titleWrap.appendChild(el('strong', 'fc-mode-card-title', def.title));
+          top.appendChild(titleWrap);
+
+          var badges = el('div', 'fc-mode-card-badges');
+          if (def.isAi) {
+            badges.appendChild(el('span', 'fc-mode-card-tag is-pending', 'AI 功能待接入'));
+          }
+          if (isActive) {
+            badges.appendChild(el('span', 'fc-mode-card-tag is-current', '当前模式'));
+          }
+          top.appendChild(badges);
+
+          var desc = el('p', 'fc-mode-card-desc', def.desc);
+
+          card.appendChild(top);
+          card.appendChild(desc);
+
+          card.onclick = function() {
+            if (!_state) return;
+            _state.creationMode = def.id;
+            saveState(_state);
+            syncCreationModeUi();
+            closeSheet();
+            notify('已切换为「' + def.title + '」' + (def.isAi ? '（AI 功能待接入）' : ''));
+          };
+
+          cards.appendChild(card);
+        });
+
+        var actions = el('div', 'fc-chat-sheet-actions');
+        var closeBtn = el('button', 'fc-chat-btn alt', '关闭');
+        closeBtn.type = 'button';
+        closeBtn.id = 'fc-mode-sheet-close';
+        closeBtn.onclick = closeSheet;
+        actions.appendChild(closeBtn);
+
+        body.appendChild(sub);
+        body.appendChild(cards);
+        body.appendChild(actions);
+      });
+    }
+
+    syncCreationModeUi();
 
     function autoResizeInput() {
       input.style.height = 'auto';
@@ -3571,6 +3741,10 @@
     settingsBtn.addEventListener('click', function() {
       closeMessageContextMenu();
       openRoleSettingsPanel();
+    });
+
+    modeBtn.addEventListener('click', function() {
+      openCreationModeSheet();
     });
 
     roleBtn.addEventListener('click', function() {
