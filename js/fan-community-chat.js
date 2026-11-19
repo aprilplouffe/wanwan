@@ -212,9 +212,39 @@
   var _expandedTextVoices = Object.create(null);
   var _aiBusy = false;
   var _aiErrorText = '';
+  var _aiErrorCode = '';
   var _aiLastTrigger = null;
   var _aiRequestSeq = 0;
   var _cleanupDoc = null;
+
+  function getAiReplyPrefs(raw) {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.normalizeAiReplyPrefs === 'function') {
+      return wApi.normalizeAiReplyPrefs(raw);
+    }
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var minVal = Number(src.minMessages);
+    var maxVal = Number(src.maxMessages);
+    minVal = Number.isFinite(minVal) ? Math.max(1, Math.min(20, Math.round(minVal))) : 1;
+    maxVal = Number.isFinite(maxVal) ? Math.max(1, Math.min(20, Math.round(maxVal))) : 5;
+    if (minVal > maxVal) maxVal = minVal;
+    return { minMessages: minVal, maxMessages: maxVal };
+  }
+
+  function formatReplyPrefsBadge(prefs) {
+    var p = getAiReplyPrefs(prefs);
+    return p.minMessages === p.maxMessages
+      ? ('固定 ' + p.minMessages + ' 条')
+      : (p.minMessages + '～' + p.maxMessages + ' 条');
+  }
+
+  function nextChatMessageId() {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.generateMessageId === 'function') {
+      return wApi.generateMessageId();
+    }
+    return 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  }
 
   function assetsApi() {
     return global.FanCommunityAssets || null;
@@ -812,12 +842,12 @@
 
     var compose = el('div', 'fc-chat-compose');
 
-    var voiceBtn = el('button', 'fc-chat-icon-btn voice');
-    voiceBtn.type = 'button';
-    voiceBtn.id = 'fc-chat-voice-btn';
-    voiceBtn.setAttribute('aria-label', '发送语音消息');
-    voiceBtn.setAttribute('title', '发送语音消息');
-    voiceBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"></circle><path d="M9.5 10.2v3.6M12 8.4v7.2M14.5 10.2v3.6"></path></svg>'));
+    var moreBtn = el('button', 'fc-chat-icon-btn plus');
+    moreBtn.type = 'button';
+    moreBtn.id = 'fc-chat-more-btn';
+    moreBtn.setAttribute('aria-label', '添加功能');
+    moreBtn.setAttribute('title', '添加功能');
+    moreBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"><circle cx="12" cy="12" r="9.2"></circle><line x1="12" y1="8.2" x2="12" y2="15.8"></line><line x1="8.2" y1="12" x2="15.8" y2="12"></line></svg>'));
 
     var input = el('textarea', 'fc-chat-input');
     input.id = 'fc-chat-input';
@@ -828,22 +858,26 @@
     emojiBtn.type = 'button';
     emojiBtn.id = 'fc-chat-emoji-btn';
     emojiBtn.setAttribute('aria-label', '表情包');
+    emojiBtn.setAttribute('title', '表情包');
     emojiBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"></circle><circle cx="9" cy="10" r="1" fill="currentColor" stroke="none"></circle><circle cx="15" cy="10" r="1" fill="currentColor" stroke="none"></circle><path d="M8.5 14.3a4.3 4.3 0 0 0 7 0"></path></svg>'));
 
-    var moreBtn = el('button', 'fc-chat-icon-btn plus');
-    moreBtn.type = 'button';
-    moreBtn.id = 'fc-chat-more-btn';
-    moreBtn.setAttribute('aria-label', '更多创作工具');
-    moreBtn.appendChild(createSvgIcon('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"><circle cx="12" cy="12" r="9.2"></circle><line x1="12" y1="8.2" x2="12" y2="15.8"></line><line x1="8.2" y1="12" x2="15.8" y2="12"></line></svg>'));
+    var aiReplyBtn = el('button', 'fc-chat-ai-reply-btn');
+    aiReplyBtn.type = 'button';
+    aiReplyBtn.id = 'fc-chat-ai-reply-btn';
+    aiReplyBtn.setAttribute('aria-label', 'AI 回复');
+    aiReplyBtn.setAttribute('title', '点击触发 AI 回复');
+    aiReplyBtn.hidden = true;
+    aiReplyBtn.innerHTML = '<span class="fc-ai-spark" aria-hidden="true">✦</span><span class="fc-ai-label">AI</span>';
 
     var sendBtn = el('button', 'fc-chat-send', '发送');
     sendBtn.type = 'button';
     sendBtn.id = 'fc-chat-send';
 
-    compose.appendChild(voiceBtn);
+    // 底部工具栏严格顺序：添加功能 -> 消息输入框 -> 表情包 -> AI 回复 -> 发送
+    compose.appendChild(moreBtn);
     compose.appendChild(input);
     compose.appendChild(emojiBtn);
-    compose.appendChild(moreBtn);
+    compose.appendChild(aiReplyBtn);
     compose.appendChild(sendBtn);
 
     var panelEl = el('div', 'fc-chat-panel');
@@ -1394,7 +1428,72 @@
       });
     }
 
+    function syncAiReplyButton() {
+      if (!aiReplyBtn) return;
+      var modeDef = getCreationModeDef(_state && _state.creationMode);
+      if (!modeDef.isAi) {
+        aiReplyBtn.hidden = true;
+        aiReplyBtn.disabled = false;
+        aiReplyBtn.classList.remove('is-busy');
+        return;
+      }
+      aiReplyBtn.hidden = false;
+      aiReplyBtn.disabled = Boolean(_aiBusy);
+      aiReplyBtn.classList.toggle('is-busy', Boolean(_aiBusy));
+      aiReplyBtn.setAttribute('aria-busy', _aiBusy ? 'true' : 'false');
+      if (_aiBusy) {
+        aiReplyBtn.innerHTML = '<span class="fc-ai-spark is-spin" aria-hidden="true">✦</span><span class="fc-ai-label">生成中</span>';
+        aiReplyBtn.setAttribute('title', 'AI 正在生成回复，请稍候');
+      } else {
+        aiReplyBtn.innerHTML = '<span class="fc-ai-spark" aria-hidden="true">✦</span><span class="fc-ai-label">AI</span>';
+        aiReplyBtn.setAttribute('title', modeDef.id === 'ai_story' ? '点击触发 AI 剧情回复' : '点击触发 AI 回复');
+      }
+    }
+
+    function handleManualAiReplyClick() {
+      if (!_state) return;
+      var modeDef = getCreationModeDef(_state.creationMode);
+      if (!modeDef.isAi) return;
+      if (_aiBusy) {
+        notify('AI 正在生成回复，请稍候…');
+        return;
+      }
+      closeMessageContextMenu();
+      if (_panelMode) setPanelMode('');
+
+      if (modeDef.id === 'ai_story') {
+        var dirText = input.value.trim();
+        if (dirText) {
+          input.value = '';
+          autoResizeInput();
+        }
+        triggerAiTurn({
+          triggerType: 'story_beat',
+          userDirection: dirText
+        });
+        return;
+      }
+
+      var visibleItems = Array.isArray(_state.items)
+        ? _state.items.filter(function(it) { return it && !it.fakeRecall && it.type !== 'withdraw'; })
+        : [];
+      var lastVisible = visibleItems.length ? visibleItems[visibleItems.length - 1] : null;
+      if (lastVisible && lastVisible.side === 'right') {
+        var isTextLast = lastVisible.type === 'text' && String(lastVisible.text || '').trim();
+        triggerAiTurn({
+          triggerType: isTextLast ? 'user_message' : 'reply_after_media',
+          userInput: isTextLast ? String(lastVisible.text || '').trim() : ''
+        });
+      } else {
+        triggerAiTurn({
+          triggerType: 'followup',
+          userInput: ''
+        });
+      }
+    }
+
     function renderAiModeBar() {
+      syncAiReplyButton();
       if (!aiBar) return;
       var modeDef = getCreationModeDef(_state && _state.creationMode);
       if (!modeDef.isAi) {
@@ -1410,7 +1509,7 @@
       aiBar.classList.toggle('is-error', Boolean(_aiErrorText));
 
       input.placeholder = modeDef.id === 'ai_story'
-        ? '发消息或输入剧情提示…'
+        ? '发消息或输入剧情方向…'
         : '向 ' + currentCharName() + ' 发消息…';
       if (!input.value) input.style.height = '38px';
 
@@ -1434,7 +1533,7 @@
         var activeRoleLabel = _roleStatusState.status === 'ok' && _roleStatusState.name
           ? _roleStatusState.name
           : currentCharName();
-        statusEl.textContent = activeRoleLabel + (modeDef.id === 'ai_story' ? ' · 双人剧情待命' : ' · 在线');
+        statusEl.textContent = activeRoleLabel + (modeDef.id === 'ai_story' ? ' · 点击 ✦AI 生成剧情' : ' · 点击 ✦AI 回复');
       }
       left.appendChild(statusEl);
 
@@ -1446,20 +1545,26 @@
         retryBtn.onclick = function() {
           if (_aiLastTrigger) {
             triggerAiTurn(_aiLastTrigger);
-          } else if (modeDef.id === 'ai_story') {
-            triggerAiTurn({ triggerType: 'story_beat', userDirection: '' });
           } else {
-            triggerAiTurn({ triggerType: 'followup' });
+            handleManualAiReplyClick();
           }
         };
+        right.appendChild(retryBtn);
+        if (_aiErrorCode === 'REPLY_COUNT_OUT_OF_RANGE') {
+          var countSetBtn = el('button', 'fc-chat-ai-btn is-warn', '条数设置');
+          countSetBtn.type = 'button';
+          countSetBtn.id = 'fc-chat-ai-count-settings-btn';
+          countSetBtn.onclick = openPhoneSettingsPanel;
+          right.appendChild(countSetBtn);
+        }
         var dismissBtn = el('button', 'fc-chat-ai-btn', '×');
         dismissBtn.type = 'button';
         dismissBtn.setAttribute('aria-label', '关闭错误提示');
         dismissBtn.onclick = function() {
           _aiErrorText = '';
+          _aiErrorCode = '';
           renderAiModeBar();
         };
-        right.appendChild(retryBtn);
         right.appendChild(dismissBtn);
       } else if (!_aiBusy) {
         if (_roleStatusState.status === 'missing') {
@@ -1473,38 +1578,6 @@
           };
           right.appendChild(rebindBtn);
         }
-
-        var actionBtn = el('button', 'fc-chat-ai-btn is-primary');
-        actionBtn.type = 'button';
-        actionBtn.id = 'fc-chat-ai-action-btn';
-        if (modeDef.id === 'ai_story') {
-          actionBtn.textContent = '生成剧情';
-          actionBtn.onclick = function() {
-            var dirText = input.value.trim();
-            if (dirText) {
-              input.value = '';
-              autoResizeInput();
-            }
-            triggerAiTurn({
-              triggerType: 'story_beat',
-              userDirection: dirText
-            });
-          };
-        } else {
-          var visibleItems = Array.isArray(_state && _state.items)
-            ? _state.items.filter(function(it) { return it && !it.fakeRecall && it.type !== 'withdraw'; })
-            : [];
-          var lastVisible = visibleItems.length ? visibleItems[visibleItems.length - 1] : null;
-          var shouldReplyMedia = Boolean(lastVisible && lastVisible.side === 'right');
-          actionBtn.textContent = shouldReplyMedia ? '让Ta回复' : '让Ta发一条';
-          actionBtn.onclick = function() {
-            triggerAiTurn({
-              triggerType: shouldReplyMedia ? 'reply_after_media' : 'followup',
-              userInput: (lastVisible && lastVisible.text) || ''
-            });
-          };
-        }
-        right.appendChild(actionBtn);
 
         var setBtn = el('button', 'fc-chat-ai-btn', '设定');
         setBtn.type = 'button';
@@ -1830,6 +1903,8 @@
         }
       }
 
+      var replyPrefs = getAiReplyPrefs(_state && _state.aiReplyPrefs);
+
       mScroll.appendChild(makeGroup('创作与 AI', [
         {
           id: 'fc-menu-item-mode',
@@ -1846,6 +1921,14 @@
           sub: initialAiSub,
           badge: initialAiBadge,
           onClick: openAiSettingsPanel
+        },
+        {
+          id: 'fc-menu-item-phone-settings',
+          icon: '⚙',
+          title: '捡手机设置',
+          sub: 'AI 回复偏好 · 分气泡数量范围（1～20 条）',
+          badge: formatReplyPrefsBadge(replyPrefs),
+          onClick: openPhoneSettingsPanel
         }
       ]));
 
@@ -2934,6 +3017,291 @@
       settingsPanel.setAttribute('aria-hidden', 'false');
     }
 
+    function openPhoneSettingsPanel() {
+      if (_panelMode) setPanelMode('');
+      closeSheet();
+      closeChatMenu();
+      closeAiSettingsPanel();
+      settingsPanel.replaceChildren();
+
+      var currentPrefs = getAiReplyPrefs(_state && _state.aiReplyPrefs);
+      var draftMinStr = String(currentPrefs.minMessages);
+      var draftMaxStr = String(currentPrefs.maxMessages);
+
+      var sHead = el('header', 'fc-settings-head');
+      var sBackBtn = el('button', 'fc-settings-back');
+      sBackBtn.type = 'button';
+      sBackBtn.id = 'fc-phone-settings-back';
+      sBackBtn.appendChild(el('span', 'fc-works-back-chevron', '‹'));
+      sBackBtn.appendChild(el('span', '', '返回'));
+      sBackBtn.onclick = closeSecondarySettingsPanel;
+
+      var sTitle = el('b', 'fc-settings-title', '捡手机设置');
+      var sResetBtn = el('button', 'fc-settings-reset-btn', '恢复默认');
+      sResetBtn.type = 'button';
+      sResetBtn.id = 'fc-phone-settings-reset';
+      sHead.appendChild(sBackBtn);
+      sHead.appendChild(sTitle);
+      sHead.appendChild(sResetBtn);
+
+      var sBody = el('div', 'fc-settings-body');
+      sBody.id = 'fc-phone-settings-body';
+
+      // AI 回复偏好分组
+      var prefCard = el('section', 'fc-settings-card');
+      prefCard.id = 'fc-phone-settings-reply-card';
+
+      var prefHead = el('div', 'fc-settings-card-head');
+      prefHead.appendChild(el('span', 'fc-settings-card-title', 'AI 回复偏好'));
+      var rangeTag = el('span', 'fc-settings-card-tag', formatReplyPrefsBadge(currentPrefs));
+      rangeTag.id = 'fc-reply-range-tag';
+      prefHead.appendChild(rangeTag);
+      prefCard.appendChild(prefHead);
+
+      prefCard.appendChild(el('p', 'fc-settings-note', '自定义单次 AI 分气泡回复的条数范围（1～20 条）。本作品的「AI 角色互动」与「AI 剧情生成」模式共用此设置，手动创作不受限制。'));
+
+      var listWrap = el('div', 'fc-reply-pref-list');
+
+      function buildStepperRow(cfg) {
+        var row = el('div', 'fc-reply-pref-row');
+        var copy = el('div', 'fc-reply-pref-copy');
+        var lbl = el('label', 'fc-reply-pref-label', cfg.label);
+        lbl.setAttribute('for', cfg.inputId);
+        copy.appendChild(lbl);
+        copy.appendChild(el('span', 'fc-reply-pref-sub', cfg.sub));
+
+        var stepper = el('div', 'fc-reply-stepper');
+        var decBtn = el('button', 'fc-reply-step-btn', '−');
+        decBtn.type = 'button';
+        decBtn.id = cfg.decId;
+        decBtn.setAttribute('aria-label', '减少' + cfg.label);
+
+        var numInput = document.createElement('input');
+        numInput.type = 'number';
+        numInput.inputMode = 'numeric';
+        numInput.min = '1';
+        numInput.max = '20';
+        numInput.step = '1';
+        numInput.id = cfg.inputId;
+        numInput.className = 'fc-reply-step-input';
+        numInput.setAttribute('aria-label', cfg.label);
+
+        var incBtn = el('button', 'fc-reply-step-btn', '+');
+        incBtn.type = 'button';
+        incBtn.id = cfg.incId;
+        incBtn.setAttribute('aria-label', '增加' + cfg.label);
+
+        stepper.appendChild(decBtn);
+        stepper.appendChild(numInput);
+        stepper.appendChild(incBtn);
+
+        row.appendChild(copy);
+        row.appendChild(stepper);
+        return { row: row, decBtn: decBtn, input: numInput, incBtn: incBtn };
+      }
+
+      var minCtrl = buildStepperRow({
+        label: '最少回复条数',
+        sub: '默认 1 条 · 可与最多条数相同以固定回复条数',
+        decId: 'fc-reply-min-dec',
+        inputId: 'fc-reply-min-input',
+        incId: 'fc-reply-min-inc'
+      });
+
+      var maxCtrl = buildStepperRow({
+        label: '最多回复条数',
+        sub: '默认 5 条 · 剧情模式中为双方合并总条数',
+        decId: 'fc-reply-max-dec',
+        inputId: 'fc-reply-max-input',
+        incId: 'fc-reply-max-inc'
+      });
+
+      listWrap.appendChild(minCtrl.row);
+      listWrap.appendChild(maxCtrl.row);
+      prefCard.appendChild(listWrap);
+
+      var PRESETS = [
+        { label: '1～3 条', min: 1, max: 3 },
+        { label: '1～5 条（默认）', min: 1, max: 5 },
+        { label: '3～6 条', min: 3, max: 6 },
+        { label: '固定 5 条', min: 5, max: 5 },
+        { label: '10～15 条', min: 10, max: 15 }
+      ];
+      var presetRow = el('div', 'fc-reply-presets');
+      presetRow.id = 'fc-reply-presets';
+      var presetBtns = [];
+      PRESETS.forEach(function(preset) {
+        var btn = el('button', 'fc-reply-preset-btn', preset.label);
+        btn.type = 'button';
+        btn.dataset.presetMin = String(preset.min);
+        btn.dataset.presetMax = String(preset.max);
+        btn.onclick = function() {
+          draftMinStr = String(preset.min);
+          draftMaxStr = String(preset.max);
+          minCtrl.input.value = draftMinStr;
+          maxCtrl.input.value = draftMaxStr;
+          syncReplyPrefUi();
+        };
+        presetBtns.push({ preset: preset, btn: btn });
+        presetRow.appendChild(btn);
+      });
+      prefCard.appendChild(presetRow);
+
+      var rangeHint = el('p', 'fc-reply-range-hint', '');
+      rangeHint.id = 'fc-reply-range-hint';
+      prefCard.appendChild(rangeHint);
+
+      sBody.appendChild(prefCard);
+
+      var sFoot = el('div', 'fc-settings-foot');
+      var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
+      cancelBtn.type = 'button';
+      cancelBtn.id = 'fc-phone-settings-cancel';
+      cancelBtn.onclick = closeSecondarySettingsPanel;
+
+      var saveBtn = el('button', 'fc-chat-btn', '保存设置');
+      saveBtn.type = 'button';
+      saveBtn.id = 'fc-phone-settings-save';
+      sFoot.appendChild(cancelBtn);
+      sFoot.appendChild(saveBtn);
+
+      function parseStrictInt(rawStr) {
+        var trimmed = String(rawStr === undefined || rawStr === null ? '' : rawStr).trim();
+        if (!/^\d+$/.test(trimmed)) return NaN;
+        return parseInt(trimmed, 10);
+      }
+
+      function validateDraft() {
+        var minVal = parseStrictInt(draftMinStr);
+        var maxVal = parseStrictInt(draftMaxStr);
+        if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) {
+          return { ok: false, error: '请输入 1～20 之间的整数条数。' };
+        }
+        if (minVal < 1 || minVal > 20 || maxVal < 1 || maxVal > 20) {
+          return { ok: false, error: '可设置范围为 1～20 条，请调整后再保存。' };
+        }
+        if (minVal > maxVal) {
+          return { ok: false, error: '最少回复条数不能大于最多回复条数，请调整后再保存。' };
+        }
+        return { ok: true, minMessages: minVal, maxMessages: maxVal };
+      }
+
+      function syncReplyPrefUi() {
+        var v = validateDraft();
+        var curMinNum = parseStrictInt(draftMinStr);
+        var curMaxNum = parseStrictInt(draftMaxStr);
+
+        minCtrl.decBtn.disabled = Number.isFinite(curMinNum) && curMinNum <= 1;
+        minCtrl.incBtn.disabled = Number.isFinite(curMinNum) && curMinNum >= 20;
+        maxCtrl.decBtn.disabled = Number.isFinite(curMaxNum) && curMaxNum <= 1;
+        maxCtrl.incBtn.disabled = Number.isFinite(curMaxNum) && curMaxNum >= 20;
+
+        if (!v.ok) {
+          rangeTag.textContent = '设置无效';
+          rangeTag.classList.add('is-warn');
+          rangeHint.textContent = v.error;
+          rangeHint.classList.add('is-error');
+          saveBtn.disabled = true;
+        } else {
+          rangeTag.classList.remove('is-warn');
+          rangeHint.classList.remove('is-error');
+          saveBtn.disabled = false;
+          if (v.minMessages === v.maxMessages) {
+            rangeTag.textContent = '固定 ' + v.minMessages + ' 条';
+            rangeHint.textContent = '当前为固定条数模式：AI 每次将恰好组织为 ' + v.minMessages + ' 条独立聊天气泡（AI 角色互动与 AI 剧情生成统一生效）。';
+          } else {
+            rangeTag.textContent = v.minMessages + '～' + v.maxMessages + ' 条';
+            rangeHint.textContent = '当前范围：AI 每次根据情境自主组织为 ' + v.minMessages + '～' + v.maxMessages + ' 条独立聊天气泡（AI 剧情生成中按双方总气泡数统计）。';
+          }
+        }
+
+        presetBtns.forEach(function(item) {
+          var active = v.ok && v.minMessages === item.preset.min && v.maxMessages === item.preset.max;
+          item.btn.classList.toggle('is-active', active);
+        });
+      }
+
+      minCtrl.input.value = draftMinStr;
+      maxCtrl.input.value = draftMaxStr;
+
+      minCtrl.decBtn.onclick = function() {
+        var cur = parseStrictInt(draftMinStr);
+        var next = Number.isFinite(cur) ? Math.max(1, cur - 1) : 1;
+        draftMinStr = String(next);
+        minCtrl.input.value = draftMinStr;
+        syncReplyPrefUi();
+      };
+      minCtrl.incBtn.onclick = function() {
+        var cur = parseStrictInt(draftMinStr);
+        var next = Number.isFinite(cur) ? Math.min(20, cur + 1) : 1;
+        draftMinStr = String(next);
+        minCtrl.input.value = draftMinStr;
+        syncReplyPrefUi();
+      };
+      minCtrl.input.addEventListener('input', function() {
+        draftMinStr = minCtrl.input.value;
+        syncReplyPrefUi();
+      });
+
+      maxCtrl.decBtn.onclick = function() {
+        var cur = parseStrictInt(draftMaxStr);
+        var next = Number.isFinite(cur) ? Math.max(1, cur - 1) : 5;
+        draftMaxStr = String(next);
+        maxCtrl.input.value = draftMaxStr;
+        syncReplyPrefUi();
+      };
+      maxCtrl.incBtn.onclick = function() {
+        var cur = parseStrictInt(draftMaxStr);
+        var next = Number.isFinite(cur) ? Math.min(20, cur + 1) : 5;
+        draftMaxStr = String(next);
+        maxCtrl.input.value = draftMaxStr;
+        syncReplyPrefUi();
+      };
+      maxCtrl.input.addEventListener('input', function() {
+        draftMaxStr = maxCtrl.input.value;
+        syncReplyPrefUi();
+      });
+
+      sResetBtn.onclick = function() {
+        draftMinStr = '1';
+        draftMaxStr = '5';
+        minCtrl.input.value = draftMinStr;
+        maxCtrl.input.value = draftMaxStr;
+        syncReplyPrefUi();
+        notify('已恢复默认回复条数（1～5 条），点击「保存设置」生效');
+      };
+
+      saveBtn.onclick = function() {
+        var v = validateDraft();
+        if (!v.ok) {
+          notify(v.error);
+          return;
+        }
+        if (!_state) return;
+        _state.aiReplyPrefs = {
+          minMessages: v.minMessages,
+          maxMessages: v.maxMessages
+        };
+        var ok = saveState(_state);
+        if (!ok) return;
+        if (_aiErrorCode === 'REPLY_COUNT_OUT_OF_RANGE') {
+          _aiErrorText = '';
+          _aiErrorCode = '';
+        }
+        closeSecondarySettingsPanel();
+        renderAiModeBar();
+        notify('已保存 AI 回复条数设置（' + formatReplyPrefsBadge(_state.aiReplyPrefs) + '）');
+      };
+
+      syncReplyPrefUi();
+
+      settingsPanel.appendChild(sHead);
+      settingsPanel.appendChild(sBody);
+      settingsPanel.appendChild(sFoot);
+      settingsPanel.classList.add('show');
+      settingsPanel.setAttribute('aria-hidden', 'false');
+    }
+
     function closeAiSettingsPanel() {
       aiSettingsPanel.classList.remove('show');
       aiSettingsPanel.setAttribute('aria-hidden', 'true');
@@ -3353,6 +3721,20 @@
       advanceBlock.appendChild(advanceText);
       advanceBlock.appendChild(advanceBtn);
       prefCard.appendChild(advanceBlock);
+
+      var replyCountLinkRow = el('div', 'fc-ai-reply-link-row');
+      var replyCountCopy = el('div', 'fc-ai-reply-link-copy');
+      replyCountCopy.appendChild(el('strong', 'fc-ai-reply-link-title', 'AI 分气泡回复条数：' + formatReplyPrefsBadge(_state && _state.aiReplyPrefs)));
+      replyCountCopy.appendChild(el('span', 'fc-ai-reply-link-sub', '两种 AI 模式共用 · 可在「捡手机设置」中自定义 1～20 条'));
+      var replyCountJumpBtn = el('button', 'fc-settings-mini-btn', '去设置');
+      replyCountJumpBtn.type = 'button';
+      replyCountJumpBtn.id = 'fc-ai-settings-jump-reply-prefs';
+      replyCountJumpBtn.onclick = function() {
+        openPhoneSettingsPanel();
+      };
+      replyCountLinkRow.appendChild(replyCountCopy);
+      replyCountLinkRow.appendChild(replyCountJumpBtn);
+      prefCard.appendChild(replyCountLinkRow);
 
       function syncPrefControls() {
         replyLenBtns.forEach(function(item) {
@@ -4635,6 +5017,112 @@
       });
     }
 
+    function openStickerEditSheet(sticker, opts) {
+      if (!sticker || !sticker.id) return;
+      var api = assetsApi();
+      if (!api || typeof api.updateStickerMeta !== 'function') {
+        notify('表情包存储模块不可用');
+        return;
+      }
+      var isNew = Boolean(opts && opts.isNew);
+      var displayName = typeof api.deriveStickerName === 'function'
+        ? api.deriveStickerName(sticker.name)
+        : (sticker.name || '表情包');
+      var initialDesc = String(sticker.description || sticker.note || '').trim();
+      var initialTags = Array.isArray(sticker.tags) ? sticker.tags.join('，') : '';
+
+      openSheet(isNew ? '设置表情包名称与描述' : '编辑表情包信息', function(body) {
+        var previewWrap = el('div', 'fc-sticker-edit-preview');
+        if (sticker.src) {
+          var pImg = document.createElement('img');
+          pImg.src = sticker.src;
+          pImg.alt = displayName;
+          previewWrap.appendChild(pImg);
+        } else {
+          previewWrap.appendChild(el('div', 'fc-chat-sticker-fallback', '无预览图'));
+        }
+        body.appendChild(previewWrap);
+
+        var nameField = el('div', 'fc-chat-field');
+        nameField.appendChild(el('label', '', '表情包名称'));
+        var nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.id = 'fc-sticker-edit-name';
+        nameInput.maxLength = 40;
+        nameInput.placeholder = '例如：小猫委屈、盯、摸摸头';
+        nameInput.value = displayName;
+        nameField.appendChild(nameInput);
+        body.appendChild(nameField);
+
+        var descField = el('div', 'fc-chat-field');
+        descField.appendChild(el('label', '', '文字描述（供 AI 理解语义与使用场景）'));
+        var descInput = document.createElement('textarea');
+        descInput.id = 'fc-sticker-edit-desc';
+        descInput.rows = 3;
+        descInput.maxLength = 300;
+        descInput.placeholder = '例如：委屈巴巴地看着你，适合撒娇、求安慰或装可怜时使用';
+        descInput.value = initialDesc;
+        descField.appendChild(descInput);
+        body.appendChild(descField);
+
+        var tagsField = el('div', 'fc-chat-field');
+        tagsField.appendChild(el('label', '', '可选标签（用逗号或空格分隔）'));
+        var tagsInput = document.createElement('input');
+        tagsInput.type = 'text';
+        tagsInput.id = 'fc-sticker-edit-tags';
+        tagsInput.maxLength = 120;
+        tagsInput.placeholder = '例如：委屈，撒娇，小猫';
+        tagsInput.value = initialTags;
+        tagsField.appendChild(tagsInput);
+        body.appendChild(tagsField);
+
+        body.appendChild(el(
+          'p',
+          'fc-chat-sheet-note',
+          '文字描述与标签仅用于 AI 理解你的表情包和主动挑选发送，聊天页面中只会显示表情包图片。'
+        ));
+
+        var actions = el('div', 'fc-chat-sheet-actions');
+        var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
+        cancelBtn.type = 'button';
+        cancelBtn.id = 'fc-sticker-edit-cancel';
+        cancelBtn.onclick = closeSheet;
+
+        var saveBtn = el('button', 'fc-chat-btn', '保存');
+        saveBtn.type = 'button';
+        saveBtn.id = 'fc-sticker-edit-save';
+        saveBtn.onclick = async function() {
+          var nextName = nameInput.value.trim() || '表情包';
+          var nextDesc = descInput.value.trim();
+          var nextTags = tagsInput.value
+            .split(/[,，、;；\s]+/)
+            .map(function(s) { return s.trim(); })
+            .filter(Boolean)
+            .slice(0, 8);
+          saveBtn.disabled = true;
+          try {
+            await api.updateStickerMeta(sticker.id, {
+              name: nextName,
+              description: nextDesc,
+              tags: nextTags
+            });
+            closeSheet();
+            notify('表情包信息已保存');
+            if (_panelMode === 'emoji') {
+              renderStickerPanel();
+            }
+          } catch (err) {
+            saveBtn.disabled = false;
+            notify('保存表情包信息失败：' + ((err && err.message) || '未知错误'));
+          }
+        };
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(saveBtn);
+        body.appendChild(actions);
+      });
+    }
+
     async function renderStickerPanel() {
       var renderSeq = ++_stickerRenderSeq;
       panelEl.replaceChildren();
@@ -4652,7 +5140,7 @@
       var importBtn = document.createElement('label');
       importBtn.className = 'fc-chat-panel-action' + (_importingStickers ? ' is-busy' : '');
       importBtn.id = 'fc-chat-sticker-import-btn';
-      importBtn.textContent = _importingStickers ? '导入中…' : '＋ 批量导入';
+      importBtn.textContent = _importingStickers ? '导入中…' : '＋ 导入表情包';
       bindStickerPickerTrigger(importBtn);
 
       headRight.appendChild(diagBtn);
@@ -4709,22 +5197,29 @@
       grid.replaceChildren();
 
       if (!stickers.length) {
-        grid.appendChild(el('p', 'fc-chat-empty', '还没有表情包，点击右上角或下方 ＋ 从本地批量导入'));
+        grid.appendChild(el('p', 'fc-chat-empty', '还没有表情包，点击右上角或下方 ＋ 导入并可编辑名称与描述'));
       }
 
       stickers.forEach(function(sticker) {
         if (!sticker || !sticker.id) return;
         var tile = el('div', 'fc-chat-sticker');
         tile.dataset.stickerId = sticker.id;
+        var displayName = typeof api.deriveStickerName === 'function'
+          ? api.deriveStickerName(sticker.name)
+          : (sticker.name || '表情包');
+        var hasDesc = Boolean(String(sticker.description || sticker.note || '').trim());
 
         var sendTileBtn = el('button', 'fc-chat-sticker-btn');
         sendTileBtn.type = 'button';
-        sendTileBtn.setAttribute('aria-label', '发送表情包 ' + (sticker.name || '表情包'));
+        sendTileBtn.setAttribute('aria-label', '发送表情包 ' + displayName);
+        if (hasDesc) {
+          sendTileBtn.title = displayName + '：' + String(sticker.description || sticker.note || '').trim();
+        }
 
         if (sticker.src) {
           var img = document.createElement('img');
           img.src = sticker.src;
-          img.alt = sticker.name || '表情包';
+          img.alt = displayName;
           img.onerror = function() {
             img.replaceWith(el('div', 'fc-chat-sticker-fallback', '无法显示'));
           };
@@ -4732,26 +5227,38 @@
         } else {
           sendTileBtn.appendChild(el('div', 'fc-chat-sticker-fallback', '无图片'));
         }
-        sendTileBtn.appendChild(el('span', '', sticker.name || '表情包'));
+        sendTileBtn.appendChild(el('span', '', displayName));
 
         sendTileBtn.onclick = function() {
           if (!Array.isArray(_state.items)) _state.items = [];
           _state.items.push({
+            id: nextChatMessageId(),
             type: 'image',
             isSticker: true,
             side: _sendSide,
             assetId: sticker.id,
-            alt: sticker.name || '表情包'
+            alt: displayName
           });
           saveState(_state);
           setPanelMode('');
+          renderAiModeBar();
           renderMessages(true);
+        };
+
+        var editBtn = el('button', 'fc-chat-sticker-edit' + (hasDesc ? ' has-desc' : ''), '✎');
+        editBtn.type = 'button';
+        editBtn.dataset.stickerEdit = sticker.id;
+        editBtn.title = hasDesc ? '编辑表情包名称与描述（已填写描述）' : '编辑表情包名称与描述';
+        editBtn.setAttribute('aria-label', '编辑表情包 ' + displayName);
+        editBtn.onclick = function(e) {
+          e.stopPropagation();
+          openStickerEditSheet(sticker, { isNew: false });
         };
 
         var delBtn = el('button', 'fc-chat-sticker-del', '×');
         delBtn.type = 'button';
         delBtn.title = '从表情包库移除';
-        delBtn.setAttribute('aria-label', '从表情包库移除 ' + (sticker.name || '表情包'));
+        delBtn.setAttribute('aria-label', '从表情包库移除 ' + displayName);
         delBtn.onclick = async function(e) {
           e.stopPropagation();
           try {
@@ -4768,6 +5275,7 @@
         };
 
         tile.appendChild(sendTileBtn);
+        tile.appendChild(editBtn);
         tile.appendChild(delBtn);
         grid.appendChild(tile);
       });
@@ -4775,8 +5283,8 @@
       var plusTile = document.createElement('label');
       plusTile.className = 'fc-chat-addsticker' + (_importingStickers ? ' is-busy' : '');
       plusTile.textContent = '＋';
-      plusTile.title = '批量导入本地表情包';
-      plusTile.setAttribute('aria-label', '批量导入本地表情包');
+      plusTile.title = '导入本地表情包';
+      plusTile.setAttribute('aria-label', '导入本地表情包');
       bindStickerPickerTrigger(plusTile);
       grid.appendChild(plusTile);
     }
@@ -4805,6 +5313,7 @@
       var added = 0;
       var failed = 0;
       var lastErrorMsg = '';
+      var lastSavedAsset = null;
       try {
         for (var i = 0; i < files.length; i++) {
           var latestDiag = null;
@@ -4818,15 +5327,24 @@
               }
             });
             try {
+              var cleanName = typeof api.deriveStickerName === 'function'
+                ? api.deriveStickerName(files[i].name)
+                : (files[i].name || '表情包');
+              var nowTs = Date.now();
               var savedAsset = await api.putAsset({
                 id: api.uid('stk_'),
-                name: files[i].name || '表情包',
+                name: cleanName,
+                description: '',
+                tags: [],
                 src: dataUrl,
-                kind: 'sticker'
+                kind: 'sticker',
+                createdAt: nowTs,
+                updatedAt: nowTs
               });
               if (typeof api.updateDiagnosticSaveStatus === 'function') {
                 api.updateDiagnosticSaveStatus(latestDiag, true, savedAsset && savedAsset.id);
               }
+              lastSavedAsset = savedAsset;
               added += 1;
             } catch (dbErr) {
               if (typeof api.updateDiagnosticSaveStatus === 'function') {
@@ -4850,8 +5368,11 @@
         renderStickerPanel();
       }
 
-      if (added > 0 && failed === 0) {
-        notify('已批量导入 ' + added + ' 个表情包');
+      if (added === 1 && failed === 0 && lastSavedAsset) {
+        notify('已导入表情包，可补充名称与文字描述');
+        openStickerEditSheet(lastSavedAsset, { isNew: true });
+      } else if (added > 0 && failed === 0) {
+        notify('已批量导入 ' + added + ' 个表情包，点击左上角 ✎ 可编辑描述');
       } else if (added > 0) {
         notify('已导入 ' + added + ' 个表情包（' + failed + ' 个失败' + (lastErrorMsg ? '：' + lastErrorMsg : '') + '）');
       } else {
@@ -4990,9 +5511,13 @@
           return;
         }
 
+        if (!item.id) {
+          item.id = nextChatMessageId();
+        }
         var side = item.side === 'right' ? 'right' : 'left';
         var row = el('div', 'fc-chat-msg ' + side);
         row.dataset.msgIndex = String(index);
+        row.dataset.msgId = String(item.id);
         row.dataset.msgKind = item.type || 'other';
 
         var roleName = side === 'right' ? userDisplayName : charDisplayName;
@@ -5499,6 +6024,7 @@
       var reqSeq = ++_aiRequestSeq;
       _aiBusy = true;
       _aiErrorText = '';
+      _aiErrorCode = '';
       _aiLastTrigger = triggerOpts || { triggerType: 'followup' };
       renderAiModeBar();
 
@@ -5515,12 +6041,17 @@
         if (!Array.isArray(_state.items)) _state.items = [];
         if (Array.isArray(result.messages)) {
           for (var i = 0; i < result.messages.length; i++) {
-            _state.items.push(result.messages[i]);
+            var nextMsg = result.messages[i];
+            if (nextMsg && typeof nextMsg === 'object' && !nextMsg.id) {
+              nextMsg.id = nextChatMessageId();
+            }
+            _state.items.push(nextMsg);
           }
         }
         saveState(_state);
         _aiBusy = false;
         _aiErrorText = '';
+        _aiErrorCode = '';
         renderAiModeBar();
         renderMessages(true);
       } catch (err) {
@@ -5529,6 +6060,7 @@
         }
         _aiBusy = false;
         _aiErrorText = (err && err.message) ? String(err.message) : 'AI 请求失败，请重试';
+        _aiErrorCode = (err && err.code) ? String(err.code) : '';
         renderAiModeBar();
         notify(_aiErrorText);
       }
@@ -5540,6 +6072,7 @@
       if (!Array.isArray(_state.items)) _state.items = [];
       var sentSide = _sendSide;
       _state.items.push({
+        id: nextChatMessageId(),
         type: 'text',
         side: sentSide,
         text: text
@@ -5549,13 +6082,6 @@
       saveState(_state);
       renderAiModeBar();
       renderMessages(true);
-
-      if (_state.creationMode === 'ai_roleplay' && sentSide === 'right') {
-        triggerAiTurn({
-          triggerType: 'user_message',
-          userInput: text
-        });
-      }
     }
 
     streamEl.addEventListener('click', function() {
@@ -5594,12 +6120,6 @@
       else openChatMenu();
     });
 
-    voiceBtn.addEventListener('click', function() {
-      closeMessageContextMenu();
-      if (_panelMode) setPanelMode('');
-      openVoiceSheet();
-    });
-
     roleBtn.addEventListener('click', function() {
       _sendSide = _sendSide === 'right' ? 'left' : 'right';
       syncRoleButton();
@@ -5613,6 +6133,8 @@
     moreBtn.addEventListener('click', function() {
       togglePanelMode('more');
     });
+
+    aiReplyBtn.addEventListener('click', handleManualAiReplyClick);
 
     sendBtn.addEventListener('click', handleSend);
 

@@ -107,19 +107,75 @@
     return null;
   }
 
+  var MAX_COUNT_RETRIES = 2;
+  var _localMsgIdSeq = 0;
+
+  function nextBubbleId() {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.generateMessageId === 'function') {
+      return wApi.generateMessageId();
+    }
+    _localMsgIdSeq = (_localMsgIdSeq + 1) % 1000000;
+    return 'msg_' + Date.now() + '_' + _localMsgIdSeq + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function resolveReplyPrefsSafe(workState) {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.normalizeAiReplyPrefs === 'function') {
+      return wApi.normalizeAiReplyPrefs(workState && workState.aiReplyPrefs);
+    }
+    var pApi = promptsApi();
+    if (pApi && typeof pApi.getReplyPrefs === 'function') {
+      return pApi.getReplyPrefs(workState);
+    }
+    return { minMessages: 1, maxMessages: 5 };
+  }
+
+  function extractRawMessagesArray(parsedObj) {
+    if (!parsedObj || typeof parsedObj !== 'object') return null;
+    var candidate = null;
+    if (Array.isArray(parsedObj.messages)) candidate = parsedObj.messages;
+    else if (Array.isArray(parsedObj.items)) candidate = parsedObj.items;
+    else if (Array.isArray(parsedObj.bubbles)) candidate = parsedObj.bubbles;
+    else if (Array.isArray(parsedObj.replies)) candidate = parsedObj.replies;
+    if (!candidate) return null;
+    // 无损解包一层意外嵌套数组（例如 [[{...}, {...}]]）
+    if (candidate.length === 1 && Array.isArray(candidate[0])) {
+      return candidate[0];
+    }
+    return candidate;
+  }
+
+  function isCountableBubble(msg) {
+    if (!msg || typeof msg !== 'object') return false;
+    if (msg.type === 'text') {
+      return Boolean(cleanPlainText(msg.text, 1000));
+    }
+    if (msg.type === 'image' && msg.isSticker) {
+      return Boolean(msg.assetId);
+    }
+    if (msg.type === 'text_voice') {
+      return Boolean(cleanPlainText(msg.text !== undefined ? msg.text : msg.content, 600));
+    }
+    return false;
+  }
+
   // 解析 AI 原始响应并结合真实表情包目录进行安全校验
+  // 注意：绝不通过句号/逗号/固定字数机械拆分单条消息，也不静默截断超出范围的剧情气泡
   function parseStructuredResponse(rawText, options) {
     options = options || {};
     var mode = options.mode === 'ai_story' ? 'ai_story' : 'ai_roleplay';
     var stickerIdMap = options.stickerIdMap || Object.create(null);
     var defaultSide = options.defaultSide === 'right' ? 'right' : 'left';
+    var parseCeiling = Math.max(40, (Number(options.maxMessages) || 5) + 12);
 
     var parsedObj = extractBalancedJsonObject(rawText);
     var usedFallbackPlainText = false;
     var rawMessages = [];
+    var extractedArray = extractRawMessagesArray(parsedObj);
 
-    if (parsedObj && Array.isArray(parsedObj.messages)) {
-      rawMessages = parsedObj.messages;
+    if (extractedArray) {
+      rawMessages = extractedArray;
     } else if (parsedObj && typeof parsedObj.reply === 'string') {
       rawMessages = [{ type: 'text', content: parsedObj.reply }];
     } else if (parsedObj && typeof parsedObj.content === 'string') {
@@ -127,15 +183,14 @@
     } else {
       usedFallbackPlainText = true;
       var plain = stripCodeFence(rawText);
-      // 去掉意外的 JSON 残片前缀或 markdown 噪音，按自然行切分，最多保留 3 条气泡
       var lines = plain
         .split(/\n+/)
-        .map(function(line) { return cleanPlainText(line, 400); })
+        .map(function(line) { return cleanPlainText(line, 600); })
         .filter(Boolean);
       if (!lines.length && plain.trim()) {
-        lines = [cleanPlainText(plain, 400)];
+        lines = [cleanPlainText(plain, 600)];
       }
-      rawMessages = lines.slice(0, mode === 'ai_story' ? 4 : 3).map(function(line) {
+      rawMessages = lines.slice(0, parseCeiling).map(function(line) {
         return { side: defaultSide, type: 'text', content: line };
       });
     }
@@ -143,12 +198,13 @@
     var validatedMessages = [];
     var droppedInvalidStickers = 0;
 
-    for (var i = 0; i < rawMessages.length && validatedMessages.length < 6; i++) {
+    for (var i = 0; i < rawMessages.length && validatedMessages.length < parseCeiling; i++) {
       var item = rawMessages[i];
       if (typeof item === 'string') {
-        var strMsg = cleanPlainText(item, 600);
+        var strMsg = cleanPlainText(item, 800);
         if (strMsg) {
           validatedMessages.push({
+            id: nextBubbleId(),
             type: 'text',
             side: defaultSide,
             text: strMsg
@@ -168,6 +224,7 @@
         var matchedSticker = assetId && stickerIdMap[assetId] ? stickerIdMap[assetId] : null;
         if (matchedSticker) {
           validatedMessages.push({
+            id: nextBubbleId(),
             type: 'image',
             isSticker: true,
             side: itemSide,
@@ -178,10 +235,11 @@
           droppedInvalidStickers += 1;
           var fallbackText = cleanPlainText(
             item.fallbackText || item.text || item.content || '',
-            200
+            240
           );
           if (fallbackText) {
             validatedMessages.push({
+              id: nextBubbleId(),
               type: 'text',
               side: itemSide,
               text: fallbackText
@@ -196,6 +254,7 @@
         if (!voiceText) continue;
         var estDur = estimateTextVoiceDuration(voiceText, item.duration);
         validatedMessages.push({
+          id: nextBubbleId(),
           type: 'text_voice',
           side: itemSide,
           text: voiceText,
@@ -210,6 +269,7 @@
       var txtVal = cleanPlainText(item.content !== undefined ? item.content : item.text, 800);
       if (txtVal) {
         validatedMessages.push({
+          id: nextBubbleId(),
           type: 'text',
           side: itemSide,
           text: txtVal
@@ -217,10 +277,11 @@
       }
     }
 
-    if (!validatedMessages.length) {
-      var safeFallback = cleanPlainText(stripCodeFence(rawText), 500);
+    if (!validatedMessages.length && !extractedArray) {
+      var safeFallback = cleanPlainText(stripCodeFence(rawText), 600);
       if (safeFallback) {
         validatedMessages.push({
+          id: nextBubbleId(),
           type: 'text',
           side: defaultSide,
           text: safeFallback
@@ -228,8 +289,11 @@
       }
     }
 
+    var validBubbleCount = validatedMessages.filter(isCountableBubble).length;
+
     return {
       messages: validatedMessages,
+      validBubbleCount: validBubbleCount,
       emotionUpdate: parsedObj && parsedObj.emotionUpdate && typeof parsedObj.emotionUpdate === 'object'
         ? parsedObj.emotionUpdate
         : null,
@@ -239,6 +303,67 @@
       usedFallbackPlainText: usedFallbackPlainText,
       droppedInvalidStickers: droppedInvalidStickers
     };
+  }
+
+  function validateMessageCount(parsed, replyPrefs) {
+    var prefs = replyPrefs || { minMessages: 1, maxMessages: 5 };
+    var minVal = prefs.minMessages;
+    var maxVal = prefs.maxMessages;
+    var count = parsed && typeof parsed.validBubbleCount === 'number'
+      ? parsed.validBubbleCount
+      : (parsed && Array.isArray(parsed.messages) ? parsed.messages.filter(isCountableBubble).length : 0);
+
+    if (count < minVal) {
+      return {
+        ok: false,
+        reason: 'too_few',
+        actualCount: count,
+        minMessages: minVal,
+        maxMessages: maxVal
+      };
+    }
+    if (count > maxVal) {
+      return {
+        ok: false,
+        reason: 'too_many',
+        actualCount: count,
+        minMessages: minVal,
+        maxMessages: maxVal
+      };
+    }
+    return {
+      ok: true,
+      reason: 'ok',
+      actualCount: count,
+      minMessages: minVal,
+      maxMessages: maxVal
+    };
+  }
+
+  function buildCountCorrectionInstruction(mode, validation) {
+    var minVal = validation.minMessages;
+    var maxVal = validation.maxMessages;
+    var actual = validation.actualCount;
+    var isFixed = minVal === maxVal;
+    var targetDesc = isFixed
+      ? ('恰好 ' + minVal + ' 条')
+      : (minVal + ' 至 ' + maxVal + ' 条');
+    var scopeHint = mode === 'ai_story'
+      ? '（请留意：AI 剧情生成模式的条数限制针对双方所有消息气泡的总和）'
+      : '';
+
+    if (validation.reason === 'too_few') {
+      return [
+        '你上一次返回的有效独立消息数量为 ' + actual + ' 条，少于当前作品设定的 ' + targetDesc + ' 范围' + scopeHint + '。',
+        '请基于刚才的语境、角色性格与剧情氛围重新组织本次回复，自然生成 ' + targetDesc + '有实际交流意义的独立手机聊天气泡（可通过更贴合真人的对话承接、追问、细节补充、贴合情绪的表情包或文字语音条来形成自然节奏，避免空话或重复凑数）。',
+        '请严格返回完整的单个 JSON 对象（包含 messages 与 emotionUpdate）。'
+      ].join('\n');
+    }
+    return [
+      '你上一次返回的有效独立消息数量为 ' + actual + ' 条，超过了当前作品设定的 ' + targetDesc + ' 范围' + scopeHint + '。',
+      '请完整保留本次核心剧情、情绪流动与角色语气，自然收束并重新组织为 ' + targetDesc + '独立手机聊天气泡（避免丢失关键内容）。',
+      '请严格返回完整的单个 JSON 对象（包含 messages 与 emotionUpdate）。'
+    ].join('\n');
   }
 
   function clampInt(val, min, max, fallback) {
@@ -343,7 +468,7 @@
   }
 
   // 当历史消息超过窗口时，将更早未被压缩的记录安全折叠进入 aiMemory.historySummary
-  function compressHistoryIfNeeded(workState, summaryNote) {
+  function compressHistoryIfNeeded(workState, summaryNote, stickerIdMap) {
     if (!workState || typeof workState !== 'object') return false;
     var pApi = promptsApi();
     var wApi = worksApi();
@@ -377,7 +502,7 @@
       var digestParts = [];
       for (var j = 0; j < newlyFolded.length; j++) {
         var ser = pApi && typeof pApi.serializeMessageForPrompt === 'function'
-          ? pApi.serializeMessageForPrompt(newlyFolded[j].item, charName, userName)
+          ? pApi.serializeMessageForPrompt(newlyFolded[j].item, charName, userName, stickerIdMap)
           : null;
         if (ser && ser.line) {
           digestParts.push(cleanPlainText(ser.line, 64));
@@ -458,15 +583,19 @@
       var idMap = Object.create(null);
       list.forEach(function(st) {
         if (!st || !st.id) return;
+        var desc = String(st.description || st.note || '').trim();
         var entry = {
           id: String(st.id),
           name: String(st.name || '表情包').replace(/\.[a-z0-9]{1,5}$/i, '').trim() || '表情包',
+          description: desc,
           tags: Array.isArray(st.tags) ? st.tags : [],
           mood: String(st.mood || ''),
-          note: String(st.note || '')
+          note: String(st.note || desc),
+          createdAt: Number(st.createdAt || 0),
+          updatedAt: Number(st.updatedAt || st.createdAt || 0)
         };
         idMap[entry.id] = entry;
-        if (catalog.length < 36) catalog.push(entry);
+        if (catalog.length < 32) catalog.push(entry);
       });
       return { catalog: catalog, idMap: idMap, totalCount: list.length };
     } catch (_) {
@@ -489,7 +618,7 @@
     if (opts.userInput) pushText(String(opts.userInput));
     if (opts.userDirection) pushText(String(opts.userDirection));
 
-    // 最近聊天记录（包含普通文字、text_voice 语音文字内容、以及已使用表情包名称与语义标签）
+    // 最近聊天记录（仅扫描本轮实际已发送的消息；包含文字、text_voice 与已发送表情包的名称/描述/标签，绝不扫描未发送的全局表情包库）
     var items = Array.isArray(st.items) ? st.items : [];
     var visible = [];
     for (var i = 0; i < items.length; i++) {
@@ -509,9 +638,10 @@
         if (msg.isSticker && msg.assetId && idMap[msg.assetId]) {
           var meta = idMap[msg.assetId];
           pushText(meta.name);
+          pushText(meta.description);
           if (Array.isArray(meta.tags) && meta.tags.length) pushText(meta.tags.join(' '));
           pushText(meta.mood);
-          pushText(meta.note);
+          if (meta.note && meta.note !== meta.description) pushText(meta.note);
         }
       } else if (msg.type === 'transfer') {
         pushText(msg.note);
@@ -656,13 +786,18 @@
     }
 
     var mode = workState.creationMode === 'ai_story' ? 'ai_story' : 'ai_roleplay';
+    var replyPrefs = resolveReplyPrefsSafe(workState);
     var resolvedRole = await resolveRoleSafe(workState);
     var stickerInfo = await loadStickerCatalogSafe();
 
-    // 发起请求前如有必要先压缩更早历史（摘要保留，且下方的 assemblePromptPayload 仍强制注入全部全局规则）
-    compressHistoryIfNeeded(workState, '');
+    // 使用浅拷贝预览压缩记忆，校验通过后再统一落盘，防止重试或失败导致剧情/记忆状态被提前修改
+    var previewWorkState = Object.assign({}, workState, {
+      aiReplyPrefs: replyPrefs,
+      aiMemory: workState.aiMemory ? JSON.parse(JSON.stringify(workState.aiMemory)) : undefined
+    });
+    compressHistoryIfNeeded(previewWorkState, '', stickerInfo.idMap);
 
-    var scanTexts = buildWorldbookScanTexts(workState, resolvedRole, stickerInfo, {
+    var scanTexts = buildWorldbookScanTexts(previewWorkState, resolvedRole, stickerInfo, {
       userInput: options.userInput || '',
       userDirection: options.userDirection || ''
     });
@@ -675,10 +810,11 @@
 
     var payload = pApi.assemblePromptPayload({
       mode: mode,
-      workState: workState,
+      workState: previewWorkState,
       resolvedRole: resolvedRole,
       worldbookContext: worldbookContext,
       stickerCatalog: stickerInfo.catalog,
+      stickerIdMap: stickerInfo.idMap,
       recentWindowSize: MAX_RECENT_WINDOW,
       triggerType: options.triggerType || 'user_message',
       userDirection: options.userDirection || ''
@@ -688,32 +824,83 @@
       try { options.onPromptPrepared(payload); } catch (_) {}
     }
 
-    var rawReply;
-    try {
-      rawReply = await global.callAI(payload.messages, {
-        system: payload.system,
-        temperature: mode === 'ai_story' ? 0.88 : 0.82
+    var maxRetries = typeof options.maxCountRetries === 'number' && options.maxCountRetries >= 0
+      ? Math.min(4, Math.round(options.maxCountRetries))
+      : MAX_COUNT_RETRIES;
+    var baseTemp = mode === 'ai_story' ? 0.88 : 0.82;
+    var parsed = null;
+    var validation = null;
+    var attempt = 0;
+    var attemptMessages = payload.messages.slice();
+
+    for (attempt = 1; attempt <= maxRetries + 1; attempt++) {
+      var rawReply;
+      try {
+        rawReply = await global.callAI(attemptMessages, {
+          system: payload.system,
+          temperature: attempt === 1 ? baseTemp : Math.max(0.55, Number((baseTemp - 0.1 * (attempt - 1)).toFixed(2)))
+        });
+      } catch (err) {
+        var wrapped = new Error(formatAiCallError(err));
+        wrapped.originalError = err;
+        throw wrapped;
+      }
+
+      if (!rawReply || !String(rawReply).trim()) {
+        if (attempt <= maxRetries) {
+          attemptMessages = payload.messages.concat([
+            {
+              role: 'user',
+              content: '上一次未返回有效内容，请严格按约定 JSON 格式生成 ' +
+                (replyPrefs.minMessages === replyPrefs.maxMessages
+                  ? ('恰好 ' + replyPrefs.minMessages + ' 条')
+                  : (replyPrefs.minMessages + ' 至 ' + replyPrefs.maxMessages + ' 条')) +
+                '独立手机聊天气泡。'
+            }
+          ]);
+          continue;
+        }
+        throw new Error('模型未返回有效内容，请稍后重试');
+      }
+
+      parsed = parseStructuredResponse(rawReply, {
+        mode: mode,
+        stickerIdMap: stickerInfo.idMap,
+        defaultSide: 'left',
+        minMessages: replyPrefs.minMessages,
+        maxMessages: replyPrefs.maxMessages
       });
-    } catch (err) {
-      var wrapped = new Error(formatAiCallError(err));
-      wrapped.originalError = err;
-      throw wrapped;
+
+      validation = validateMessageCount(parsed, replyPrefs);
+      if (validation.ok && parsed.messages.length > 0) {
+        break;
+      }
+
+      if (attempt <= maxRetries) {
+        var correctionPrompt = buildCountCorrectionInstruction(mode, validation);
+        attemptMessages = payload.messages.concat([
+          { role: 'assistant', content: String(rawReply).slice(0, 1800) },
+          { role: 'user', content: correctionPrompt }
+        ]);
+      }
     }
 
-    if (!rawReply || !String(rawReply).trim()) {
-      throw new Error('模型未返回有效内容，请稍后重试');
+    if (!parsed || !validation || !validation.ok || !parsed.messages.length) {
+      var rangeLabel = replyPrefs.minMessages === replyPrefs.maxMessages
+        ? ('固定 ' + replyPrefs.minMessages + ' 条')
+        : (replyPrefs.minMessages + '～' + replyPrefs.maxMessages + ' 条');
+      var actualCount = validation ? validation.actualCount : 0;
+      var countErr = new Error(
+        'AI 返回的有效气泡数（' + actualCount + ' 条）不符合当前设置范围（' + rangeLabel + '），已重试 ' + (attempt - 1) + ' 次仍未达标，未写入聊天记录。可点击「重试」或调整条数设置。'
+      );
+      countErr.code = 'REPLY_COUNT_OUT_OF_RANGE';
+      countErr.expectedRange = { minMessages: replyPrefs.minMessages, maxMessages: replyPrefs.maxMessages };
+      countErr.actualCount = actualCount;
+      countErr.attempts = attempt;
+      throw countErr;
     }
 
-    var parsed = parseStructuredResponse(rawReply, {
-      mode: mode,
-      stickerIdMap: stickerInfo.idMap,
-      defaultSide: 'left'
-    });
-
-    if (!parsed.messages.length) {
-      throw new Error('模型返回内容无法解析为有效的聊天消息');
-    }
-
+    // 校验通过后再统一提交动态情感状态与压缩记忆（避免失败/重试重复推进状态）
     var nextEmotion = applyEmotionUpdate(workState.emotionState, parsed.emotionUpdate, {
       userInput: options.userInput || options.userDirection || '',
       mode: mode
@@ -722,13 +909,13 @@
 
     var wApi = worksApi();
     var mem = (wApi && typeof wApi.normalizeAiMemory === 'function')
-      ? wApi.normalizeAiMemory(workState.aiMemory)
-      : (workState.aiMemory || {});
+      ? wApi.normalizeAiMemory(previewWorkState.aiMemory || workState.aiMemory)
+      : (previewWorkState.aiMemory || workState.aiMemory || {});
     mem.lastModeUsed = mode;
     mem.turnCount = (mem.turnCount || 0) + 1;
     workState.aiMemory = mem;
 
-    compressHistoryIfNeeded(workState, parsed.summaryNote);
+    compressHistoryIfNeeded(workState, parsed.summaryNote, stickerInfo.idMap);
 
     return {
       messages: parsed.messages,
@@ -737,6 +924,12 @@
       resolvedRole: resolvedRole,
       worldbookContext: worldbookContext,
       promptMeta: payload.meta,
+      replyCountMeta: {
+        minMessages: replyPrefs.minMessages,
+        maxMessages: replyPrefs.maxMessages,
+        actualCount: validation.actualCount,
+        attempts: attempt
+      },
       usedFallbackPlainText: parsed.usedFallbackPlainText,
       droppedInvalidStickers: parsed.droppedInvalidStickers
     };
@@ -745,8 +938,10 @@
   global.FanCommunityAi = {
     MAX_RECENT_WINDOW: MAX_RECENT_WINDOW,
     COMPRESS_TRIGGER_COUNT: COMPRESS_TRIGGER_COUNT,
+    MAX_COUNT_RETRIES: MAX_COUNT_RETRIES,
     estimateTextVoiceDuration: estimateTextVoiceDuration,
     parseStructuredResponse: parseStructuredResponse,
+    validateMessageCount: validateMessageCount,
     applyEmotionUpdate: applyEmotionUpdate,
     compressHistoryIfNeeded: compressHistoryIfNeeded,
     resolveRoleSafe: resolveRoleSafe,

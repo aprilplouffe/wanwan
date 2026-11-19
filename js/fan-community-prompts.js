@@ -7,7 +7,7 @@
 (function(global) {
   'use strict';
 
-  var PROMPT_RULE_VERSION = 'fc-phone-chat-prompt-v1';
+  var PROMPT_RULE_VERSION = 'fc-phone-chat-prompt-v2';
 
   var CORE_RULE_SECTIONS = {
     pureOnlineSimulator: [
@@ -22,7 +22,7 @@
     humanChatNaturalness: [
       '【2. 人类真实网聊自然感与去「AI味」规范】',
       '请像真实拿着手机回消息的活人一样聊天，杜绝客服腔与模板化对话：',
-      '• 节奏自然多变：有时一句简短回应，有时连续发 2~3 条短消息（拆成多条气泡更像真人在打字连发），只有聊到具体话题或有表达欲时才发稍长的一段话，避免每回合都工整得像作文。',
+      '• 节奏自然多变：根据当下情绪和聊天习惯自然分条发送独立消息，可长短句交替，有时利落短句连发，聊到具体话题或有表达欲时再发出较完整的表达，保持真人手机聊天的呼吸感。',
       '• 真实网感与口语化：允许顺手的省略、停顿、口癖、吐槽、改口、先发一个反应再补半句，避免书面腔、排比句和过度礼貌的「非常理解你的感受」「有什么我可以帮你的吗」。',
       '• 禁止机械式反问收尾：不要每一轮末尾都硬塞一个「你呢？你觉得怎么样？」「今天过得开心吗？」来强行续聊。说完当下的话就可以自然停住。',
       '• 禁止空洞复读对方的话再夸一遍；真正接住上下文里提到的具体事件、细节或情绪，有自己的观点和生活节奏，必要时主动发起新话题、吐槽身边小事、翻旧账或转移话题。'
@@ -41,6 +41,20 @@
       '• 亲密度(intimacy)、信任度(trust)、好感度(affection)与关系阶段(relationshipStage)必须解耦且变化克制：普通日常寒暄、打招呼、随便聊聊几句时，shouldChangeRelationship 必须为 false，intimacyDelta 为 0，relationshipStage 保持不变。',
       '• 只有发生明确的情感事件（例如真诚坦白、关键时刻相助、信任交付、明显误会争执、踩到底线或重要约定）时，才小幅调整分数（单轮建议 -5 ~ +5）并填写 storyEvent（一句话概括事件与影响）。',
       '• 当前情绪(currentEmotion)与强度(emotionIntensity 0~100)可随当下话题自然流动（如「平静」「有点烦」「放松」「微恼」「无奈好笑」「隐约在意」）。'
+    ].join('\n'),
+
+    realChatRhythm: [
+      '【真实聊天节奏】',
+      '• 真实的手机聊天里，用户经常会连续发送多条短消息、图片、表情包或语音条后再等你回复，也可能在你说完之后继续让你主动接话或推动话题。',
+      '• 回复前请整体阅读并消化上面连续发来的全部内容与情绪线索，抓住重点自然接话，像平时翻完对方一串消息后的真实反应，不需要逐条机械编号复述。',
+      '• 结合角色的当下心情、话题密度和聊天习惯，在【消息节奏与气泡数量】范围内自然组织分条气泡，让长短文字、表情包与文字语音条错落呼应。'
+    ].join('\n'),
+
+    stickerUnderstandingAndUse: [
+      '【表情包的理解与表达】',
+      '• 聊天记录中出现对方发来的表情包时，括号内会附带该表情包的名称、含义描述与标签作为语义参考。请将其自然理解为对方此刻的语气、撒娇、调侃、敷衍或情绪信号并顺势回应，绝不要生硬复读「含义：……」「标签：……」等元数据字样。',
+      '• 角色发送表情包时，请根据当前情绪和对话氛围从「本地表情包目录」中挑选语义贴合的真实 assetId：可以单独发送表情包，也可以在文字前/后自然搭配，或在合适氛围下连续使用不同表情包，或与文字语音条组合表达。',
+      '• 每发送 1 个表情包计为 1 条独立消息气泡，并计入本轮允许的总消息条数；仅可使用目录中真实存在的 assetId，没有贴合的表情包时直接用文字或语音条回应即可。'
     ].join('\n')
   };
 
@@ -53,14 +67,63 @@
     return s;
   }
 
+  function getReplyPrefs(workState) {
+    var wApi = global.FanCommunityWorks || null;
+    if (wApi && typeof wApi.normalizeAiReplyPrefs === 'function') {
+      return wApi.normalizeAiReplyPrefs(workState && workState.aiReplyPrefs);
+    }
+    var raw = workState && workState.aiReplyPrefs && typeof workState.aiReplyPrefs === 'object'
+      ? workState.aiReplyPrefs
+      : {};
+    var minVal = Number(raw.minMessages);
+    var maxVal = Number(raw.maxMessages);
+    minVal = Number.isFinite(minVal) ? Math.max(1, Math.min(20, Math.round(minVal))) : 1;
+    maxVal = Number.isFinite(maxVal) ? Math.max(1, Math.min(20, Math.round(maxVal))) : 5;
+    if (minVal > maxVal) maxVal = minVal;
+    return { minMessages: minVal, maxMessages: maxVal };
+  }
+
+  function formatReplyCountPhrase(replyPrefs) {
+    var minVal = replyPrefs.minMessages;
+    var maxVal = replyPrefs.maxMessages;
+    if (minVal === maxVal) {
+      return '恰好 ' + minVal + ' 条';
+    }
+    return minVal + ' 至 ' + maxVal + ' 条';
+  }
+
+  function formatMessageRhythmSection(mode, replyPrefs) {
+    var prefs = replyPrefs || { minMessages: 1, maxMessages: 5 };
+    var minVal = prefs.minMessages;
+    var maxVal = prefs.maxMessages;
+    var isFixed = minVal === maxVal;
+    var countInstruction = isFixed
+      ? ('请根据当前角色的性格、聊天习惯、情绪和剧情氛围，将本次内容组织为 ' + minVal + ' 至 ' + maxVal + ' 条独立消息（即本次恰好输出 ' + minVal + ' 条独立消息气泡）。')
+      : ('请根据当前角色的性格、聊天习惯、情绪和剧情氛围，将本次内容组织为 ' + minVal + ' 至 ' + maxVal + ' 条独立消息。');
+    var storyScopeLine = mode === 'ai_story'
+      ? 'AI 剧情生成模式同样通过独立聊天消息推进故事，并遵守当前作品的消息数量范围；该数量范围针对本轮生成的全部消息气泡总数（双方消息合并计数，而非按角色分别计算）。'
+      : 'AI 剧情生成模式同样通过独立聊天消息推进故事，并遵守当前作品的消息数量范围。';
+
+    return [
+      '【消息节奏与气泡数量】',
+      '本次交流采用真实的手机聊天消息形式。',
+      countInstruction,
+      '每条消息代表一次自然的发送行为。',
+      '根据表达需要灵活安排消息长度，可以使用简短回应、连续短句、较长的完整表达、表情包或文字语音条。',
+      '消息之间具有自然的承接关系，形成真实的聊天节奏。',
+      '在设定的数量范围内，自主选择最适合当前情境的消息条数，让每个气泡都具有实际交流意义。',
+      storyScopeLine
+    ].join('\n');
+  }
+
   function formatReplyLengthRule(replyLength) {
     if (replyLength === 'short') {
-      return '回复篇幅偏好：偏简短（单条字数少、干脆利落，1~2 条短气泡为主）。';
+      return '单条消息篇幅偏好：偏简短（单条气泡字数利落紧凑，贴合快节奏打字习惯；总气泡条数仍严格遵循【消息节奏与气泡数量】设定）。';
     }
     if (replyLength === 'detailed') {
-      return '回复篇幅偏好：偏展开（可在合适时发稍微完整的一两段或 2~4 条有信息量的气泡，但仍须保持纯口语网聊感）。';
+      return '单条消息篇幅偏好：偏展开（可在合适气泡中写出更完整的口语表达与细节，保持自然网聊感；总气泡条数仍严格遵循【消息节奏与气泡数量】设定）。';
     }
-    return '回复篇幅偏好：适中自然（长短结合，视语境发 1~3 条气泡）。';
+    return '单条消息篇幅偏好：适中自然（长短消息自然交替，贴合日常真实聊天节奏；总气泡条数仍严格遵循【消息节奏与气泡数量】设定）。';
   }
 
   function formatLanguageStyleRule(languageStyle) {
@@ -222,25 +285,55 @@
         '当前表情包库为空。本轮严禁输出 type="sticker" 的消息，也不得虚构任何 assetId。'
       ].join('\n');
     }
-    var rows = list.slice(0, 32).map(function(st) {
-      var tagBits = [];
-      if (Array.isArray(st.tags) && st.tags.length) tagBits.push(st.tags.join('/'));
-      if (st.mood) tagBits.push('情绪:' + st.mood);
-      if (st.note) tagBits.push(st.note);
-      var suffix = tagBits.length ? ('｜标签:' + tagBits.join('，')) : '';
-      return '- id="' + st.id + '"｜名称="' + (st.name || '表情包') + '"' + suffix;
-    });
+    var MAX_CATALOG_CHARS = 2400;
+    var rows = [];
+    var usedChars = 0;
+    var omitted = 0;
+    for (var i = 0; i < list.length && rows.length < 32; i++) {
+      var st = list[i];
+      if (!st || !st.id) continue;
+      var descText = cleanText(st.description || st.note || '', 120);
+      var tagList = Array.isArray(st.tags) ? st.tags.filter(Boolean).slice(0, 6) : [];
+      var bits = [
+        '- id="' + st.id + '"',
+        '名称="' + cleanText(st.name || '表情包', 32) + '"'
+      ];
+      if (descText) {
+        bits.push('含义="' + descText + '"');
+      }
+      if (tagList.length) {
+        bits.push('标签="' + tagList.join('/') + '"');
+      }
+      if (st.mood) {
+        bits.push('情绪="' + cleanText(st.mood, 24) + '"');
+      }
+      var line = bits.join('｜');
+      if (rows.length > 0 && usedChars + line.length + 1 > MAX_CATALOG_CHARS) {
+        omitted = list.length - i;
+        break;
+      }
+      rows.push(line);
+      usedChars += line.length + 1;
+    }
+    var footer = [
+      '表情包调用规则：以上仅提供名称与语义元数据（不含图片像素）。仅当语义与当前语气自然契合时选用真实 assetId；可单独发送、在文字前/后搭配、或与其他气泡组合，每条表情包均计为 1 条独立消息；严格禁止编造或修改 id。'
+    ];
+    if (omitted > 0) {
+      footer.push('（已按上下文预算展示前 ' + rows.length + ' 个可用表情包，其余 ' + omitted + ' 个已省略）');
+    }
     return [
       '【9. 本地表情包目录（仅元数据，严格禁止编造或修改 id）】',
       rows.join('\n'),
-      '表情包使用原则：仅当语气/情绪自然契合时选用（可单独发送、附在文字后、或用于缓和/吐槽/敷衍），每轮最多 1~2 张；不确定或没有合适的表情包时请不要强行发送；只能原样填入上方列表中的真实 id（assetId）。'
+      footer.join('\n')
     ].join('\n');
   }
 
-  function formatOutputSpecSection(mode, workState) {
+  function formatOutputSpecSection(mode, workState, replyPrefs) {
     var charName = String((workState && workState.char) || '对方').trim() || '对方';
     var userName = String((workState && workState.user) || '我').trim() || '我';
     var isStory = mode === 'ai_story';
+    var prefs = replyPrefs || getReplyPrefs(workState);
+    var countPhrase = formatReplyCountPhrase(prefs);
 
     var voiceGuide = [
       '关于模拟文字语音条（type="text_voice"）：',
@@ -252,7 +345,8 @@
     if (isStory) {
       return [
         '【10. 输出格式要求｜AI 剧情生成模式（严格返回单个 JSON 对象）】',
-        '当前为「AI 剧情生成」模式。你需要基于设定与聊天前文，继续生成一段「双方在手机上真实聊天的剧情推进」（2~5 条连续线上消息，含双方互动，全部为手机聊天气泡）。',
+        '当前为「AI 剧情生成」模式。你需要基于设定与聊天前文，继续生成一段双方在手机上真实聊天的剧情推进。',
+        '本轮 messages 数组中的有效独立消息总条数必须为 ' + countPhrase + '（双方消息合并计算总数，每条代表一个独立聊天气泡；emotionUpdate 与 summaryNote 不计入条数）。',
         '每条消息必须明确标注 side：',
         '• side="left" 代表角色「' + charName + '」',
         '• side="right" 代表「' + userName + '」',
@@ -284,7 +378,7 @@
     return [
       '【10. 输出格式要求｜AI 角色互动模式（严格返回单个 JSON 对象）】',
       '当前为「AI 角色互动」模式。你只扮演「' + charName + '」（左侧消息，side 固定为 "left"），绝不要代写「' + userName + '」（右侧用户）的发言。',
-      '每次可输出 1~4 条连续气泡来还原真人发消息的节奏。允许的 item 类型：',
+      '本轮 messages 数组中的有效独立消息总条数必须为 ' + countPhrase + '（每条代表一个独立聊天气泡；emotionUpdate 与 summaryNote 不计入条数）。允许的 item 类型：',
       '1) 文字：{ "type": "text", "content": "聊天内容" }',
       '2) 表情包：{ "type": "sticker", "assetId": "必须是第9节中的真实id" }',
       '3) 文字语音条：{ "type": "text_voice", "content": "语音口语内容", "duration": 6 }',
@@ -309,7 +403,34 @@
     ].join('\n');
   }
 
-  function serializeMessageForPrompt(item, charName, userName) {
+  function formatStickerMessageSemantics(item, stickerIdMap) {
+    var map = stickerIdMap && typeof stickerIdMap === 'object' ? stickerIdMap : null;
+    var meta = (map && item.assetId && map[item.assetId]) ? map[item.assetId] : null;
+    var rawName = cleanText((meta && meta.name) || item.alt || '', 48);
+    var desc = cleanText((meta && (meta.description || meta.note)) || '', 200);
+    var tags = (meta && Array.isArray(meta.tags) && meta.tags.length)
+      ? meta.tags.map(function(t) { return cleanText(t, 24); }).filter(Boolean).slice(0, 6)
+      : [];
+    var mood = cleanText((meta && meta.mood) || '', 24);
+
+    var parts = [];
+    if (rawName && rawName !== '表情包') {
+      parts.push('表情包：' + rawName);
+    } else {
+      parts.push('表情包');
+    }
+    if (desc) {
+      parts.push('含义：' + desc);
+    }
+    if (tags.length) {
+      parts.push('标签：' + tags.join('/'));
+    } else if (mood) {
+      parts.push('情绪：' + mood);
+    }
+    return '[' + parts.join('；') + ']';
+  }
+
+  function serializeMessageForPrompt(item, charName, userName, stickerIdMap) {
     if (!item || typeof item !== 'object') return null;
     if (item.fakeRecall || item.type === 'withdraw') return null;
     var who = item.side === 'right' ? (userName || '我') : (charName || '对方');
@@ -345,13 +466,18 @@
       };
     }
     if (item.type === 'image') {
-      var label = item.isSticker ? '表情包' : '图片';
-      var alt = String(item.alt || label).trim();
-      var idInfo = item.isSticker && item.assetId ? ('(id:' + item.assetId + ')') : '';
+      if (item.isSticker) {
+        return {
+          role: item.side === 'right' ? 'user' : 'assistant',
+          side: item.side === 'right' ? 'right' : 'left',
+          line: who + '：' + formatStickerMessageSemantics(item, stickerIdMap)
+        };
+      }
+      var alt = String(item.alt || '图片').trim();
       return {
         role: item.side === 'right' ? 'user' : 'assistant',
         side: item.side === 'right' ? 'right' : 'left',
-        line: who + ' [发送了' + label + '：' + alt + idInfo + ']'
+        line: who + ' [发送了图片：' + alt + ']'
       };
     }
     if (item.type === 'transfer') {
@@ -379,6 +505,7 @@
     var mode = opts.mode === 'ai_story' ? 'ai_story' : 'ai_roleplay';
     var charName = String(st.char || '对方').trim() || '对方';
     var userName = String(st.user || '我').trim() || '我';
+    var stickerIdMap = opts.stickerIdMap || null;
     var windowSize = typeof opts.recentWindowSize === 'number' && opts.recentWindowSize > 0
       ? Math.round(opts.recentWindowSize)
       : 18;
@@ -386,13 +513,16 @@
     var rawItems = Array.isArray(st.items) ? st.items : [];
     var serialized = [];
     for (var i = 0; i < rawItems.length; i++) {
-      var entry = serializeMessageForPrompt(rawItems[i], charName, userName);
+      var entry = serializeMessageForPrompt(rawItems[i], charName, userName, stickerIdMap);
       if (entry) serialized.push(entry);
     }
 
     var sliceStart = Math.max(0, serialized.length - windowSize);
     var recent = serialized.slice(sliceStart);
     var transcriptLines = recent.map(function(entry) { return entry.line; });
+
+    var replyPrefs = opts.replyPrefs || getReplyPrefs(st);
+    var countPhrase = formatReplyCountPhrase(replyPrefs);
 
     var messages = [];
     if (mode === 'ai_story') {
@@ -403,9 +533,9 @@
         promptParts.push('当前聊天记录尚为空白，请从零自然开启这段手机聊天。');
       }
       if (opts.userDirection && String(opts.userDirection).trim()) {
-        promptParts.push('用户本轮提供的剧情方向/补充提示：' + cleanText(String(opts.userDirection), 500));
+        promptParts.push('用户本轮提供的剧情方向/补充提示：' + cleanText(String(opts.userDirection), 500) + '\n请结合双方人设与设定，将本轮双方聊天剧情自然组织为 ' + countPhrase + '独立消息气泡（双方合计条数，仅输出 JSON）。');
       } else {
-        promptParts.push('请结合双方人设、当前情绪状态与剧情设定，自然生成下一段 2~5 条线上手机聊天内容（仅输出 JSON）。');
+        promptParts.push('请结合双方人设、当前情绪状态与剧情设定，自然生成下一段 ' + countPhrase + '线上手机聊天消息（双方合计条数，仅输出 JSON）。');
       }
       messages.push({
         role: 'user',
@@ -418,11 +548,11 @@
 
       var triggerInstruction = '';
       if (opts.triggerType === 'followup') {
-        triggerInstruction = '用户此刻没有新发言。请你主动给「' + userName + '」再发一条或两三句自然的线上消息（延续话题、分享眼前小事、追问、吐槽或发贴合心境的表情包/语音条均可，符合当下人设与情绪）。请严格返回 JSON。';
+        triggerInstruction = '用户此刻没有新发言。请你以「' + charName + '」的身份主动给「' + userName + '」发 ' + countPhrase + '自然承接的线上消息（延续话题、分享眼前小事、追问、吐槽或贴合心境的表情包/文字语音条均可，符合当下人设与情绪）。请严格返回 JSON。';
       } else if (opts.triggerType === 'reply_after_media') {
-        triggerInstruction = '请紧接上面「' + userName + '」最新发来的内容（图片/表情包/转账/语音/消息等）自然回复「' + userName + '」。请严格返回 JSON。';
+        triggerInstruction = '请紧接上面「' + userName + '」最新发来的内容（图片/表情包/转账/语音/消息等），以「' + charName + '」的身份自然组织为 ' + countPhrase + '独立消息回复「' + userName + '」。请严格返回 JSON。';
       } else {
-        triggerInstruction = '请以角色「' + charName + '」的身份，紧接上述聊天记录中「' + userName + '」刚发来的消息自然回复（严禁旁白，严禁代写用户回复，严格返回 JSON）。';
+        triggerInstruction = '请以角色「' + charName + '」的身份，紧接上述聊天记录中「' + userName + '」刚发来的消息，自然组织为 ' + countPhrase + '独立消息气泡回复（只扮演「' + charName + '」，严格返回 JSON）。';
       }
 
       messages.push({
@@ -444,7 +574,19 @@
     var workState = params.workState || {};
     var resolvedRole = params.resolvedRole || { status: 'unbound', role: null };
     var stickerCatalog = Array.isArray(params.stickerCatalog) ? params.stickerCatalog : [];
+    var stickerIdMap = params.stickerIdMap && typeof params.stickerIdMap === 'object'
+      ? params.stickerIdMap
+      : null;
+    if (!stickerIdMap && stickerCatalog.length) {
+      stickerIdMap = Object.create(null);
+      for (var sIdx = 0; sIdx < stickerCatalog.length; sIdx++) {
+        if (stickerCatalog[sIdx] && stickerCatalog[sIdx].id) {
+          stickerIdMap[stickerCatalog[sIdx].id] = stickerCatalog[sIdx];
+        }
+      }
+    }
     var worldbookContext = params.worldbookContext || null;
+    var replyPrefs = getReplyPrefs(workState);
 
     var wbBefore = formatWorldbookBeforeSection(worldbookContext);
     var wbBody = formatWorldbookMiddleAfterSection(worldbookContext);
@@ -452,6 +594,9 @@
     var systemSections = [
       CORE_RULE_SECTIONS.pureOnlineSimulator,
       CORE_RULE_SECTIONS.humanChatNaturalness,
+      CORE_RULE_SECTIONS.realChatRhythm,
+      formatMessageRhythmSection(mode, replyPrefs),
+      CORE_RULE_SECTIONS.stickerUnderstandingAndUse,
       CORE_RULE_SECTIONS.personalityAndBalance,
       CORE_RULE_SECTIONS.emotionEvolutionGuide
     ];
@@ -462,13 +607,15 @@
     systemSections.push(formatEmotionSection(workState.emotionState));
     systemSections.push(formatCompressedMemorySection(workState.aiMemory));
     systemSections.push(formatStickerCatalogSection(stickerCatalog));
-    systemSections.push(formatOutputSpecSection(mode, workState));
+    systemSections.push(formatOutputSpecSection(mode, workState, replyPrefs));
 
     var chatBuilt = buildRecentChatMessages(workState, {
       mode: mode,
       recentWindowSize: params.recentWindowSize || 18,
       triggerType: params.triggerType || 'user_message',
-      userDirection: params.userDirection || ''
+      userDirection: params.userDirection || '',
+      replyPrefs: replyPrefs,
+      stickerIdMap: stickerIdMap
     });
 
     var wbMeta = worldbookContext && Array.isArray(worldbookContext.matchedMeta)
@@ -482,9 +629,17 @@
         ruleVersion: PROMPT_RULE_VERSION,
         mode: mode,
         workId: String(workState.id || ''),
+        replyPrefs: {
+          minMessages: replyPrefs.minMessages,
+          maxMessages: replyPrefs.maxMessages,
+          isFixedCount: replyPrefs.minMessages === replyPrefs.maxMessages
+        },
         injectedRuleIds: [
           'pureOnlineSimulator',
           'humanChatNaturalness',
+          'realChatRhythm',
+          'messageRhythmAndCount',
+          'stickerUnderstandingAndUse',
           'personalityAndBalance',
           'emotionEvolutionGuide'
         ],
@@ -503,6 +658,8 @@
   global.FanCommunityPrompts = {
     PROMPT_RULE_VERSION: PROMPT_RULE_VERSION,
     CORE_RULE_SECTIONS: CORE_RULE_SECTIONS,
+    getReplyPrefs: getReplyPrefs,
+    formatMessageRhythmSection: formatMessageRhythmSection,
     assemblePromptPayload: assemblePromptPayload,
     serializeMessageForPrompt: serializeMessageForPrompt,
     formatEmotionSection: formatEmotionSection

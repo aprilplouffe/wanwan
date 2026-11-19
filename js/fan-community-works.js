@@ -149,6 +149,67 @@
     };
   }
 
+  var AI_REPLY_COUNT_MIN_LIMIT = 1;
+  var AI_REPLY_COUNT_MAX_LIMIT = 20;
+  var DEFAULT_AI_REPLY_PREFS = {
+    minMessages: 1,
+    maxMessages: 5
+  };
+
+  function createDefaultAiReplyPrefs() {
+    return {
+      minMessages: DEFAULT_AI_REPLY_PREFS.minMessages,
+      maxMessages: DEFAULT_AI_REPLY_PREFS.maxMessages
+    };
+  }
+
+  function normalizeAiReplyPrefs(raw) {
+    var base = createDefaultAiReplyPrefs();
+    if (!raw || typeof raw !== 'object') return base;
+    var rawMin = Number(raw.minMessages);
+    var rawMax = Number(raw.maxMessages);
+    var minVal = Number.isFinite(rawMin)
+      ? Math.max(AI_REPLY_COUNT_MIN_LIMIT, Math.min(AI_REPLY_COUNT_MAX_LIMIT, Math.round(rawMin)))
+      : base.minMessages;
+    var maxVal = Number.isFinite(rawMax)
+      ? Math.max(AI_REPLY_COUNT_MIN_LIMIT, Math.min(AI_REPLY_COUNT_MAX_LIMIT, Math.round(rawMax)))
+      : base.maxMessages;
+    if (minVal > maxVal) {
+      maxVal = minVal;
+    }
+    return {
+      minMessages: minVal,
+      maxMessages: maxVal
+    };
+  }
+
+  var _msgIdSeq = 0;
+
+  function generateMessageId() {
+    _msgIdSeq = (_msgIdSeq + 1) % 1000000;
+    return 'msg_' + Date.now() + '_' + _msgIdSeq + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function ensureMessageIds(rawItems) {
+    if (!Array.isArray(rawItems)) return [];
+    var seen = Object.create(null);
+    return rawItems.map(function(item) {
+      if (!item || typeof item !== 'object') return item;
+      var curId = typeof item.id === 'string' ? item.id.trim() : '';
+      if (curId && !seen[curId]) {
+        seen[curId] = true;
+        return item;
+      }
+      var nextId = generateMessageId();
+      while (seen[nextId]) {
+        nextId = generateMessageId();
+      }
+      seen[nextId] = true;
+      var copy = Object.assign({}, item, { id: nextId });
+      return copy;
+    });
+  }
+
   var DEFAULT_APPEARANCE = {
     bgType: 'color',
     bgColor: '#abc6d9',
@@ -326,6 +387,7 @@
       boundPersonaId: syncedPersonaId,
       boundRoleRef: boundRoleRef,
       aiSettings: normalizeAiSettings(src.aiSettings, resolvedChar),
+      aiReplyPrefs: normalizeAiReplyPrefs(src.aiReplyPrefs),
       emotionState: normalizeEmotionState(src.emotionState),
       aiMemory: normalizeAiMemory(src.aiMemory),
       topic: typeof src.topic === 'string' ? src.topic : '',
@@ -334,7 +396,7 @@
       isLegacy: Boolean(src.isLegacy || meta.isLegacy),
       createdAt: typeof src.createdAt === 'number' ? src.createdAt : (typeof meta.createdAt === 'number' ? meta.createdAt : now),
       updatedAt: typeof src.updatedAt === 'number' ? src.updatedAt : (typeof meta.updatedAt === 'number' ? meta.updatedAt : now),
-      items: Array.isArray(src.items) ? src.items : []
+      items: ensureMessageIds(src.items)
     };
   }
 
@@ -556,6 +618,7 @@
       boundPersonaId: '',
       boundRoleRef: null,
       aiSettings: createDefaultAiSettings('对方'),
+      aiReplyPrefs: createDefaultAiReplyPrefs(),
       emotionState: createDefaultEmotionState(),
       aiMemory: createDefaultAiMemory(),
       topic: '',
@@ -845,6 +908,13 @@
     normalizeCreationMode: normalizeCreationMode,
     createDefaultAiSettings: createDefaultAiSettings,
     normalizeAiSettings: normalizeAiSettings,
+    AI_REPLY_COUNT_MIN_LIMIT: AI_REPLY_COUNT_MIN_LIMIT,
+    AI_REPLY_COUNT_MAX_LIMIT: AI_REPLY_COUNT_MAX_LIMIT,
+    DEFAULT_AI_REPLY_PREFS: clone(DEFAULT_AI_REPLY_PREFS),
+    createDefaultAiReplyPrefs: createDefaultAiReplyPrefs,
+    normalizeAiReplyPrefs: normalizeAiReplyPrefs,
+    generateMessageId: generateMessageId,
+    ensureMessageIds: ensureMessageIds,
     createDefaultEmotionState: createDefaultEmotionState,
     normalizeEmotionState: normalizeEmotionState,
     createDefaultAiMemory: createDefaultAiMemory,

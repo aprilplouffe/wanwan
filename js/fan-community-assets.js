@@ -816,26 +816,56 @@
     return base || '表情包';
   }
 
+  function normalizeStickerTags(rawTags) {
+    var list = [];
+    if (Array.isArray(rawTags)) {
+      list = rawTags;
+    } else if (typeof rawTags === 'string') {
+      list = rawTags.split(/[,，、;；\s]+/);
+    }
+    var seen = Object.create(null);
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var t = String(list[i] || '').trim().slice(0, 24);
+      if (!t || seen[t]) continue;
+      seen[t] = true;
+      out.push(t);
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
+
   async function updateStickerMeta(id, meta) {
     if (!id || !meta || typeof meta !== 'object') return null;
     var existing = await getAsset(id);
     if (!existing) return null;
     var nextName = meta.name !== undefined ? String(meta.name || '').trim() : existing.name;
-    var tags = Array.isArray(meta.tags)
-      ? meta.tags.map(function(t) { return String(t || '').trim(); }).filter(Boolean).slice(0, 8)
-      : (Array.isArray(existing.tags) ? existing.tags : []);
-    var mood = meta.mood !== undefined ? String(meta.mood || '').trim() : (existing.mood || '');
-    var note = meta.note !== undefined ? String(meta.note || '').trim() : (existing.note || '');
+    var tags = meta.tags !== undefined
+      ? normalizeStickerTags(meta.tags)
+      : normalizeStickerTags(existing.tags);
+    var mood = meta.mood !== undefined ? String(meta.mood || '').trim().slice(0, 40) : (existing.mood || '');
+    var rawDesc = meta.description !== undefined
+      ? String(meta.description || '').trim()
+      : (meta.note !== undefined ? String(meta.note || '').trim() : String(existing.description || existing.note || '').trim());
+    var description = rawDesc.slice(0, 300);
+    var note = meta.note !== undefined ? String(meta.note || '').trim().slice(0, 300) : description;
+    var now = Date.now();
     return putAsset(Object.assign({}, existing, {
-      name: nextName || existing.name || '表情包',
+      id: existing.id,
+      src: existing.src,
+      kind: existing.kind || 'sticker',
+      name: nextName || deriveStickerName(existing.name) || '表情包',
+      description: description,
       tags: tags,
       mood: mood,
-      note: note
+      note: note,
+      createdAt: Number(existing.createdAt || now),
+      updatedAt: now
     }));
   }
 
   async function buildAiStickerCatalog(limit) {
-    var maxItems = typeof limit === 'number' && limit > 0 ? Math.min(60, Math.round(limit)) : 36;
+    var maxItems = typeof limit === 'number' && limit > 0 ? Math.min(60, Math.round(limit)) : 32;
     var stickers = [];
     try {
       stickers = await listAssets('sticker');
@@ -848,22 +878,23 @@
       var st = stickers[i];
       if (!st || !st.id) continue;
       var cleanName = deriveStickerName(st.name);
-      var tagList = Array.isArray(st.tags)
-        ? st.tags.map(function(t) { return String(t || '').trim(); }).filter(Boolean)
-        : [];
+      var tagList = normalizeStickerTags(st.tags);
       if (st.keywords && typeof st.keywords === 'string') {
         st.keywords.split(/[,，、\s]+/).forEach(function(k) {
           var s = k.trim();
-          if (s && tagList.indexOf(s) === -1) tagList.push(s);
+          if (s && tagList.indexOf(s) === -1 && tagList.length < 8) tagList.push(s);
         });
       }
+      var description = String(st.description || st.note || '').trim().slice(0, 300);
       var entry = {
         id: String(st.id),
         name: cleanName,
+        description: description,
         tags: tagList.slice(0, 8),
         mood: String(st.mood || '').trim(),
-        note: String(st.note || '').trim(),
-        createdAt: Number(st.createdAt || 0)
+        note: String(st.note || description).trim(),
+        createdAt: Number(st.createdAt || 0),
+        updatedAt: Number(st.updatedAt || st.createdAt || 0)
       };
       idMap[entry.id] = entry;
       if (catalog.length < maxItems) {

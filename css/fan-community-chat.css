@@ -891,6 +891,59 @@
   background: #ffffff;
 }
 
+#fan-community-page .fc-chat-ai-reply-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid rgba(114, 166, 204, 0.72);
+  background: rgba(255, 255, 255, 0.94);
+  color: #2f6c96;
+  border-radius: 17px;
+  padding: 0 10px;
+  min-height: 38px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(45, 98, 136, 0.12);
+  transition: background-color 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#fan-community-page .fc-chat-ai-reply-btn[hidden] {
+  display: none;
+}
+
+#fan-community-page .fc-chat-ai-reply-btn:active {
+  background: #e7f3fc;
+  border-color: #5b9ac6;
+}
+
+#fan-community-page .fc-chat-ai-reply-btn.is-busy,
+#fan-community-page .fc-chat-ai-reply-btn:disabled {
+  opacity: 0.68;
+  cursor: default;
+  background: #eaf4fb;
+}
+
+#fan-community-page .fc-chat-ai-reply-btn .fc-ai-spark {
+  font-size: 11px;
+  line-height: 1;
+  color: #4289bb;
+}
+
+#fan-community-page .fc-chat-ai-reply-btn .fc-ai-spark.is-spin {
+  animation: fcAiSparkPulse 1.1s ease-in-out infinite;
+}
+
+@keyframes fcAiSparkPulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
 #fan-community-page .fc-chat-send {
   flex: none;
   border: 0;
@@ -901,6 +954,7 @@
   min-height: 38px;
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
   box-shadow: 0 2px 6px rgba(45, 98, 136, 0.18);
   transition: opacity 0.14s ease, background-color 0.14s ease;
 }
@@ -1099,6 +1153,37 @@
   border-radius: 7px;
 }
 
+#fan-community-page .fc-chat-sticker-edit {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid #f4f5f0;
+  background: #ffffff;
+  color: #5b7890;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  z-index: 2;
+  box-shadow: 0 1px 3px rgba(42, 68, 88, 0.16);
+  touch-action: manipulation;
+}
+
+#fan-community-page .fc-chat-sticker-edit.has-desc {
+  background: #5393c0;
+  color: #ffffff;
+}
+
+#fan-community-page .fc-chat-sticker-edit:active {
+  background: #dfecf6;
+  color: #2f5f82;
+}
+
 #fan-community-page .fc-chat-sticker-del {
   position: absolute;
   top: -6px;
@@ -1121,6 +1206,26 @@
 
 #fan-community-page .fc-chat-sticker-del:active {
   background: #6f7c6d;
+}
+
+#fan-community-page .fc-sticker-edit-preview {
+  width: 96px;
+  height: 96px;
+  margin: 4px auto 12px;
+  padding: 8px;
+  border-radius: 16px;
+  background: #faf8f2;
+  border: 1px solid #e6e3d8;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 8px rgba(72, 66, 54, 0.06);
+}
+
+#fan-community-page .fc-sticker-edit-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 #fan-community-page .fc-chat-addsticker {
@@ -3500,6 +3605,174 @@
   color: #486b52;
   border-color: #c5dccb;
 }
+
+/* 任务 17-A：捡手机设置 → AI 回复偏好（韩系奶油极简风） */
+#fan-community-page .fc-reply-pref-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+#fan-community-page .fc-reply-pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  background: #faf7f2;
+  border: 1px solid #ebe3d6;
+  border-radius: 14px;
+}
+
+#fan-community-page .fc-reply-pref-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#fan-community-page .fc-reply-pref-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #3d352e;
+}
+
+#fan-community-page .fc-reply-pref-sub {
+  font-size: 11px;
+  color: #8c7e70;
+  line-height: 1.4;
+}
+
+#fan-community-page .fc-reply-stepper {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  background: #ffffff;
+  border: 1px solid #e3d9ca;
+  border-radius: 12px;
+}
+
+#fan-community-page .fc-reply-step-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 9px;
+  background: #f5efe6;
+  color: #4d4238;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background-color 140ms ease, opacity 140ms ease;
+}
+
+#fan-community-page .fc-reply-step-btn:active:not(:disabled) {
+  background: #e8dfd1;
+}
+
+#fan-community-page .fc-reply-step-btn:disabled {
+  opacity: 0.36;
+  cursor: not-allowed;
+}
+
+#fan-community-page .fc-reply-step-input {
+  width: 46px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: #2f2822;
+  font-size: 15px;
+  font-weight: 650;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  -moz-appearance: textfield;
+}
+
+#fan-community-page .fc-reply-step-input::-webkit-outer-spin-button,
+#fan-community-page .fc-reply-step-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+#fan-community-page .fc-reply-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+#fan-community-page .fc-reply-preset-btn {
+  border: 1px solid #e5dccf;
+  background: #fbf8f3;
+  color: #62564a;
+  border-radius: 10px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+#fan-community-page .fc-reply-preset-btn.is-active {
+  background: #7d8d76;
+  border-color: #7d8d76;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+#fan-community-page .fc-reply-range-hint {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f4f7f2;
+  border: 1px solid #dce6d8;
+  color: #4d6248;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+#fan-community-page .fc-reply-range-hint.is-error {
+  background: #fdf4f2;
+  border-color: #ebc6c0;
+  color: #9e4742;
+}
+
+#fan-community-page .fc-ai-reply-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #faf7f2;
+  border: 1px solid #ebe3d6;
+}
+
+#fan-community-page .fc-ai-reply-link-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#fan-community-page .fc-ai-reply-link-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #3d352e;
+}
+
+#fan-community-page .fc-ai-reply-link-sub {
+  font-size: 11px;
+  color: #827568;
+}
+
 
 
 
