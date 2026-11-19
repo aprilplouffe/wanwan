@@ -151,11 +151,15 @@
     if (msg.type === 'text') {
       return Boolean(cleanPlainText(msg.text, 1000));
     }
-    if (msg.type === 'image' && msg.isSticker) {
-      return Boolean(msg.assetId);
+    if (msg.type === 'image') {
+      if (msg.isSticker) return Boolean(msg.assetId);
+      return Boolean(cleanPlainText(msg.text !== undefined ? msg.text : msg.alt, 600));
     }
     if (msg.type === 'text_voice') {
       return Boolean(cleanPlainText(msg.text !== undefined ? msg.text : msg.content, 600));
+    }
+    if (msg.type === 'location') {
+      return Boolean(cleanPlainText(msg.name || msg.address, 200));
     }
     return false;
   }
@@ -218,19 +222,29 @@
         ? (item.side === 'right' ? 'right' : 'left')
         : 'left';
       var rawType = String(item.type || 'text').trim().toLowerCase();
+      var isRecalled = Boolean(
+        item.recalled === true ||
+        item.fakeRecall === true ||
+        item.isRecalled === true ||
+        rawType === 'recall' ||
+        rawType === 'withdraw'
+      );
 
-      if (rawType === 'sticker' || rawType === 'emoji' || rawType === 'image') {
-        var assetId = String(item.assetId || item.stickerId || item.id || '').trim();
+      if (rawType === 'sticker' || rawType === 'emoji') {
+        var assetId = String(item.assetId || item.asset_id || item.stickerId || item.sticker_id || item.id || '').trim();
         var matchedSticker = assetId && stickerIdMap[assetId] ? stickerIdMap[assetId] : null;
         if (matchedSticker) {
-          validatedMessages.push({
+          var stickerMsg = {
             id: nextBubbleId(),
             type: 'image',
             isSticker: true,
             side: itemSide,
             assetId: matchedSticker.id,
-            alt: matchedSticker.name || '表情包'
-          });
+            alt: matchedSticker.name || '表情包',
+            stickerDesc: matchedSticker.description || matchedSticker.note || ''
+          };
+          if (isRecalled) stickerMsg.fakeRecall = true;
+          validatedMessages.push(stickerMsg);
         } else {
           droppedInvalidStickers += 1;
           var fallbackText = cleanPlainText(
@@ -238,22 +252,96 @@
             240
           );
           if (fallbackText) {
-            validatedMessages.push({
+            var fbMsg = {
               id: nextBubbleId(),
               type: 'text',
               side: itemSide,
               text: fallbackText
-            });
+            };
+            if (isRecalled) fbMsg.fakeRecall = true;
+            validatedMessages.push(fbMsg);
           }
         }
         continue;
       }
 
-      if (rawType === 'text_voice' || rawType === 'textvoice') {
+      if (rawType === 'image' || rawType === 'photo' || rawType === 'text_image' || rawType === 'image_card') {
+        var rawImgAssetId = String(item.assetId || item.asset_id || item.stickerId || item.sticker_id || '').trim();
+        var imgDesc = cleanPlainText(
+          item.content !== undefined ? item.content
+            : (item.description !== undefined ? item.description
+              : (item.text !== undefined ? item.text
+                : (item.caption !== undefined ? item.caption : (item.alt || '')))),
+          500
+        );
+        if (rawImgAssetId && stickerIdMap[rawImgAssetId] && !imgDesc) {
+          var compatSticker = stickerIdMap[rawImgAssetId];
+          var compatMsg = {
+            id: nextBubbleId(),
+            type: 'image',
+            isSticker: true,
+            side: itemSide,
+            assetId: compatSticker.id,
+            alt: compatSticker.name || '表情包',
+            stickerDesc: compatSticker.description || compatSticker.note || ''
+          };
+          if (isRecalled) compatMsg.fakeRecall = true;
+          validatedMessages.push(compatMsg);
+          continue;
+        }
+        if (imgDesc) {
+          var imgCardMsg = {
+            id: nextBubbleId(),
+            type: 'image',
+            isTextImage: true,
+            side: itemSide,
+            text: imgDesc,
+            alt: imgDesc
+          };
+          if (isRecalled) imgCardMsg.fakeRecall = true;
+          validatedMessages.push(imgCardMsg);
+        } else if (rawImgAssetId) {
+          droppedInvalidStickers += 1;
+        }
+        continue;
+      }
+
+      if (rawType === 'location' || rawType === 'loc' || rawType === 'map' || rawType === 'position') {
+        var locName = cleanPlainText(
+          item.name !== undefined ? item.name
+            : (item.placeName !== undefined ? item.placeName
+              : (item.title !== undefined ? item.title
+                : (item.locationName !== undefined ? item.locationName : (item.location || '')))),
+          80
+        );
+        var locAddr = cleanPlainText(
+          item.address !== undefined ? item.address
+            : (item.detail !== undefined ? item.detail
+              : (item.addr !== undefined ? item.addr : '')),
+          160
+        );
+        if (!locName && locAddr) {
+          locName = locAddr.slice(0, 32);
+        }
+        if (locName) {
+          var locMsg = {
+            id: nextBubbleId(),
+            type: 'location',
+            side: itemSide,
+            name: locName,
+            address: locAddr
+          };
+          if (isRecalled) locMsg.fakeRecall = true;
+          validatedMessages.push(locMsg);
+        }
+        continue;
+      }
+
+      if (rawType === 'text_voice' || rawType === 'textvoice' || rawType === 'voice') {
         var voiceText = cleanPlainText(item.content !== undefined ? item.content : item.text, 500);
         if (!voiceText) continue;
         var estDur = estimateTextVoiceDuration(voiceText, item.duration);
-        validatedMessages.push({
+        var tvMsg = {
           id: nextBubbleId(),
           type: 'text_voice',
           side: itemSide,
@@ -261,19 +349,28 @@
           content: voiceText,
           duration: estDur,
           isAiVoice: true
-        });
+        };
+        if (isRecalled) tvMsg.fakeRecall = true;
+        validatedMessages.push(tvMsg);
         continue;
       }
 
-      // 默认按普通文本气泡处理（绝不混入未定义类型或破坏数据结构）
-      var txtVal = cleanPlainText(item.content !== undefined ? item.content : item.text, 800);
+      // 默认按普通文本气泡处理（含 type="recall"/"withdraw" 假撤回文字）
+      var txtVal = cleanPlainText(
+        item.content !== undefined ? item.content
+          : (item.text !== undefined ? item.text
+            : (item.originalText !== undefined ? item.originalText : '')),
+        800
+      );
       if (txtVal) {
-        validatedMessages.push({
+        var txtMsg = {
           id: nextBubbleId(),
           type: 'text',
           side: itemSide,
           text: txtVal
-        });
+        };
+        if (isRecalled) txtMsg.fakeRecall = true;
+        validatedMessages.push(txtMsg);
       }
     }
 
@@ -488,11 +585,11 @@
     var charName = String(workState.char || '对方').trim() || '对方';
     var userName = String(workState.user || '我').trim() || '我';
 
-    // 收集可见消息索引
+    // 收集可见消息索引（假撤回消息仍在聊天区保留显示，也纳入前情上下文）
     var visibleEntries = [];
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
-      if (!it || it.fakeRecall || it.type === 'withdraw') continue;
+      if (!it) continue;
       visibleEntries.push({ rawIndex: i, item: it });
     }
 
@@ -574,7 +671,7 @@
     }
     if (typeof aApi.buildAiStickerCatalog === 'function') {
       try {
-        return await aApi.buildAiStickerCatalog(36);
+        return await aApi.buildAiStickerCatalog(40);
       } catch (_) {}
     }
     try {
@@ -595,7 +692,7 @@
           updatedAt: Number(st.updatedAt || st.createdAt || 0)
         };
         idMap[entry.id] = entry;
-        if (catalog.length < 32) catalog.push(entry);
+        if (catalog.length < 40) catalog.push(entry);
       });
       return { catalog: catalog, idMap: idMap, totalCount: list.length };
     } catch (_) {
@@ -618,13 +715,17 @@
     if (opts.userInput) pushText(String(opts.userInput));
     if (opts.userDirection) pushText(String(opts.userDirection));
 
-    // 最近聊天记录（仅扫描本轮实际已发送的消息；包含文字、text_voice 与已发送表情包的名称/描述/标签，绝不扫描未发送的全局表情包库）
+    // 最近聊天记录（仅扫描实际已发送的消息；包含文字、假撤回原文、语音条、图片卡片、定位卡片与已发送表情包的名称/描述/标签，绝不扫描未发送的全局表情包库）
     var items = Array.isArray(st.items) ? st.items : [];
     var visible = [];
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
-      if (!it || it.fakeRecall || it.type === 'withdraw') continue;
-      visible.push(it);
+      if (!it) continue;
+      if (it.type === 'withdraw' && it.original && typeof it.original === 'object') {
+        visible.push(it.original);
+      } else {
+        visible.push(it);
+      }
     }
     var recent = visible.slice(-MAX_RECENT_WINDOW);
     for (var j = 0; j < recent.length; j++) {
@@ -634,15 +735,24 @@
       } else if (msg.type === 'text_voice' || msg.type === 'voice') {
         pushText(msg.text || msg.content);
       } else if (msg.type === 'image') {
-        pushText(msg.alt);
-        if (msg.isSticker && msg.assetId && idMap[msg.assetId]) {
-          var meta = idMap[msg.assetId];
-          pushText(meta.name);
-          pushText(meta.description);
-          if (Array.isArray(meta.tags) && meta.tags.length) pushText(meta.tags.join(' '));
-          pushText(meta.mood);
-          if (meta.note && meta.note !== meta.description) pushText(meta.note);
+        if (msg.isSticker) {
+          pushText(msg.alt);
+          if (msg.assetId && idMap[msg.assetId]) {
+            var meta = idMap[msg.assetId];
+            pushText(meta.name);
+            pushText(meta.description);
+            if (Array.isArray(meta.tags) && meta.tags.length) pushText(meta.tags.join(' '));
+            pushText(meta.mood);
+            if (meta.note && meta.note !== meta.description) pushText(meta.note);
+          } else {
+            pushText(msg.stickerDesc || msg.description || '');
+          }
+        } else {
+          pushText(msg.text || msg.content || msg.alt);
         }
+      } else if (msg.type === 'location') {
+        pushText(msg.name || msg.placeName || msg.title);
+        pushText(msg.address || msg.detail);
       } else if (msg.type === 'transfer') {
         pushText(msg.note);
       } else if (msg.type === 'call') {
@@ -808,6 +918,13 @@
       appId: 'fan_community_phone_chat'
     });
 
+    var wApiForClock = worksApi();
+    var currentChatTime = options.currentChatTime || (
+      wApiForClock && typeof wApiForClock.resolveWorkCurrentTime === 'function'
+        ? wApiForClock.resolveWorkCurrentTime(previewWorkState.timeSettings)
+        : null
+    );
+
     var payload = pApi.assemblePromptPayload({
       mode: mode,
       workState: previewWorkState,
@@ -815,6 +932,7 @@
       worldbookContext: worldbookContext,
       stickerCatalog: stickerInfo.catalog,
       stickerIdMap: stickerInfo.idMap,
+      currentChatTime: currentChatTime,
       recentWindowSize: MAX_RECENT_WINDOW,
       triggerType: options.triggerType || 'user_message',
       userDirection: options.userDirection || ''

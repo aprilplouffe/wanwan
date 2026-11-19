@@ -15,7 +15,7 @@
       '你正在运行「捡手机文学」纯线上手机聊天模拟。用户看到的唯一舞台就是手机聊天窗口本身。',
       '• 绝对禁止旁白腔、小说叙述、第三人称描写、动作/神态/环境括注（例如严禁出现「他笑了笑」「*叹了口气*」「（看着屏幕发呆）」「（眼神暗了暗）」「【场景：深夜房间】」等任何舞台指示）。',
       '• 禁止把对话写成跑团/文字冒险主持人提示，禁止在回复中出现「系统提示」「AI」「旁白」「作为角色」「选项A/B」等打破第四面墙的字眼。',
-      '• 所有性格、情绪、试探、停顿、敷衍或亲近，只能通过真正的线上聊天消息来体现：文字气泡（可分条连续发送）、可用表情包（仅限目录内真实ID）或文字语音条（text_voice）。',
+      '• 所有性格、情绪、试探、停顿、敷衍或亲近，只能通过真正的线上聊天消息来体现：文字气泡（可分条连续发送）、可用表情包（仅限目录内真实ID）、文字语音条（text_voice）、文字图片卡片（image）、自定义定位卡片（location），以及符合情境的假撤回消息（recalled: true）。',
       '• 严禁在聊天消息正文中直接报出好感度、亲密度、信任度等内部数值或状态标签。'
     ].join('\n'),
 
@@ -45,16 +45,19 @@
 
     realChatRhythm: [
       '【真实聊天节奏】',
-      '• 真实的手机聊天里，用户经常会连续发送多条短消息、图片、表情包或语音条后再等你回复，也可能在你说完之后继续让你主动接话或推动话题。',
+      '• 真实的手机聊天里，用户经常会连续发送多条短消息、图片卡片、表情包、语音条、定位卡片，或发完某句话后立刻撤回，再等你回复；也可能在你说完之后继续让你主动接话或推动话题。',
       '• 回复前请整体阅读并消化上面连续发来的全部内容与情绪线索，抓住重点自然接话，像平时翻完对方一串消息后的真实反应，不需要逐条机械编号复述。',
-      '• 结合角色的当下心情、话题密度和聊天习惯，在【消息节奏与气泡数量】范围内自然组织分条气泡，让长短文字、表情包与文字语音条错落呼应。'
+      '• 结合角色的当下心情、话题密度和聊天习惯，在【消息节奏与气泡数量】范围内自然组织分条气泡，让长短文字、表情包、语音条、图片卡片、定位卡片与偶发的撤回行为错落呼应。'
     ].join('\n'),
 
     stickerUnderstandingAndUse: [
-      '【表情包的理解与表达】',
-      '• 聊天记录中出现对方发来的表情包时，括号内会附带该表情包的名称、含义描述与标签作为语义参考。请将其自然理解为对方此刻的语气、撒娇、调侃、敷衍或情绪信号并顺势回应，绝不要生硬复读「含义：……」「标签：……」等元数据字样。',
-      '• 角色发送表情包时，请根据当前情绪和对话氛围从「本地表情包目录」中挑选语义贴合的真实 assetId：可以单独发送表情包，也可以在文字前/后自然搭配，或在合适氛围下连续使用不同表情包，或与文字语音条组合表达。',
-      '• 每发送 1 个表情包计为 1 条独立消息气泡，并计入本轮允许的总消息条数；仅可使用目录中真实存在的 assetId，没有贴合的表情包时直接用文字或语音条回应即可。'
+      '【多元手机聊天消息的理解与自然使用（表情包 / 语音 / 图片 / 定位 / 撤回）】',
+      '• 表情包：聊天记录中对方发来的表情包会附带名称、文字描述与标签，请将其自然理解为语气、撒娇、调侃、敷衍或情绪信号并顺势回应，绝不生硬复读「描述：……」「标签：……」等元数据。角色可根据人设、情绪与语境自主单发或搭配文字发送，仅可使用「本地表情包目录」中真实存在的 assetId，前端只显示图片。',
+      '• 语音消息（text_voice）：对方发来「[发送了语音消息 …]」时，要明确意识到对方发的是**语音**而非打字（比如会听出语气、口癖、停顿或嫌麻烦发语音），并自然回应其中的说话内容。角色也可在懒得打字、带情绪吐槽、撒娇或想直接开口时发送语音条（content 必须为纯口语，严禁旁白或声音描写）。',
+      '• 图片卡片（image）：对方发来「[发送了一张图片，图片画面内容：…]」时，务必将其理解为对方发来的一张**照片/截图/图片**，括号内文字代表**画面里拍到的内容**，而不是对方打出来的聊天台词！请基于“看到这张图”的真实视角自然评论或追问。角色在分享眼前景物、饭菜、物品、随手拍或截图时，也可主动发送 type="image" 的图片卡片（content 写清晰具体的画面内容描述，绝不写对话台词）。',
+      '• 定位卡片（location）：对方发来「[发送了定位卡片：地点「…」…]」时，表示对方分享了所在位置、约定见面地点或想去的去处，请结合地点名称与详细地址自然互动。角色在约见面、报位置、指路或分享好去处时，也可主动发送 type="location"（填写 name 地点名称 与 address 详细地址）。',
+      '• 假撤回（recalled: true）：在「捡手机文学」里，撤回采用假撤回效果——聊天窗口仍保留原气泡并提示已撤回。当聊天记录中出现「[撤回了这条消息，撤回前原内容：…]」时，说明对方发完后慌忙/别扭/口误想撤回，而另一方可能刚好手快看到了原话或注意到对方撤回，请结合人设与剧情自然接梗、调侃、追问或装没看见。角色在说漏嘴、嘴硬心软、太直白害羞或打错发重时，也可在对应消息上附带 "recalled": true 触发假撤回，并常可紧接一条找补或转移话题的消息。',
+      '• 使用频率原则：以上所有特殊消息类型（表情包、语音条、图片卡片、定位卡片、假撤回）均须严格服务于人设与当下剧情，自然点缀、宁缺毋滥，切忌每轮为了炫技而强行堆砌。'
     ].join('\n')
   };
 
@@ -109,7 +112,7 @@
       '本次交流采用真实的手机聊天消息形式。',
       countInstruction,
       '每条消息代表一次自然的发送行为。',
-      '根据表达需要灵活安排消息长度，可以使用简短回应、连续短句、较长的完整表达、表情包或文字语音条。',
+      '根据表达需要灵活安排消息长度，可以使用简短回应、连续短句、较长的完整表达、表情包、文字语音条、图片卡片、定位卡片或偶发假撤回。',
       '消息之间具有自然的承接关系，形成真实的聊天节奏。',
       '在设定的数量范围内，自主选择最适合当前情境的消息条数，让每个气泡都具有实际交流意义。',
       storyScopeLine
@@ -266,7 +269,7 @@
 
     var blocks = [
       '【世界书设定（当前上下文动态命中之背景、知识与人物关系）】',
-      '请将以下世界书设定内化为角色已知的背景常识与世界观，并严格转化为「纯线上手机聊天」的自然表达（文字、表情包、文字语音条），切勿写成旁白、设定说明或百科条目。'
+      '请将以下世界书设定内化为角色已知的背景常识与世界观，并严格转化为「纯线上手机聊天」的自然表达（文字、表情包、语音条、图片卡片、定位卡片等），切勿写成旁白、设定说明或百科条目。'
     ];
     if (middleText) {
       blocks.push(middleText);
@@ -285,21 +288,21 @@
         '当前表情包库为空。本轮严禁输出 type="sticker" 的消息，也不得虚构任何 assetId。'
       ].join('\n');
     }
-    var MAX_CATALOG_CHARS = 2400;
+    var MAX_CATALOG_CHARS = 3200;
     var rows = [];
     var usedChars = 0;
     var omitted = 0;
-    for (var i = 0; i < list.length && rows.length < 32; i++) {
+    for (var i = 0; i < list.length && rows.length < 40; i++) {
       var st = list[i];
       if (!st || !st.id) continue;
-      var descText = cleanText(st.description || st.note || '', 120);
+      var descText = cleanText(st.description || st.note || '', 140);
       var tagList = Array.isArray(st.tags) ? st.tags.filter(Boolean).slice(0, 6) : [];
       var bits = [
         '- id="' + st.id + '"',
         '名称="' + cleanText(st.name || '表情包', 32) + '"'
       ];
       if (descText) {
-        bits.push('含义="' + descText + '"');
+        bits.push('描述="' + descText + '"');
       }
       if (tagList.length) {
         bits.push('标签="' + tagList.join('/') + '"');
@@ -316,7 +319,7 @@
       usedChars += line.length + 1;
     }
     var footer = [
-      '表情包调用规则：以上仅提供名称与语义元数据（不含图片像素）。仅当语义与当前语气自然契合时选用真实 assetId；可单独发送、在文字前/后搭配、或与其他气泡组合，每条表情包均计为 1 条独立消息；严格禁止编造或修改 id。'
+      '表情包调用规则：以上提供可用表情包的素材 ID、名称与文字描述（不含图片像素）。请根据角色人设、情绪、剧情与聊天语境自主决定是否选用以及使用频率；可单独发送，也可搭配文字或文字语音条发送，前端将按返回的 assetId 渲染真实图片且仅显示图片。每条表情包计为 1 条独立气泡；严格禁止编造或修改 id。'
     ];
     if (omitted > 0) {
       footer.push('（已按上下文预算展示前 ' + rows.length + ' 个可用表情包，其余 ' + omitted + ' 个已省略）');
@@ -335,11 +338,12 @@
     var prefs = replyPrefs || getReplyPrefs(workState);
     var countPhrase = formatReplyCountPhrase(prefs);
 
-    var voiceGuide = [
-      '关于模拟文字语音条（type="text_voice"）：',
-      '• 这是聊天界面里的「文字模拟语音条」，点击后仅展示对应的口语文字，不会发声或做音频朗读，因此 content 必须是自然开口说话的口语内容（可以有一点语气词、停顿或随口咕哝，但绝不可写旁白、动作括号或描述音色）。',
-      '• 请把语音条作为点缀适度使用（例如懒得打长字、带着一点情绪或吐槽、或者语音更带感时），不要连续刷屏或完全替代正常文字气泡。',
-      '• duration 填估算秒数（2~59 的整数，短句约 3~5，中等约 6~12，较长约 13~25）。'
+    var richMsgGuide = [
+      '关于各类特殊气泡格式说明（按人设与剧情自然按需使用，无需强行每轮都用）：',
+      '• 语音条（type="text_voice"）：点击后展开口语文字、不播放音频；content 必须是自然开口说话的口语内容（绝不可写旁白、动作括号或音色描写），duration 填估算秒数（2~59 的整数）。',
+      '• 图片卡片（type="image"）：以文字图片卡片展示，content 必须填写这张照片/截图里呈现的画面内容（例如「刚端上桌的红油小面，旁边放着半杯冰美式」），不要写成说话台词。',
+      '• 定位卡片（type="location"）：自定义位置分享卡片，name 填地点名称（必填），address 填详细地址（选填，建议贴合世界观与日常真实感）。',
+      '• 假撤回（"recalled": true）：任意消息对象上可附带 "recalled": true，表示该消息发出后立即执行假撤回（气泡与原内容仍保留可见，并显示撤回提示），适合嘴硬心软、说漏嘴、害羞或口误等剧情。'
     ].join('\n');
 
     if (isStory) {
@@ -350,11 +354,13 @@
         '每条消息必须明确标注 side：',
         '• side="left" 代表角色「' + charName + '」',
         '• side="right" 代表「' + userName + '」',
-        '允许的 item 类型：',
+        '允许的 item 类型（任意消息均可按需附加 "recalled": true 表示假撤回）：',
         '1) 文字：{ "side": "left"|"right", "type": "text", "content": "聊天内容" }',
         '2) 表情包：{ "side": "left"|"right", "type": "sticker", "assetId": "必须是第9节中的真实id" }',
         '3) 文字语音条：{ "side": "left"|"right", "type": "text_voice", "content": "语音口语内容", "duration": 6 }',
-        voiceGuide,
+        '4) 图片卡片：{ "side": "left"|"right", "type": "image", "content": "图片画面内容描述" }',
+        '5) 定位卡片：{ "side": "left"|"right", "type": "location", "name": "地点名称", "address": "详细地址" }',
+        richMsgGuide,
         '请只输出一个合法 JSON 对象（不要用多余文字包裹解释）：',
         '{',
         '  "messages": [ ... ],',
@@ -378,11 +384,13 @@
     return [
       '【10. 输出格式要求｜AI 角色互动模式（严格返回单个 JSON 对象）】',
       '当前为「AI 角色互动」模式。你只扮演「' + charName + '」（左侧消息，side 固定为 "left"），绝不要代写「' + userName + '」（右侧用户）的发言。',
-      '本轮 messages 数组中的有效独立消息总条数必须为 ' + countPhrase + '（每条代表一个独立聊天气泡；emotionUpdate 与 summaryNote 不计入条数）。允许的 item 类型：',
+      '本轮 messages 数组中的有效独立消息总条数必须为 ' + countPhrase + '（每条代表一个独立聊天气泡；emotionUpdate 与 summaryNote 不计入条数）。允许的 item 类型（任意消息均可按需附加 "recalled": true 表示假撤回）：',
       '1) 文字：{ "type": "text", "content": "聊天内容" }',
       '2) 表情包：{ "type": "sticker", "assetId": "必须是第9节中的真实id" }',
       '3) 文字语音条：{ "type": "text_voice", "content": "语音口语内容", "duration": 6 }',
-      voiceGuide,
+      '4) 图片卡片：{ "type": "image", "content": "图片画面内容描述" }',
+      '5) 定位卡片：{ "type": "location", "name": "地点名称", "address": "详细地址" }',
+      richMsgGuide,
       '请只输出一个合法 JSON 对象（不要加额外说明）：',
       '{',
       '  "messages": [ ... ],',
@@ -406,11 +414,16 @@
   function formatStickerMessageSemantics(item, stickerIdMap) {
     var map = stickerIdMap && typeof stickerIdMap === 'object' ? stickerIdMap : null;
     var meta = (map && item.assetId && map[item.assetId]) ? map[item.assetId] : null;
-    var rawName = cleanText((meta && meta.name) || item.alt || '', 48);
-    var desc = cleanText((meta && (meta.description || meta.note)) || '', 200);
+    var rawName = cleanText((meta && meta.name) || item.stickerName || item.alt || '', 48);
+    var desc = cleanText(
+      (meta && (meta.description || meta.note)) || item.stickerDesc || item.description || '',
+      200
+    );
     var tags = (meta && Array.isArray(meta.tags) && meta.tags.length)
       ? meta.tags.map(function(t) { return cleanText(t, 24); }).filter(Boolean).slice(0, 6)
-      : [];
+      : (Array.isArray(item.stickerTags)
+        ? item.stickerTags.map(function(t) { return cleanText(t, 24); }).filter(Boolean).slice(0, 6)
+        : []);
     var mood = cleanText((meta && meta.mood) || '', 24);
 
     var parts = [];
@@ -420,7 +433,7 @@
       parts.push('表情包');
     }
     if (desc) {
-      parts.push('含义：' + desc);
+      parts.push('描述：' + desc);
     }
     if (tags.length) {
       parts.push('标签：' + tags.join('/'));
@@ -430,73 +443,105 @@
     return '[' + parts.join('；') + ']';
   }
 
-  function serializeMessageForPrompt(item, charName, userName, stickerIdMap) {
-    if (!item || typeof item !== 'object') return null;
-    if (item.fakeRecall || item.type === 'withdraw') return null;
-    var who = item.side === 'right' ? (userName || '我') : (charName || '对方');
+  function formatMessageTimePrefix(rawItem, item) {
+    var full = cleanText((rawItem && rawItem.sentTimeFull) || (item && item.sentTimeFull) || '', 32);
+    if (full) return '[' + full + '] ';
+    var shortTime = cleanText((rawItem && rawItem.sentTime) || (item && item.sentTime) || '', 16);
+    if (shortTime) return '[' + shortTime + '] ';
+    return '';
+  }
+
+  function formatChatClockSection(workState, currentChatTime) {
+    var clock = currentChatTime && typeof currentChatTime === 'object' ? currentChatTime : null;
+    if (!clock && global.FanCommunityWorks && typeof global.FanCommunityWorks.resolveWorkCurrentTime === 'function') {
+      try {
+        clock = global.FanCommunityWorks.resolveWorkCurrentTime(workState && workState.timeSettings);
+      } catch (_) {}
+    }
+    if (!clock || !clock.full) return '';
+
+    var lines = ['【当前聊天时钟与时间线】'];
+    if (clock.mode === 'virtual') {
+      lines.push('时间模式：虚拟时间（流速 ' + (clock.speed || 1) + 'x，状态：' + (clock.paused ? '已暂停' : '自动推进中') + '）');
+      lines.push('当前虚拟时间：' + clock.full);
+    } else {
+      lines.push('时间模式：实时时间' + (clock.timeZone ? ('（时区：' + clock.timeZone + '）') : ''));
+      lines.push('当前时间：' + clock.full);
+    }
+    lines.push('时间与顺序规则：请严格按照下方聊天记录的先后顺序以及每条消息前附带的发送时间来理解上下文语境与时间间隔（如时段、隔了多久再回复、是否跨天），但在你生成的聊天气泡正文中不要机械复述时间戳或楼层号。');
+    return lines.join('\n');
+  }
+
+  function serializeMessageForPrompt(rawItem, charName, userName, stickerIdMap) {
+    if (!rawItem || typeof rawItem !== 'object') return null;
+    var item = rawItem;
+    var isRecalled = Boolean(rawItem.fakeRecall);
+    if (rawItem.type === 'withdraw') {
+      if (rawItem.original && typeof rawItem.original === 'object') {
+        item = Object.assign({}, rawItem.original, {
+          side: rawItem.side || rawItem.original.side
+        });
+        isRecalled = true;
+      } else {
+        var wSide = rawItem.side === 'right' ? 'right' : 'left';
+        var wWho = wSide === 'right' ? (userName || '我') : (charName || '对方');
+        var wTimePrefix = formatMessageTimePrefix(rawItem, rawItem);
+        return {
+          role: wSide === 'right' ? 'user' : 'assistant',
+          side: wSide,
+          line: wTimePrefix + wWho + ' [撤回了一条消息]'
+        };
+      }
+    }
+
+    var side = item.side === 'right' ? 'right' : 'left';
+    var who = side === 'right' ? (userName || '我') : (charName || '对方');
 
     if (item.type === 'date') {
       return { role: 'user', line: '[日期分隔：' + (item.text || '') + ']' };
     }
+
+    var timePrefix = formatMessageTimePrefix(rawItem, item);
+    var bodyLine = '';
     if (item.type === 'text') {
       var txt = String(item.text || '').trim();
       if (!txt) return null;
-      return {
-        role: item.side === 'right' ? 'user' : 'assistant',
-        side: item.side === 'right' ? 'right' : 'left',
-        line: who + '：' + txt
-      };
-    }
-    if (item.type === 'text_voice') {
+      bodyLine = txt;
+    } else if (item.type === 'text_voice' || item.type === 'voice') {
       var vt = String(item.text || item.content || '').trim();
-      var dur = Number(item.duration) || 6;
-      return {
-        role: item.side === 'right' ? 'user' : 'assistant',
-        side: item.side === 'right' ? 'right' : 'left',
-        line: who + ' [语音消息 ' + dur + '″]：' + (vt || '（未识别文字）')
-      };
-    }
-    if (item.type === 'voice') {
-      var vtxt = String(item.text || '').trim();
-      var vdur = Number(item.duration) || 8;
-      return {
-        role: item.side === 'right' ? 'user' : 'assistant',
-        side: item.side === 'right' ? 'right' : 'left',
-        line: who + ' [语音消息 ' + vdur + '″]' + (vtxt ? ('：' + vtxt) : '')
-      };
-    }
-    if (item.type === 'image') {
+      var dur = Number(item.duration) || (item.type === 'voice' ? 8 : 6);
+      bodyLine = '[发送了语音消息 ' + dur + '″，语音内容：' + (vt || '（未填写语音文字）') + ']';
+    } else if (item.type === 'image') {
       if (item.isSticker) {
-        return {
-          role: item.side === 'right' ? 'user' : 'assistant',
-          side: item.side === 'right' ? 'right' : 'left',
-          line: who + '：' + formatStickerMessageSemantics(item, stickerIdMap)
-        };
+        bodyLine = formatStickerMessageSemantics(item, stickerIdMap);
+      } else {
+        var imgDesc = cleanText(String(item.text || item.content || item.alt || '图片').trim(), 300) || '图片';
+        bodyLine = '[发送了一张图片，图片画面内容：' + imgDesc + ']';
       }
-      var alt = String(item.alt || '图片').trim();
-      return {
-        role: item.side === 'right' ? 'user' : 'assistant',
-        side: item.side === 'right' ? 'right' : 'left',
-        line: who + ' [发送了图片：' + alt + ']'
-      };
-    }
-    if (item.type === 'transfer') {
+    } else if (item.type === 'location') {
+      var locName = cleanText(String(item.name || item.placeName || item.title || '').trim(), 80);
+      var locAddr = cleanText(String(item.address || item.detail || '').trim(), 160);
+      if (!locName && !locAddr) return null;
+      bodyLine = '[发送了定位卡片：地点「' + (locName || '位置') + '」' + (locAddr ? ('｜详细地址：' + locAddr) : '') + ']';
+    } else if (item.type === 'transfer') {
       var status = (item.status === 'claimed' || item.claimed || item.received) ? '已领取' : '未领取';
-      return {
-        role: item.side === 'right' ? 'user' : 'assistant',
-        side: item.side === 'right' ? 'right' : 'left',
-        line: who + ' [转账卡片 ' + (item.amount || '0') + ' · ' + (item.note || '转账') + '（' + status + '）]'
-      };
-    }
-    if (item.type === 'call') {
+      bodyLine = '[转账卡片 ' + (item.amount || '0') + ' · ' + (item.note || '转账') + '（' + status + '）]';
+    } else if (item.type === 'call') {
       var callLabel = item.video ? '视频通话' : '语音通话';
-      return {
-        role: item.side === 'right' ? 'user' : 'assistant',
-        side: item.side === 'right' ? 'right' : 'left',
-        line: who + ' [' + callLabel + '：' + (item.status || '已接通') + (item.duration ? (' ' + item.duration) : '') + ']'
-      };
+      bodyLine = '[' + callLabel + '：' + (item.status || '已接通') + (item.duration ? (' ' + item.duration) : '') + ']';
+    } else {
+      return null;
     }
-    return null;
+
+    var finalLine = isRecalled
+      ? (timePrefix + who + ' [撤回了这条消息，撤回前原内容仍可见]：' + bodyLine)
+      : (timePrefix + who + '：' + bodyLine);
+
+    return {
+      role: side === 'right' ? 'user' : 'assistant',
+      side: side,
+      line: finalLine
+    };
   }
 
   function buildRecentChatMessages(workState, options) {
@@ -587,9 +632,15 @@
     }
     var worldbookContext = params.worldbookContext || null;
     var replyPrefs = getReplyPrefs(workState);
+    var resolvedClock = params.currentChatTime || (
+      global.FanCommunityWorks && typeof global.FanCommunityWorks.resolveWorkCurrentTime === 'function'
+        ? global.FanCommunityWorks.resolveWorkCurrentTime(workState.timeSettings)
+        : null
+    );
 
     var wbBefore = formatWorldbookBeforeSection(worldbookContext);
     var wbBody = formatWorldbookMiddleAfterSection(worldbookContext);
+    var clockSection = formatChatClockSection(workState, resolvedClock);
 
     var systemSections = [
       CORE_RULE_SECTIONS.pureOnlineSimulator,
@@ -604,6 +655,7 @@
     systemSections.push(formatResolvedRoleSection(resolvedRole));
     systemSections.push(formatWorkAiSettingsSection(workState));
     if (wbBody) systemSections.push(wbBody);
+    if (clockSection) systemSections.push(clockSection);
     systemSections.push(formatEmotionSection(workState.emotionState));
     systemSections.push(formatCompressedMemorySection(workState.aiMemory));
     systemSections.push(formatStickerCatalogSection(stickerCatalog));
@@ -634,6 +686,8 @@
           maxMessages: replyPrefs.maxMessages,
           isFixedCount: replyPrefs.minMessages === replyPrefs.maxMessages
         },
+        clockMode: resolvedClock ? resolvedClock.mode : 'realtime',
+        currentChatTime: resolvedClock ? resolvedClock.full : '',
         injectedRuleIds: [
           'pureOnlineSimulator',
           'humanChatNaturalness',
@@ -660,6 +714,7 @@
     CORE_RULE_SECTIONS: CORE_RULE_SECTIONS,
     getReplyPrefs: getReplyPrefs,
     formatMessageRhythmSection: formatMessageRhythmSection,
+    formatChatClockSection: formatChatClockSection,
     assemblePromptPayload: assemblePromptPayload,
     serializeMessageForPrompt: serializeMessageForPrompt,
     formatEmotionSection: formatEmotionSection

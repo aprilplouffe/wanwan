@@ -11,6 +11,8 @@
   var WORKS_INDEX_KEY = 'wanwan-phone-works-index-v1';
   var WORK_DATA_PREFIX = 'wanwan-phone-work-data-v1:';
   var LEGACY_WORK_ID = 'work_legacy_v3';
+  var ARCHIVES_INDEX_KEY = 'wanwan-phone-archives-index-v1';
+  var ARCHIVE_DATA_PREFIX = 'wanwan-phone-archive-data-v1:';
 
   function clone(obj) {
     return JSON.parse(JSON.stringify(obj));
@@ -22,6 +24,21 @@
 
   function workDataKey(workId) {
     return WORK_DATA_PREFIX + String(workId || '');
+  }
+
+  function archiveDataKey(archiveId) {
+    return ARCHIVE_DATA_PREFIX + String(archiveId || '');
+  }
+
+  function generateArchiveId() {
+    var store = storage();
+    for (var i = 0; i < 8; i++) {
+      var candidate = 'arch_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      if (!store || store.getItem(archiveDataKey(candidate)) === null) {
+        return candidate;
+      }
+    }
+    return 'arch_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
   }
 
   function generateWorkId() {
@@ -210,6 +227,316 @@
     });
   }
 
+  function syncMessageFloors(rawItems) {
+    if (!Array.isArray(rawItems)) return [];
+    var out = [];
+    for (var i = 0; i < rawItems.length; i++) {
+      var item = rawItems[i];
+      if (!item || typeof item !== 'object') continue;
+      item.floor = out.length + 1;
+      out.push(item);
+    }
+    return out;
+  }
+
+  function moveMessageToFloor(rawItems, fromIndex, targetFloor) {
+    if (!Array.isArray(rawItems) || !rawItems.length) {
+      return { ok: false, error: '当前没有可移动的消息' };
+    }
+    var len = rawItems.length;
+    var fromIdx = Number(fromIndex);
+    var floorNum = Number(targetFloor);
+    if (!Number.isInteger(fromIdx) || fromIdx < 0 || fromIdx >= len) {
+      return { ok: false, error: '原消息位置无效' };
+    }
+    if (!Number.isInteger(floorNum) || floorNum < 1 || floorNum > len) {
+      return { ok: false, error: '请输入 1～' + len + ' 之间的有效楼层编号' };
+    }
+    var toIdx = floorNum - 1;
+    var list = rawItems.slice();
+    var moved = list.splice(fromIdx, 1)[0];
+    list.splice(toIdx, 0, moved);
+    syncMessageFloors(list);
+    return {
+      ok: true,
+      items: list,
+      fromIndex: fromIdx,
+      toIndex: toIdx,
+      fromFloor: fromIdx + 1,
+      toFloor: floorNum
+    };
+  }
+
+  var TIMEZONE_OPTIONS = [
+    { value: 'Asia/Shanghai', label: '北京 / 上海 (UTC+8)' },
+    { value: 'Asia/Hong_Kong', label: '香港 (UTC+8)' },
+    { value: 'Asia/Taipei', label: '台北 (UTC+8)' },
+    { value: 'Asia/Singapore', label: '新加坡 (UTC+8)' },
+    { value: 'Asia/Tokyo', label: '东京 (UTC+9)' },
+    { value: 'Asia/Seoul', label: '首尔 (UTC+9)' },
+    { value: 'Australia/Sydney', label: '悉尼 (UTC+10/+11)' },
+    { value: 'Europe/London', label: '伦敦 (UTC+0/+1)' },
+    { value: 'Europe/Paris', label: '巴黎 (UTC+1/+2)' },
+    { value: 'America/New_York', label: '纽约 (UTC-5/-4)' },
+    { value: 'America/Los_Angeles', label: '洛杉矶 (UTC-8/-7)' },
+    { value: 'UTC', label: '世界协调时 (UTC)' }
+  ];
+
+  function detectDefaultTimeZone() {
+    try {
+      var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (tz && typeof tz === 'string') return tz;
+    } catch (_) {}
+    return 'Asia/Shanghai';
+  }
+
+  function pad2Num(n) {
+    return String(n).padStart(2, '0');
+  }
+
+  function formatLocalTodayStr(nowMs) {
+    var d = new Date(Number.isFinite(nowMs) ? nowMs : Date.now());
+    return d.getFullYear() + '-' + pad2Num(d.getMonth() + 1) + '-' + pad2Num(d.getDate());
+  }
+
+  function parseVirtualDateTimeToMs(dateStr, timeStr) {
+    var ds = typeof dateStr === 'string' ? dateStr.trim() : '';
+    var ts = typeof timeStr === 'string' ? timeStr.trim() : '';
+    var dm = ds.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    var tm = ts.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/);
+    var now = new Date();
+    var y = dm ? parseInt(dm[1], 10) : now.getFullYear();
+    var mo = dm ? Math.max(1, Math.min(12, parseInt(dm[2], 10))) : (now.getMonth() + 1);
+    var da = dm ? Math.max(1, Math.min(31, parseInt(dm[3], 10))) : now.getDate();
+    var hh = tm ? Math.max(0, Math.min(23, parseInt(tm[1], 10))) : 9;
+    var mm = tm ? Math.max(0, Math.min(59, parseInt(tm[2], 10))) : 0;
+    var ss = tm && tm[3] ? Math.max(0, Math.min(59, parseInt(tm[3], 10))) : 0;
+    return Date.UTC(y, mo - 1, da, hh, mm, ss);
+  }
+
+  function formatVirtualMs(ms) {
+    var safeMs = Number.isFinite(ms) ? ms : Date.UTC(2026, 0, 1, 9, 0, 0);
+    var d = new Date(safeMs);
+    var date = d.getUTCFullYear() + '-' + pad2Num(d.getUTCMonth() + 1) + '-' + pad2Num(d.getUTCDate());
+    var time = pad2Num(d.getUTCHours()) + ':' + pad2Num(d.getUTCMinutes());
+    var sec = pad2Num(d.getUTCSeconds());
+    return {
+      date: date,
+      time: time,
+      seconds: sec,
+      full: date + ' ' + time,
+      fullWithSec: date + ' ' + time + ':' + sec,
+      ms: safeMs
+    };
+  }
+
+  function clampVirtualSpeed(val) {
+    var num = Number(val);
+    if (!Number.isFinite(num) || num <= 0) return 1;
+    var clamped = Math.max(0.1, Math.min(1440, num));
+    return Math.round(clamped * 100) / 100;
+  }
+
+  function createDefaultTimeSettings(nowRealMs) {
+    var now = Number.isFinite(nowRealMs) ? nowRealMs : Date.now();
+    var startDate = formatLocalTodayStr(now);
+    var startTime = '09:00';
+    return {
+      showBubbleTime: false,
+      mode: 'realtime',
+      timeZone: detectDefaultTimeZone(),
+      virtualStartDate: startDate,
+      virtualStartTime: startTime,
+      virtualSpeed: 1,
+      virtualPaused: false,
+      virtualBaseMs: parseVirtualDateTimeToMs(startDate, startTime),
+      virtualAnchorRealMs: now
+    };
+  }
+
+  function normalizeTimeSettings(raw, nowRealMs) {
+    var now = Number.isFinite(nowRealMs) ? nowRealMs : Date.now();
+    var base = createDefaultTimeSettings(now);
+    if (!raw || typeof raw !== 'object') return base;
+
+    var mode = raw.mode === 'virtual' ? 'virtual' : 'realtime';
+    var tz = typeof raw.timeZone === 'string' && raw.timeZone.trim() ? raw.timeZone.trim() : base.timeZone;
+    var startDate = typeof raw.virtualStartDate === 'string' && /^\d{4}-\d{1,2}-\d{1,2}$/.test(raw.virtualStartDate.trim())
+      ? raw.virtualStartDate.trim()
+      : base.virtualStartDate;
+    var startTime = typeof raw.virtualStartTime === 'string' && /^\d{1,2}:\d{1,2}$/.test(raw.virtualStartTime.trim())
+      ? raw.virtualStartTime.trim()
+      : base.virtualStartTime;
+    var speed = clampVirtualSpeed(raw.virtualSpeed);
+    var paused = Boolean(raw.virtualPaused);
+    var defaultBaseMs = parseVirtualDateTimeToMs(startDate, startTime);
+    var virtualBaseMs = Number.isFinite(Number(raw.virtualBaseMs)) ? Number(raw.virtualBaseMs) : defaultBaseMs;
+    var virtualAnchorRealMs = Number.isFinite(Number(raw.virtualAnchorRealMs)) && Number(raw.virtualAnchorRealMs) > 0
+      ? Number(raw.virtualAnchorRealMs)
+      : now;
+
+    return {
+      showBubbleTime: Boolean(raw.showBubbleTime),
+      mode: mode,
+      timeZone: tz,
+      virtualStartDate: startDate,
+      virtualStartTime: startTime,
+      virtualSpeed: speed,
+      virtualPaused: paused,
+      virtualBaseMs: virtualBaseMs,
+      virtualAnchorRealMs: virtualAnchorRealMs
+    };
+  }
+
+  function formatRealTimeInZone(nowMs, timeZone) {
+    var d = new Date(Number.isFinite(nowMs) ? nowMs : Date.now());
+    var tz = timeZone || detectDefaultTimeZone();
+    try {
+      var fmt = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      var parts = fmt.formatToParts(d);
+      var map = Object.create(null);
+      for (var i = 0; i < parts.length; i++) {
+        map[parts[i].type] = parts[i].value;
+      }
+      var hh = map.hour === '24' ? '00' : pad2Num(parseInt(map.hour || '0', 10) || 0);
+      var mm = pad2Num(parseInt(map.minute || '0', 10) || 0);
+      var ss = pad2Num(parseInt(map.second || '0', 10) || 0);
+      var dateStr = (map.year || String(d.getFullYear())) + '-' + (map.month || pad2Num(d.getMonth() + 1)) + '-' + (map.day || pad2Num(d.getDate()));
+      var timeStr = hh + ':' + mm;
+      return {
+        date: dateStr,
+        time: timeStr,
+        seconds: ss,
+        full: dateStr + ' ' + timeStr,
+        fullWithSec: dateStr + ' ' + timeStr + ':' + ss,
+        ms: d.getTime(),
+        timeZone: tz
+      };
+    } catch (_) {
+      var fallbackDate = d.getFullYear() + '-' + pad2Num(d.getMonth() + 1) + '-' + pad2Num(d.getDate());
+      var fallbackTime = pad2Num(d.getHours()) + ':' + pad2Num(d.getMinutes());
+      var fallbackSec = pad2Num(d.getSeconds());
+      return {
+        date: fallbackDate,
+        time: fallbackTime,
+        seconds: fallbackSec,
+        full: fallbackDate + ' ' + fallbackTime,
+        fullWithSec: fallbackDate + ' ' + fallbackTime + ':' + fallbackSec,
+        ms: d.getTime(),
+        timeZone: tz
+      };
+    }
+  }
+
+  function resolveWorkCurrentTime(rawTimeSettings, nowRealMs) {
+    var now = Number.isFinite(nowRealMs) ? nowRealMs : Date.now();
+    var ts = normalizeTimeSettings(rawTimeSettings, now);
+    if (ts.mode === 'virtual') {
+      var elapsedReal = Math.max(0, now - ts.virtualAnchorRealMs);
+      var curVirtualMs = ts.virtualPaused
+        ? ts.virtualBaseMs
+        : (ts.virtualBaseMs + elapsedReal * ts.virtualSpeed);
+      var vf = formatVirtualMs(curVirtualMs);
+      return {
+        mode: 'virtual',
+        date: vf.date,
+        time: vf.time,
+        seconds: vf.seconds,
+        full: vf.full,
+        fullWithSec: vf.fullWithSec,
+        ms: vf.ms,
+        paused: ts.virtualPaused,
+        speed: ts.virtualSpeed,
+        timeZone: ''
+      };
+    }
+    var rf = formatRealTimeInZone(now, ts.timeZone);
+    return {
+      mode: 'realtime',
+      date: rf.date,
+      time: rf.time,
+      seconds: rf.seconds,
+      full: rf.full,
+      fullWithSec: rf.fullWithSec,
+      ms: rf.ms,
+      paused: false,
+      speed: 1,
+      timeZone: rf.timeZone
+    };
+  }
+
+  function pauseVirtualClock(rawTimeSettings, nowRealMs) {
+    var now = Number.isFinite(nowRealMs) ? nowRealMs : Date.now();
+    var ts = normalizeTimeSettings(rawTimeSettings, now);
+    var cur = resolveWorkCurrentTime(Object.assign({}, ts, { mode: 'virtual' }), now);
+    return Object.assign({}, ts, {
+      virtualBaseMs: cur.ms,
+      virtualAnchorRealMs: now,
+      virtualPaused: true
+    });
+  }
+
+  function resumeVirtualClock(rawTimeSettings, nowRealMs) {
+    var now = Number.isFinite(nowRealMs) ? nowRealMs : Date.now();
+    var ts = normalizeTimeSettings(rawTimeSettings, now);
+    return Object.assign({}, ts, {
+      virtualAnchorRealMs: now,
+      virtualPaused: false
+    });
+  }
+
+  function updateVirtualClockSpeed(rawTimeSettings, nextSpeed, nowRealMs) {
+    var now = Number.isFinite(nowRealMs) ? nowRealMs : Date.now();
+    var ts = normalizeTimeSettings(rawTimeSettings, now);
+    var cur = resolveWorkCurrentTime(Object.assign({}, ts, { mode: 'virtual' }), now);
+    return Object.assign({}, ts, {
+      virtualBaseMs: cur.ms,
+      virtualAnchorRealMs: now,
+      virtualSpeed: clampVirtualSpeed(nextSpeed)
+    });
+  }
+
+  function resetVirtualClockStart(rawTimeSettings, dateStr, timeStr, nowRealMs) {
+    var now = Number.isFinite(nowRealMs) ? nowRealMs : Date.now();
+    var ts = normalizeTimeSettings(rawTimeSettings, now);
+    var nextDate = typeof dateStr === 'string' && /^\d{4}-\d{1,2}-\d{1,2}$/.test(dateStr.trim())
+      ? dateStr.trim()
+      : ts.virtualStartDate;
+    var nextTime = typeof timeStr === 'string' && /^\d{1,2}:\d{1,2}$/.test(timeStr.trim())
+      ? timeStr.trim()
+      : ts.virtualStartTime;
+    return Object.assign({}, ts, {
+      virtualStartDate: nextDate,
+      virtualStartTime: nextTime,
+      virtualBaseMs: parseVirtualDateTimeToMs(nextDate, nextTime),
+      virtualAnchorRealMs: now
+    });
+  }
+
+  function stampMessageTime(msg, rawTimeSettings, nowRealMs, forceOverwrite) {
+    if (!msg || typeof msg !== 'object' || msg.type === 'date') return msg;
+    if (!forceOverwrite && msg.sentTime && msg.sentTimeFull) return msg;
+    var snap = resolveWorkCurrentTime(rawTimeSettings, nowRealMs);
+    msg.sentTime = snap.time;
+    msg.sentDate = snap.date;
+    msg.sentTimeFull = snap.full;
+    msg.sentTimestamp = snap.ms;
+    msg.sentTimeMode = snap.mode;
+    if (snap.timeZone) {
+      msg.sentTimeZone = snap.timeZone;
+    }
+    return msg;
+  }
+
   var DEFAULT_APPEARANCE = {
     bgType: 'color',
     bgColor: '#abc6d9',
@@ -388,15 +715,23 @@
       boundRoleRef: boundRoleRef,
       aiSettings: normalizeAiSettings(src.aiSettings, resolvedChar),
       aiReplyPrefs: normalizeAiReplyPrefs(src.aiReplyPrefs),
+      timeSettings: normalizeTimeSettings(src.timeSettings, now),
       emotionState: normalizeEmotionState(src.emotionState),
       aiMemory: normalizeAiMemory(src.aiMemory),
       topic: typeof src.topic === 'string' ? src.topic : '',
       join: src.join !== false,
       showTools: Boolean(src.showTools),
       isLegacy: Boolean(src.isLegacy || meta.isLegacy),
+      isCompleted: Boolean(src.isCompleted || meta.isCompleted),
+      completedAt: typeof src.completedAt === 'number' && Number.isFinite(src.completedAt)
+        ? src.completedAt
+        : (typeof meta.completedAt === 'number' && Number.isFinite(meta.completedAt) ? meta.completedAt : 0),
+      lastArchiveId: typeof src.lastArchiveId === 'string'
+        ? src.lastArchiveId
+        : (typeof meta.lastArchiveId === 'string' ? meta.lastArchiveId : ''),
       createdAt: typeof src.createdAt === 'number' ? src.createdAt : (typeof meta.createdAt === 'number' ? meta.createdAt : now),
       updatedAt: typeof src.updatedAt === 'number' ? src.updatedAt : (typeof meta.updatedAt === 'number' ? meta.updatedAt : now),
-      items: ensureMessageIds(src.items)
+      items: syncMessageFloors(ensureMessageIds(src.items))
     };
   }
 
@@ -413,7 +748,10 @@
       messageCount: Array.isArray(workData.items) ? workData.items.length : 0,
       createdAt: workData.createdAt,
       updatedAt: workData.updatedAt,
-      isLegacy: Boolean(workData.isLegacy)
+      isLegacy: Boolean(workData.isLegacy),
+      isCompleted: Boolean(workData.isCompleted),
+      completedAt: typeof workData.completedAt === 'number' && Number.isFinite(workData.completedAt) ? workData.completedAt : 0,
+      lastArchiveId: typeof workData.lastArchiveId === 'string' ? workData.lastArchiveId : ''
     };
   }
 
@@ -619,12 +957,16 @@
       boundRoleRef: null,
       aiSettings: createDefaultAiSettings('对方'),
       aiReplyPrefs: createDefaultAiReplyPrefs(),
+      timeSettings: createDefaultTimeSettings(now),
       emotionState: createDefaultEmotionState(),
       aiMemory: createDefaultAiMemory(),
       topic: '',
       join: true,
       showTools: false,
       isLegacy: false,
+      isCompleted: false,
+      completedAt: 0,
+      lastArchiveId: '',
       createdAt: now,
       updatedAt: now,
       items: []
@@ -748,7 +1090,349 @@
     return { ok: true, work: toMeta(data) };
   }
 
-  // 收集所有作品的消息项，供素材引用安全检查使用
+  function buildWorkExcerpt(items) {
+    var list = Array.isArray(items) ? items : [];
+    var parts = [];
+    for (var i = 0; i < list.length; i++) {
+      var raw = list[i];
+      if (!raw || raw.type === 'date') continue;
+      var it = (raw.type === 'withdraw' && raw.original) ? raw.original : raw;
+      var line = '';
+      if (it.type === 'text') line = String(it.text || '').trim();
+      else if (it.type === 'text_voice' || it.type === 'voice') line = '[语音] ' + String(it.text || it.content || '').trim();
+      else if (it.type === 'image') line = it.isSticker ? '[表情包]' : ('[图片] ' + String(it.text || it.alt || '').trim());
+      else if (it.type === 'location') line = '[定位] ' + String(it.name || '').trim();
+      else if (it.type === 'transfer') line = '[转账 ' + String(it.amount || '') + ']';
+      else if (it.type === 'call') line = it.video ? '[视频通话]' : '[语音通话]';
+      if (line) parts.push(line);
+      if (parts.length >= 2) break;
+    }
+    var joined = parts.join(' / ').replace(/\s+/g, ' ').trim();
+    return joined.length > 72 ? (joined.slice(0, 71) + '…') : joined;
+  }
+
+  function collectRecordAssetIds(record) {
+    var map = Object.create(null);
+    if (!record || typeof record !== 'object') return [];
+    if (record.charAvatarAssetId) map[String(record.charAvatarAssetId)] = true;
+    if (record.userAvatarAssetId) map[String(record.userAvatarAssetId)] = true;
+    if (record.appearance && record.appearance.bgImageAssetId) {
+      map[String(record.appearance.bgImageAssetId)] = true;
+    }
+    var items = Array.isArray(record.items) ? record.items : [];
+    for (var i = 0; i < items.length; i++) {
+      var m = items[i];
+      if (!m) continue;
+      if (m.assetId && !m.isSticker) map[String(m.assetId)] = true;
+      if (m.original && m.original.assetId && !m.original.isSticker) map[String(m.original.assetId)] = true;
+    }
+    return Object.keys(map);
+  }
+
+  function sortArchives(archives) {
+    return (archives || []).slice().sort(function(a, b) {
+      var diff = (b.archivedAt || b.completedAt || 0) - (a.archivedAt || a.completedAt || 0);
+      if (diff !== 0) return diff;
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
+  }
+
+  function readArchivesIndexRaw() {
+    var store = storage();
+    if (!store) return { version: 1, archives: [] };
+    try {
+      var raw = store.getItem(ARCHIVES_INDEX_KEY);
+      if (!raw) return { version: 1, archives: [] };
+      var parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.archives)) {
+        return { version: 1, archives: [] };
+      }
+      return {
+        version: parsed.version || 1,
+        archives: parsed.archives.slice()
+      };
+    } catch (_) {
+      return { version: 1, archives: [] };
+    }
+  }
+
+  function writeArchivesIndex(indexObj) {
+    var store = storage();
+    if (!store) return;
+    store.setItem(ARCHIVES_INDEX_KEY, JSON.stringify({
+      version: 1,
+      archives: sortArchives(indexObj && indexObj.archives ? indexObj.archives : [])
+    }));
+  }
+
+  function toArchiveMeta(archiveData) {
+    var items = Array.isArray(archiveData.items) ? archiveData.items : [];
+    return {
+      archiveId: String(archiveData.archiveId || ''),
+      sourceWorkId: String(archiveData.sourceWorkId || archiveData.id || ''),
+      category: String(archiveData.category || 'phone_fiction'),
+      categoryLabel: String(archiveData.categoryLabel || '捡手机文学'),
+      title: String(archiveData.title || '未命名作品'),
+      char: String(archiveData.char || '对方'),
+      user: String(archiveData.user || '我'),
+      creationMode: normalizeCreationMode(archiveData.creationMode),
+      messageCount: items.length,
+      excerpt: String(archiveData.excerpt || buildWorkExcerpt(items)),
+      completedAt: Number(archiveData.completedAt) || Date.now(),
+      archivedAt: Number(archiveData.archivedAt) || Date.now(),
+      updatedAt: Number(archiveData.updatedAt) || Date.now()
+    };
+  }
+
+  function listArchives() {
+    var idx = readArchivesIndexRaw();
+    return {
+      ok: true,
+      archives: sortArchives(idx.archives || [])
+    };
+  }
+
+  function getArchiveData(archiveId) {
+    if (!archiveId) return null;
+    var store = storage();
+    if (!store) return null;
+    try {
+      var raw = store.getItem(archiveDataKey(archiveId));
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      var normalized = normalizeWorkData(parsed, {
+        id: parsed.sourceWorkId || parsed.id || archiveId,
+        title: parsed.title,
+        char: parsed.char,
+        user: parsed.user,
+        isCompleted: true,
+        completedAt: parsed.completedAt || parsed.archivedAt || Date.now(),
+        lastArchiveId: String(archiveId)
+      });
+      normalized.archiveId = String(parsed.archiveId || archiveId);
+      normalized.sourceWorkId = String(parsed.sourceWorkId || parsed.id || '');
+      normalized.category = String(parsed.category || 'phone_fiction');
+      normalized.categoryLabel = String(parsed.categoryLabel || '捡手机文学');
+      normalized.archivedAt = Number(parsed.archivedAt) || normalized.completedAt || Date.now();
+      normalized.completedAt = Number(parsed.completedAt) || normalized.archivedAt;
+      normalized.isCompleted = true;
+      normalized.excerpt = String(parsed.excerpt || buildWorkExcerpt(normalized.items));
+      return normalized;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function completeAndArchiveWork(workId, overrideState) {
+    if (!workId) {
+      return { ok: false, error: '未找到要完结的作品' };
+    }
+    var initRes = ensureInitialized();
+    if (!initRes.ok) {
+      return { ok: false, error: initRes.error || '读取作品索引失败' };
+    }
+    var baseData = overrideState && typeof overrideState === 'object'
+      ? normalizeWorkData(overrideState, { id: workId })
+      : getWorkData(workId);
+    if (!baseData) {
+      return { ok: false, error: '未能读取该作品数据' };
+    }
+
+    var now = Date.now();
+    var store = storage();
+    var archIndex = readArchivesIndexRaw();
+    var existingArchId = baseData.lastArchiveId || '';
+    var hasExistingArchive = Boolean(existingArchId && archIndex.archives.some(function(a) {
+      return a && a.archiveId === existingArchId;
+    }));
+    var archiveId = hasExistingArchive ? existingArchId : generateArchiveId();
+
+    baseData.id = workId;
+    baseData.isCompleted = true;
+    baseData.completedAt = now;
+    baseData.lastArchiveId = archiveId;
+    baseData.updatedAt = now;
+
+    var snapshot = clone(baseData);
+    snapshot.archiveId = archiveId;
+    snapshot.sourceWorkId = workId;
+    snapshot.category = 'phone_fiction';
+    snapshot.categoryLabel = '捡手机文学';
+    snapshot.archivedAt = now;
+    snapshot.completedAt = now;
+    snapshot.isCompleted = true;
+    snapshot.excerpt = buildWorkExcerpt(snapshot.items);
+
+    try {
+      if (store) {
+        store.setItem(archiveDataKey(archiveId), JSON.stringify(snapshot));
+      }
+      var nextMeta = toArchiveMeta(snapshot);
+      var replaced = false;
+      for (var i = 0; i < archIndex.archives.length; i++) {
+        if (archIndex.archives[i] && archIndex.archives[i].archiveId === archiveId) {
+          archIndex.archives[i] = nextMeta;
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) {
+        archIndex.archives.push(nextMeta);
+      }
+      writeArchivesIndex(archIndex);
+    } catch (err) {
+      return { ok: false, error: '写入存档失败，可能是本地存储空间不足' };
+    }
+
+    saveWorkData(workId, baseData, { touchUpdatedAt: false });
+
+    return {
+      ok: true,
+      updatedExisting: hasExistingArchive,
+      work: toMeta(baseData),
+      workData: baseData,
+      archive: toArchiveMeta(snapshot),
+      archiveData: snapshot
+    };
+  }
+
+  function deleteWork(workId) {
+    if (!workId) {
+      return { ok: false, error: '未指定要删除的作品' };
+    }
+    var initRes = ensureInitialized();
+    if (!initRes.ok) {
+      return { ok: false, error: initRes.error || '读取作品索引失败' };
+    }
+    var store = storage();
+    var index = initRes.index;
+    var targetIdx = -1;
+    for (var i = 0; i < index.works.length; i++) {
+      if (index.works[i] && index.works[i].id === workId) {
+        targetIdx = i;
+        break;
+      }
+    }
+    if (targetIdx < 0) {
+      return { ok: false, error: '未找到对应作品' };
+    }
+
+    var deletedMeta = index.works[targetIdx];
+    var deletedData = getWorkData(workId);
+    var candidateAssets = collectRecordAssetIds(deletedData);
+
+    index.works.splice(targetIdx, 1);
+    if (index.activeWorkId === workId) {
+      var remaining = sortWorks(index.works);
+      index.activeWorkId = remaining.length ? remaining[0].id : '';
+    }
+
+    try {
+      writeIndex(index);
+      if (store) {
+        try { store.removeItem(workDataKey(workId)); } catch (_) {}
+      }
+    } catch (err) {
+      return { ok: false, error: '删除作品失败，请稍后重试' };
+    }
+
+    var orphanedAssetIds = candidateAssets.filter(function(assetId) {
+      return !isAssetReferencedInOtherWorks(assetId, workId);
+    });
+
+    return {
+      ok: true,
+      deletedWork: deletedMeta,
+      orphanedAssetIds: orphanedAssetIds,
+      remainingCount: index.works.length
+    };
+  }
+
+  function deleteArchive(archiveId) {
+    if (!archiveId) {
+      return { ok: false, error: '未指定要删除的存档' };
+    }
+    var store = storage();
+    var archIndex = readArchivesIndexRaw();
+    var targetIdx = -1;
+    for (var i = 0; i < archIndex.archives.length; i++) {
+      if (archIndex.archives[i] && archIndex.archives[i].archiveId === archiveId) {
+        targetIdx = i;
+        break;
+      }
+    }
+    if (targetIdx < 0) {
+      return { ok: false, error: '未找到对应存档' };
+    }
+
+    var deletedMeta = archIndex.archives[targetIdx];
+    var deletedData = getArchiveData(archiveId);
+    var candidateAssets = collectRecordAssetIds(deletedData);
+
+    archIndex.archives.splice(targetIdx, 1);
+    try {
+      writeArchivesIndex(archIndex);
+      if (store) {
+        try { store.removeItem(archiveDataKey(archiveId)); } catch (_) {}
+      }
+    } catch (_) {
+      return { ok: false, error: '删除存档失败' };
+    }
+
+    if (deletedMeta && deletedMeta.sourceWorkId) {
+      var srcWork = getWorkData(deletedMeta.sourceWorkId);
+      if (srcWork && srcWork.lastArchiveId === archiveId) {
+        srcWork.lastArchiveId = '';
+        saveWorkData(deletedMeta.sourceWorkId, srcWork, { touchUpdatedAt: false });
+      }
+    }
+
+    var orphanedAssetIds = candidateAssets.filter(function(assetId) {
+      return !isAssetReferencedInOtherWorks(assetId, '', archiveId);
+    });
+
+    return {
+      ok: true,
+      deletedArchive: deletedMeta,
+      orphanedAssetIds: orphanedAssetIds
+    };
+  }
+
+  function appendParsedRecordAssets(parsed, combined) {
+    if (!parsed || typeof parsed !== 'object') return;
+    if (parsed.charAvatarAssetId) combined.push({ assetId: parsed.charAvatarAssetId });
+    if (parsed.userAvatarAssetId) combined.push({ assetId: parsed.userAvatarAssetId });
+    if (parsed.appearance && parsed.appearance.bgImageAssetId) {
+      combined.push({ assetId: parsed.appearance.bgImageAssetId });
+    }
+    if (Array.isArray(parsed.items)) {
+      for (var i = 0; i < parsed.items.length; i++) {
+        combined.push(parsed.items[i]);
+      }
+    }
+  }
+
+  function recordUsesAsset(parsed, assetId) {
+    if (!parsed || typeof parsed !== 'object') return false;
+    if (
+      parsed.charAvatarAssetId === assetId ||
+      parsed.userAvatarAssetId === assetId ||
+      (parsed.appearance && parsed.appearance.bgImageAssetId === assetId)
+    ) {
+      return true;
+    }
+    var items = Array.isArray(parsed.items) ? parsed.items : [];
+    for (var j = 0; j < items.length; j++) {
+      var m = items[j];
+      if (!m) continue;
+      if (m.assetId === assetId) return true;
+      if (m.original && m.original.assetId === assetId) return true;
+    }
+    return false;
+  }
+
+  // 收集所有作品及存档的消息项，供素材引用安全检查使用
   function getAllReferencedItems() {
     var listed = listWorks();
     if (!listed.ok) return [];
@@ -761,25 +1445,24 @@
       try {
         var raw = store.getItem(workDataKey(w.id));
         if (!raw) return;
-        var parsed = JSON.parse(raw);
-        if (parsed) {
-          if (parsed.charAvatarAssetId) combined.push({ assetId: parsed.charAvatarAssetId });
-          if (parsed.userAvatarAssetId) combined.push({ assetId: parsed.userAvatarAssetId });
-          if (parsed.appearance && parsed.appearance.bgImageAssetId) {
-            combined.push({ assetId: parsed.appearance.bgImageAssetId });
-          }
-          if (Array.isArray(parsed.items)) {
-            for (var i = 0; i < parsed.items.length; i++) {
-              combined.push(parsed.items[i]);
-            }
-          }
-        }
+        appendParsedRecordAssets(JSON.parse(raw), combined);
       } catch (_) {}
     });
+
+    var archList = listArchives().archives || [];
+    archList.forEach(function(a) {
+      if (!a || !a.archiveId) return;
+      try {
+        var raw = store.getItem(archiveDataKey(a.archiveId));
+        if (!raw) return;
+        appendParsedRecordAssets(JSON.parse(raw), combined);
+      } catch (_) {}
+    });
+
     return combined;
   }
 
-  function isAssetReferencedInOtherWorks(assetId, excludeWorkId) {
+  function isAssetReferencedInOtherWorks(assetId, excludeWorkId, excludeArchiveId) {
     if (!assetId) return false;
     var listed = listWorks();
     if (!listed.ok) return true; // 读取索引失败时保守返回 true，绝不误删素材
@@ -792,25 +1475,25 @@
       try {
         var raw = store.getItem(workDataKey(w.id));
         if (!raw) continue;
-        var parsed = JSON.parse(raw);
-        if (parsed && (
-          parsed.charAvatarAssetId === assetId ||
-          parsed.userAvatarAssetId === assetId ||
-          (parsed.appearance && parsed.appearance.bgImageAssetId === assetId)
-        )) {
-          return true;
-        }
-        var items = parsed && Array.isArray(parsed.items) ? parsed.items : [];
-        for (var j = 0; j < items.length; j++) {
-          var m = items[j];
-          if (!m) continue;
-          if (m.assetId === assetId) return true;
-          if (m.original && m.original.assetId === assetId) return true;
-        }
+        if (recordUsesAsset(JSON.parse(raw), assetId)) return true;
       } catch (_) {
         return true; // 任意作品解析异常时保守保护素材
       }
     }
+
+    var archList = listArchives().archives || [];
+    for (var k = 0; k < archList.length; k++) {
+      var a = archList[k];
+      if (!a || !a.archiveId || a.archiveId === excludeArchiveId) continue;
+      try {
+        var archRaw = store.getItem(archiveDataKey(a.archiveId));
+        if (!archRaw) continue;
+        if (recordUsesAsset(JSON.parse(archRaw), assetId)) return true;
+      } catch (_) {
+        return true;
+      }
+    }
+
     return false;
   }
 
@@ -901,6 +1584,8 @@
     WORKS_INDEX_KEY: WORKS_INDEX_KEY,
     WORK_DATA_PREFIX: WORK_DATA_PREFIX,
     LEGACY_WORK_ID: LEGACY_WORK_ID,
+    ARCHIVES_INDEX_KEY: ARCHIVES_INDEX_KEY,
+    ARCHIVE_DATA_PREFIX: ARCHIVE_DATA_PREFIX,
     DEFAULT_CREATION_MODE: DEFAULT_CREATION_MODE,
     CREATION_MODES: clone(CREATION_MODES),
     VALID_ROLE_SOURCES: VALID_ROLE_SOURCES.slice(),
@@ -915,6 +1600,20 @@
     normalizeAiReplyPrefs: normalizeAiReplyPrefs,
     generateMessageId: generateMessageId,
     ensureMessageIds: ensureMessageIds,
+    syncMessageFloors: syncMessageFloors,
+    moveMessageToFloor: moveMessageToFloor,
+    TIMEZONE_OPTIONS: clone(TIMEZONE_OPTIONS),
+    detectDefaultTimeZone: detectDefaultTimeZone,
+    parseVirtualDateTimeToMs: parseVirtualDateTimeToMs,
+    formatVirtualMs: formatVirtualMs,
+    createDefaultTimeSettings: createDefaultTimeSettings,
+    normalizeTimeSettings: normalizeTimeSettings,
+    resolveWorkCurrentTime: resolveWorkCurrentTime,
+    pauseVirtualClock: pauseVirtualClock,
+    resumeVirtualClock: resumeVirtualClock,
+    updateVirtualClockSpeed: updateVirtualClockSpeed,
+    resetVirtualClockStart: resetVirtualClockStart,
+    stampMessageTime: stampMessageTime,
     createDefaultEmotionState: createDefaultEmotionState,
     normalizeEmotionState: normalizeEmotionState,
     createDefaultAiMemory: createDefaultAiMemory,
@@ -928,6 +1627,12 @@
     saveWorkData: saveWorkData,
     setActiveWorkId: setActiveWorkId,
     renameWork: renameWork,
+    deleteWork: deleteWork,
+    buildWorkExcerpt: buildWorkExcerpt,
+    listArchives: listArchives,
+    getArchiveData: getArchiveData,
+    completeAndArchiveWork: completeAndArchiveWork,
+    deleteArchive: deleteArchive,
     countWorksUsingPersona: countWorksUsingPersona,
     unbindPersonaAcrossWorks: unbindPersonaAcrossWorks,
     getAllReferencedItems: getAllReferencedItems,

@@ -865,14 +865,14 @@
   }
 
   async function buildAiStickerCatalog(limit) {
-    var maxItems = typeof limit === 'number' && limit > 0 ? Math.min(60, Math.round(limit)) : 32;
+    var maxItems = typeof limit === 'number' && limit > 0 ? Math.min(60, Math.round(limit)) : 40;
     var stickers = [];
     try {
       stickers = await listAssets('sticker');
     } catch (_) {
       stickers = [];
     }
-    var catalog = [];
+    var entries = [];
     var idMap = Object.create(null);
     for (var i = 0; i < stickers.length; i++) {
       var st = stickers[i];
@@ -897,9 +897,16 @@
         updatedAt: Number(st.updatedAt || st.createdAt || 0)
       };
       idMap[entry.id] = entry;
-      if (catalog.length < maxItems) {
-        catalog.push(entry);
-      }
+      entries.push(entry);
+    }
+    var catalog = entries;
+    if (entries.length > maxItems) {
+      catalog = entries.slice().sort(function(a, b) {
+        var aHas = a.description ? 1 : 0;
+        var bHas = b.description ? 1 : 0;
+        if (aHas !== bHas) return bHas - aHas;
+        return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+      }).slice(0, maxItems);
     }
     return {
       catalog: catalog,

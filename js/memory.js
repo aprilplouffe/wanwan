@@ -374,10 +374,23 @@
       : '未配置专属 API'
   }
 
+  function sanitizeMessageForMemorySummary(rawContent) {
+    var text = String(rawContent || '').trim()
+    if (text.indexOf('__FCWORK__') === 0) {
+      var title = '未命名作品'
+      try {
+        var parsed = JSON.parse(text.slice(10))
+        if (parsed && parsed.title) title = String(parsed.title).trim() || title
+      } catch (_) {}
+      return '[用户分享了一篇同好社区「捡手机文学」虚构文学作品《' + title + '》（外部创作内容，独立于双方真实主线关系与经历，请勿把作品内的虚构人物、剧情或结局提取为双方真实记忆）]'
+    }
+    return text.replace(/\s+/g, ' ').slice(0, 800)
+  }
+
   function buildSummaryPrompt(messages) {
     var lines = messages.map(function(m) {
       var speaker = m.role === 'assistant' ? '角色' : '用户'
-      return speaker + '：' + String(m.content || '').replace(/\s+/g, ' ').slice(0, 800)
+      return speaker + '：' + sanitizeMessageForMemorySummary(m.content)
     }).join('\n')
     return `你是一个长期记忆整理器。请根据下面的聊天记录，提取适合长期保存的记忆。
 
@@ -388,6 +401,7 @@
 4. 不要价值升华，不要写感悟，不要总结人生意义。
 5. 禁止加入聊天记录中没有出现的信息。
 6. 标题应尽量简短；内容应控制在150字以内，适合未来角色回复时参考。
+7. 若记录中出现用户分享的同好社区「捡手机文学」虚构文学作品，作品内部剧情与角色关系属于独立创作内容，严禁提取为角色与用户的真实主线经历或现实关系记忆。
 
 请返回合法 JSON，不要输出 Markdown，不要输出 JSON 以外的文字。
 
@@ -420,7 +434,7 @@ ${lines}`
   function buildMeetingSummaryPrompt(messages) {
     var lines = messages.map(function(m) {
       var speaker = m.role === 'assistant' ? '角色' : '用户'
-      return speaker + '：' + String(m.content || '').replace(/\s+/g, ' ').slice(0, 800)
+      return speaker + '：' + sanitizeMessageForMemorySummary(m.content)
     }).join('\n')
     return `你是一个线下见面记忆整理器。请根据下面的见面记录，提取适合长期保存的记忆。
 
@@ -650,7 +664,11 @@ ${lines}`
       return m.ownerUid === ownerUid && m.charId === charId && m.status !== 'archived'
     }).toArray()
     if (!rows.length) return ''
-    var queryText = (recentMessages || []).map(function(m) { return m.content || '' }).join(' ')
+    var queryText = (recentMessages || []).map(function(m) {
+      var c = String((m && m.content) || '')
+      if (c.indexOf('__FCWORK__') === 0) return ''
+      return c
+    }).filter(Boolean).join(' ')
     var queryEmbedding = null
     if (settings.embeddingEnabled && rows.some(function(m) { return Array.isArray(m.embedding) })) {
       try { queryEmbedding = await createEmbedding(queryText || '当前聊天') }

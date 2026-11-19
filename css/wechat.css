@@ -4069,6 +4069,232 @@ html.has-android-bottom-inset .chat-input-bar {
 .link-card.is-unavailable .link-card-summary {
   color: var(--c-hint);
 }
+
+/* ===== 同好社区 · 捡手机文学分享卡片 ===== */
+.fc-work-share-card {
+  width: min(258px, 74vw);
+  padding: 12px 13px 10px;
+  border-radius: 13px;
+  background: linear-gradient(180deg, #fffefa 0%, #f9f6ee 100%);
+  border: 1px solid #e5dfd2;
+  box-shadow: 0 2px 8px rgba(45, 42, 34, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.fc-work-share-card:active {
+  transform: scale(0.985);
+}
+.fc-work-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.fc-work-card-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7a64;
+  letter-spacing: 0.02em;
+}
+.fc-work-card-done {
+  font-size: 10px;
+  font-weight: 600;
+  color: #5d7055;
+  background: #e9efe5;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+.fc-work-card-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: #2f322c;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.fc-work-card-excerpt {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #6b6e64;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.fc-work-card-foot {
+  margin-top: 2px;
+  padding-top: 7px;
+  border-top: 1px dashed #e2dccf;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: #84887d;
+}
+.fc-work-card-cast {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fc-work-card-count {
+  flex-shrink: 0;
+  color: #6b7a64;
+  font-weight: 600;
+}
+
+/* 微信内阅读转发作品弹窗 */
+.fc-wx-reader-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(24, 27, 24, 0.56);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px 14px;
+}
+.fc-wx-reader-dialog {
+  width: min(420px, 100%);
+  max-height: 82vh;
+  background: #f9f7f2;
+  border-radius: 18px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.24);
+}
+.fc-wx-reader-head {
+  background: #fffefa;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e8e2d6;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.fc-wx-reader-badge {
+  font-size: 11px;
+  color: #6c7c66;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.fc-wx-reader-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #2f322c;
+}
+.fc-wx-reader-sub {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: #7c8075;
+}
+.fc-wx-reader-close {
+  border: none;
+  background: #f2eee5;
+  color: #4f544a;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.fc-wx-reader-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 12px 18px;
+  background: #9bb0c1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fc-wx-r-date {
+  text-align: center;
+}
+.fc-wx-r-date span {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.18);
+  color: #fff;
+}
+.fc-wx-r-tip {
+  text-align: center;
+  font-size: 11px;
+  color: rgba(34, 48, 60, 0.72);
+}
+.fc-wx-r-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.fc-wx-r-row.is-right {
+  align-items: flex-end;
+}
+.fc-wx-r-name {
+  font-size: 11px;
+  color: #425667;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fc-wx-r-time {
+  font-size: 10px;
+  opacity: 0.8;
+}
+.fc-wx-r-bubble {
+  max-width: 84%;
+  padding: 8px 11px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #1f2329;
+  background: #ffffff;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.fc-wx-r-row.is-right .fc-wx-r-bubble {
+  background: #fff133;
+}
+.fc-wx-r-kind {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #5b6d7c;
+  background: rgba(0, 0, 0, 0.07);
+  padding: 1px 6px;
+  border-radius: 5px;
+  margin-right: 6px;
+}
+.fc-wx-r-empty {
+  text-align: center;
+  padding: 28px 10px;
+  color: #fff;
+  font-size: 13px;
+}
+:root.theme-dark .fc-work-share-card {
+  background: linear-gradient(180deg, #2b2c29 0%, #242522 100%);
+  border-color: #3d3e38;
+}
+:root.theme-dark .fc-work-card-title {
+  color: #f0efe9;
+}
+:root.theme-dark .fc-work-card-excerpt {
+  color: #b4b5ab;
+}
+:root.theme-dark .fc-work-card-foot {
+  border-top-color: #3d3e38;
+  color: #9b9d93;
+}
 /* ===== 聊天设置页 ===== */
 .cs-profile-hero {
   padding: 22px 16px 20px;

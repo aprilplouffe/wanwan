@@ -2084,6 +2084,7 @@ function parseMsgType(content, charName, myName) {
   // 真实照片（特殊前缀）
   if (c.startsWith('__IMG__')) return { type: 'real-photo', data: { src: c.slice(7) } }
   if (c.startsWith('__LINK__')) return { type: 'link', data: parseLinkPayload(c.slice(8)) }
+  if (c.startsWith('__FCWORK__')) return { type: 'fc-work', data: parseFcWorkPayload(c.slice(10)) }
   if (c.startsWith('__TBDEAL__')) return { type: 'tb-deal', data: parseTbDealPayload(c.slice(10)) }
   if (c.startsWith('__YUMDEAL__')) return { type: 'yum-deal', data: parseYumDealPayload(c.slice(11)) }
   // 群聊新类型（特殊前缀）
@@ -2107,6 +2108,7 @@ function getWechatMessageDisplayPreview(msg, charName = '') {
     case 'photo':
     case 'real-photo': return '[图片]'
     case 'link': return '[链接]'
+    case 'fc-work': return `[捡手机文学] ${data.title || '完结作品'}`
     case 'transfer-recv':
     case 'transfer-resp': return '[转账]'
     case 'location': return '[位置]'
@@ -2136,6 +2138,7 @@ function getWechatQuotedContentDisplayPreview(content) {
     [/^\[语音(?:：|\])/, '[语音]'],
     [/^\[(?:照片|图片)(?:：|\])/, '[图片]'],
     [/^\[链接(?:｜|\])/, '[链接]'],
+    [/^\[同好社区作品(?:｜|\])/, '[捡手机文学]'],
     [/^\[转账(?:：|\])/, '[转账]'],
     [/^\[位置(?:：|\])/, '[位置]'],
     [/^\[表情包(?:：|\])/, '[表情]'],
@@ -2242,6 +2245,94 @@ function buildLinkFallbackText(data) {
   if (link.imageUrls.length) parts.push(`图片：已附加 ${link.imageUrls.length} 张供视觉模型查看`)
   return `[链接｜${parts.join('｜')}]`
 }
+
+// ===== 同好社区「捡手机文学」作品分享卡片 =====
+function normalizeFcWorkPayload(raw) {
+  const d = raw && typeof raw === 'object' ? raw : {}
+  const msgs = Array.isArray(d.messages)
+    ? d.messages.map(m => {
+        if (!m || typeof m !== 'object') return null
+        return {
+          s: m.s === 'R' ? 'R' : (m.s === 'C' ? 'C' : 'L'),
+          n: String(m.n || '').trim().slice(0, 30),
+          k: String(m.k || 'text').trim().slice(0, 16),
+          t: String(m.t || '').trim().slice(0, 320),
+          tm: String(m.tm || '').trim().slice(0, 20),
+          r: m.r ? 1 : 0,
+          d: Number.isFinite(Number(m.d)) ? Number(m.d) : undefined
+        }
+      }).filter(Boolean)
+    : []
+  return {
+    v: Number(d.v) || 1,
+    category: String(d.category || 'phone_fiction'),
+    categoryLabel: String(d.categoryLabel || '同好社区 · 捡手机文学').trim() || '同好社区 · 捡手机文学',
+    archiveId: String(d.archiveId || '').trim(),
+    sourceWorkId: String(d.sourceWorkId || '').trim(),
+    title: String(d.title || '未命名作品').trim() || '未命名作品',
+    userName: String(d.userName || '我').trim() || '我',
+    charName: String(d.charName || '对方').trim() || '对方',
+    messageCount: Math.max(msgs.length, parseInt(d.messageCount, 10) || 0),
+    truncated: Boolean(d.truncated),
+    completedAt: Number(d.completedAt) || 0,
+    showBubbleTime: Boolean(d.showBubbleTime),
+    excerpt: String(d.excerpt || '').trim().slice(0, 120),
+    messages: msgs
+  }
+}
+
+function parseFcWorkPayload(raw) {
+  try {
+    return normalizeFcWorkPayload(JSON.parse(String(raw || '').trim()))
+  } catch (_) {
+    return normalizeFcWorkPayload({})
+  }
+}
+
+function buildFcWorkMessageContent(data) {
+  return `__FCWORK__${JSON.stringify(normalizeFcWorkPayload(data))}`
+}
+
+function buildFcWorkFallbackText(data) {
+  const work = normalizeFcWorkPayload(data)
+  return `[同好社区作品｜《${work.title}》｜人物：${work.userName} × ${work.charName}｜共${work.messageCount}条${work.excerpt ? `｜节选：${work.excerpt}` : ''}]`
+}
+
+function formatFcWorkLineForAI(m) {
+  const timePrefix = m.tm ? `[${m.tm}] ` : ''
+  if (m.k === 'date') return `--- ${m.t} ---`
+  if (m.k === 'recall_notice') return `${timePrefix}（${m.t}）`
+  const recallTag = m.r ? '（已假撤回，对方仍可见原内容）' : ''
+  let body = m.t || ''
+  if (m.k === 'voice') body = `[语音 ${m.d || 6}″] ${m.t}`
+  else if (m.k === 'image') body = `[图片内容] ${m.t}`
+  else if (m.k === 'sticker') body = `[表情包] ${m.t}`
+  else if (m.k === 'location') body = `[定位] ${m.t}`
+  else if (m.k === 'transfer') body = `[转账] ${m.t}`
+  else if (m.k === 'call') body = `[通话] ${m.t}`
+  return `${timePrefix}${m.n || '角色'}：${body}${recallTag}`
+}
+
+function buildFcWorkAIText(data) {
+  const work = normalizeFcWorkPayload(data)
+  const lines = work.messages.map(formatFcWorkLineForAI)
+  const transcript = lines.length ? lines.join('\n') : (work.excerpt || '（该作品暂无正文消息）')
+  const truncatedNote = work.truncated ? `\n（注：原作品共 ${work.messageCount} 条，此处已附上前 ${work.messages.length} 条完整内容）` : ''
+  return [
+    '[同好社区作品分享｜以下内容为用户转发给你阅读的「捡手机文学」虚构文学作品]',
+    '【阅读与记忆边界规则】这是用户分享的一篇独立虚构文学作品，请认真阅读其中的人物、聊天剧情、情绪细节与结局，并与用户自然讨论读后感、人物性格或结局走向；但作品内部剧情与角色关系完全独立于你和用户在微信中的现实主线关系与长期记忆，切勿将作品中的事件误认为你们两人真实发生过的经历。',
+    `作品标题：《${work.title}》`,
+    `作品类型：${work.categoryLabel}（已完结）`,
+    `登场人物：${work.userName}、${work.charName}`,
+    `正文内容（共 ${work.messageCount} 条）：`,
+    transcript + truncatedNote,
+    '[作品正文结束]'
+  ].join('\n')
+}
+
+window.parseFcWorkPayload = parseFcWorkPayload
+window.buildFcWorkMessageContent = buildFcWorkMessageContent
+window.buildFcWorkAIText = buildFcWorkAIText
 
 // ===== 淘宝代付/赠送 卡片数据 =====
 function tbDealMoney(num) { return Math.round((Number(num) || 0) * 100) / 100 }
@@ -2535,6 +2626,7 @@ function renderBubbleHTML(msg, isSelf, charName, stickerMap, bilingualSettings) 
     case 'recall': return renderRecallRow(data, charName)
     case 'location': return renderLocationCard(data, cls)
     case 'link': return renderLinkCard(data, cls)
+    case 'fc-work': return renderFcWorkCard(data, cls, msg)
     case 'sticker': return renderStickerBubble(data, isSelf, msg, stickerMap)
     case 'call-record': return renderCallRecordBubble(data, cls)
     case 'red-packet': return renderRedPacketCard(data, msg)
@@ -3369,6 +3461,90 @@ function renderLinkCard(data, cls) {
         ${fallbackHtml}
       </div>
     </div>`
+}
+
+function renderFcWorkCard(data, cls, msg) {
+  const work = normalizeFcWorkPayload(data)
+  const msgIdAttr = msg && msg.id ? ` data-fc-msg-id="${wcEscHtml(String(msg.id))}"` : ''
+  const excerptHtml = work.excerpt
+    ? `<div class="fc-work-card-excerpt">${wcEscHtml(work.excerpt)}</div>`
+    : '<div class="fc-work-card-excerpt">点击查看完整捡手机文学聊天内容</div>'
+  return `
+    <div class="msg-card fc-work-share-card card-${cls}"${msgIdAttr} role="button" tabindex="0" aria-label="查看分享作品 ${wcEscHtml(work.title)}">
+      <div class="fc-work-card-top">
+        <span class="fc-work-card-badge">同好社区 · 捡手机文学</span>
+        <span class="fc-work-card-done">已完结</span>
+      </div>
+      <div class="fc-work-card-title">《${wcEscHtml(work.title)}》</div>
+      ${excerptHtml}
+      <div class="fc-work-card-foot">
+        <span class="fc-work-card-cast">${wcEscHtml(work.userName)} × ${wcEscHtml(work.charName)}</span>
+        <span class="fc-work-card-count">${work.messageCount} 条 · 点击阅读 ›</span>
+      </div>
+    </div>`
+}
+
+async function showWechatFcWorkReaderModal(msgId) {
+  if (!msgId || !db || !db.messages) return
+  const msg = await db.messages.get(Number(msgId))
+  if (!msg || typeof msg.content !== 'string') return
+  const parsed = parseMsgType(msg.content)
+  if (parsed.type !== 'fc-work') return
+  const work = normalizeFcWorkPayload(parsed.data)
+
+  const old = document.getElementById('fc-wx-reader-modal')
+  if (old) old.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'fc-wx-reader-modal'
+  modal.className = 'fc-wx-reader-modal'
+
+  const rowsHtml = work.messages.length
+    ? work.messages.map(m => {
+        if (m.k === 'date') {
+          return `<div class="fc-wx-r-date"><span>${wcEscHtml(m.t)}</span></div>`
+        }
+        if (m.k === 'recall_notice') {
+          return `<div class="fc-wx-r-tip">${wcEscHtml(m.t)}</div>`
+        }
+        const sideCls = m.s === 'R' ? 'is-right' : 'is-left'
+        let tag = ''
+        if (m.k === 'voice') tag = `<span class="fc-wx-r-kind">语音 ${m.d || 6}″</span>`
+        else if (m.k === 'image') tag = '<span class="fc-wx-r-kind">图片</span>'
+        else if (m.k === 'sticker') tag = '<span class="fc-wx-r-kind">表情包</span>'
+        else if (m.k === 'location') tag = '<span class="fc-wx-r-kind">定位</span>'
+        else if (m.k === 'transfer') tag = '<span class="fc-wx-r-kind">转账</span>'
+        else if (m.k === 'call') tag = '<span class="fc-wx-r-kind">通话</span>'
+        const timeTag = work.showBubbleTime && m.tm ? `<span class="fc-wx-r-time">${wcEscHtml(m.tm)}</span>` : ''
+        const recallHtml = m.r ? `<div class="fc-wx-r-tip">${wcEscHtml(m.n || '对方')}撤回了一条消息</div>` : ''
+        return `
+          <div class="fc-wx-r-row ${sideCls}${m.r ? ' is-recalled' : ''}">
+            <div class="fc-wx-r-name">${wcEscHtml(m.n || '')}${timeTag}</div>
+            <div class="fc-wx-r-bubble">${tag}<span>${wcEscHtml(m.t || '')}</span></div>
+          </div>
+          ${recallHtml}`
+      }).join('')
+    : '<div class="fc-wx-r-empty">该作品暂无消息记录</div>'
+
+  modal.innerHTML = `
+    <div class="fc-wx-reader-dialog" role="dialog" aria-label="作品预览">
+      <div class="fc-wx-reader-head">
+        <div>
+          <div class="fc-wx-reader-badge">${wcEscHtml(work.categoryLabel)} · 已完结</div>
+          <h3 class="fc-wx-reader-title">《${wcEscHtml(work.title)}》</h3>
+          <div class="fc-wx-reader-sub">${wcEscHtml(work.userName)} × ${wcEscHtml(work.charName)} · 共 ${work.messageCount} 条</div>
+        </div>
+        <button type="button" class="fc-wx-reader-close" aria-label="关闭">×</button>
+      </div>
+      <div class="fc-wx-reader-body">${rowsHtml}</div>
+    </div>`
+
+  modal.addEventListener('click', e => {
+    if (e.target === modal || e.target.closest('.fc-wx-reader-close')) {
+      modal.remove()
+    }
+  })
+  document.body.appendChild(modal)
 }
 
 function renderCallRecordBubble(data, cls) {
@@ -4415,6 +4591,8 @@ function getMsgActionText(msg, charName) {
         : `[位置：${parsed.data.place || ''}]`
     case 'link':
       return buildLinkFallbackText(parsed.data)
+    case 'fc-work':
+      return buildFcWorkFallbackText(parsed.data)
     default:
       return msg.content || ''
   }
@@ -5691,6 +5869,15 @@ function bindMsgLongPress(container, charId) {
       await window.openTaobaoInternalLink(card.dataset.taobaoUrl, viewerUid)
     })
   })
+  container.querySelectorAll('.fc-work-share-card[data-fc-msg-id]').forEach(card => {
+    if (card.dataset.fcWorkBound === '1') return
+    card.dataset.fcWorkBound = '1'
+    card.addEventListener('click', e => {
+      e.preventDefault()
+      e.stopPropagation()
+      showWechatFcWorkReaderModal(card.dataset.fcMsgId)
+    })
+  })
   container.querySelectorAll('.msg-avatar-wrap[data-action="thoughts"]').forEach(wrap => {
     if (wrap.dataset.thoughtsBound === '1') return
     wrap.dataset.thoughtsBound = '1'
@@ -6904,6 +7091,9 @@ async function buildWechatAIHistoryMessage(item, options = {}) {
   if (parsed.type === 'yum-deal') {
     return { role: item.role, content: buildYumDealFallbackText(parsed.data) }
   }
+  if (parsed.type === 'fc-work') {
+    return { role: item.role, content: buildFcWorkAIText(parsed.data) }
+  }
   if (parsed.type === 'link') {
     const link = normalizeLinkPayload(parsed.data)
     const imageUrls = link.imageUrls.slice(0, MAX_LINK_CONTEXT_IMAGES)
@@ -6950,6 +7140,7 @@ function buildWechatTextFallbackContent(item, options = {}) {
   const parsed = parseMsgType(item.message.content || '')
   if (parsed.type === 'tb-deal') return buildTbDealFallbackText(parsed.data)
   if (parsed.type === 'yum-deal') return buildYumDealFallbackText(parsed.data)
+  if (parsed.type === 'fc-work') return buildFcWorkAIText(parsed.data)
   if (parsed.type === 'link') return buildLinkFallbackText(parsed.data)
   if (parsed.type === 'sticker' && options.stickerImageInputEnabled) {
     return buildStickerImageInputLabel(parsed.data.name)
@@ -13616,6 +13807,7 @@ function getWechatFavoriteSummaryText(item) {
     case 'transfer-resp': return data.accepted ? '已接收转账' : '已退回转账'
     case 'location': return `位置：${data.place || ''}${data.dist ? `｜距你约 ${data.dist}` : ''}`
     case 'link': return buildLinkFallbackText(data)
+    case 'fc-work': return buildFcWorkFallbackText(data)
     case 'recall': return `撤回消息：${data.recalled || ''}`
     default: return item.content || ''
   }

@@ -206,9 +206,6 @@
   var _activeBgSeq = 0;
   var _stickerRenderSeq = 0;
   var _importingStickers = false;
-  var _playingVoiceIndex = -1;
-  var _activeAudio = null;
-  var _expandedVoices = Object.create(null);
   var _expandedTextVoices = Object.create(null);
   var _aiBusy = false;
   var _aiErrorText = '';
@@ -216,6 +213,14 @@
   var _aiLastTrigger = null;
   var _aiRequestSeq = 0;
   var _cleanupDoc = null;
+  var _settingsClockTimer = null;
+
+  function clearSettingsClockTimer() {
+    if (_settingsClockTimer) {
+      clearInterval(_settingsClockTimer);
+      _settingsClockTimer = null;
+    }
+  }
 
   function getAiReplyPrefs(raw) {
     var wApi = worksApi();
@@ -236,6 +241,118 @@
     return p.minMessages === p.maxMessages
       ? ('固定 ' + p.minMessages + ' 条')
       : (p.minMessages + '～' + p.maxMessages + ' 条');
+  }
+
+  function getWorkTimeSettingsSafe(raw) {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.normalizeTimeSettings === 'function') {
+      return wApi.normalizeTimeSettings(raw);
+    }
+    var now = Date.now();
+    var d = new Date(now);
+    var startDate = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    var src = raw && typeof raw === 'object' ? raw : {};
+    return {
+      showBubbleTime: Boolean(src.showBubbleTime),
+      mode: src.mode === 'virtual' ? 'virtual' : 'realtime',
+      timeZone: typeof src.timeZone === 'string' && src.timeZone.trim() ? src.timeZone.trim() : 'Asia/Shanghai',
+      virtualStartDate: typeof src.virtualStartDate === 'string' && src.virtualStartDate ? src.virtualStartDate : startDate,
+      virtualStartTime: typeof src.virtualStartTime === 'string' && src.virtualStartTime ? src.virtualStartTime : '09:00',
+      virtualSpeed: Number.isFinite(Number(src.virtualSpeed)) && Number(src.virtualSpeed) > 0 ? Number(src.virtualSpeed) : 1,
+      virtualPaused: Boolean(src.virtualPaused),
+      virtualBaseMs: Number.isFinite(Number(src.virtualBaseMs)) ? Number(src.virtualBaseMs) : Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), 9, 0, 0),
+      virtualAnchorRealMs: Number.isFinite(Number(src.virtualAnchorRealMs)) && Number(src.virtualAnchorRealMs) > 0 ? Number(src.virtualAnchorRealMs) : now
+    };
+  }
+
+  function resolveWorkTimeSafe(rawSettings, nowRealMs) {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.resolveWorkCurrentTime === 'function') {
+      return wApi.resolveWorkCurrentTime(rawSettings, nowRealMs);
+    }
+    var ts = getWorkTimeSettingsSafe(rawSettings);
+    var d = new Date(Number.isFinite(nowRealMs) ? nowRealMs : Date.now());
+    var dateStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    var timeStr = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    var secStr = String(d.getSeconds()).padStart(2, '0');
+    return {
+      mode: ts.mode,
+      date: dateStr,
+      time: timeStr,
+      seconds: secStr,
+      full: dateStr + ' ' + timeStr,
+      fullWithSec: dateStr + ' ' + timeStr + ':' + secStr,
+      ms: d.getTime(),
+      paused: ts.virtualPaused,
+      speed: ts.virtualSpeed,
+      timeZone: ts.timeZone
+    };
+  }
+
+  function formatTimeSettingsSummary(rawSettings) {
+    var ts = getWorkTimeSettingsSafe(rawSettings);
+    if (!ts.showBubbleTime) return '气泡时间已隐藏';
+    if (ts.mode === 'virtual') {
+      return '虚拟时间 ' + ts.virtualSpeed + 'x' + (ts.virtualPaused ? '（已暂停）' : '');
+    }
+    return '实时时间（' + ts.timeZone + '）';
+  }
+
+  function syncWorkItemsFloors(items) {
+    var wApi = worksApi();
+    if (wApi && typeof wApi.syncMessageFloors === 'function') {
+      return wApi.syncMessageFloors(items);
+    }
+    if (!Array.isArray(items)) return [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && typeof items[i] === 'object') {
+        items[i].floor = i + 1;
+      }
+    }
+    return items;
+  }
+
+  function stampWorkMessageTime(msg, rawSettings, nowRealMs) {
+    if (!msg || typeof msg !== 'object' || msg.type === 'date') return msg;
+    var wApi = worksApi();
+    if (wApi && typeof wApi.stampMessageTime === 'function') {
+      return wApi.stampMessageTime(msg, rawSettings, nowRealMs, false);
+    }
+    if (!msg.sentTime) {
+      var cur = resolveWorkTimeSafe(rawSettings, nowRealMs);
+      msg.sentTime = cur.time;
+      msg.sentDate = cur.date;
+      msg.sentTimeFull = cur.full;
+      msg.sentTimestamp = cur.ms;
+      msg.sentTimeMode = cur.mode;
+      if (cur.timeZone) msg.sentTimeZone = cur.timeZone;
+    }
+    return msg;
+  }
+
+  function backfillMissingMessageTimes(items, rawSettings) {
+    if (!Array.isArray(items) || !items.length) return false;
+    var changed = false;
+    var now = Date.now();
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || typeof it !== 'object' || it.type === 'date') continue;
+      if (it.type === 'withdraw' && it.original && typeof it.original === 'object') {
+        if (!it.sentTime && !it.original.sentTime) {
+          stampWorkMessageTime(it.original, rawSettings, now);
+          it.sentTime = it.original.sentTime;
+          it.sentDate = it.original.sentDate;
+          it.sentTimeFull = it.original.sentTimeFull;
+          it.sentTimestamp = it.original.sentTimestamp;
+          it.sentTimeMode = it.original.sentTimeMode;
+          changed = true;
+        }
+      } else if (!it.sentTime) {
+        stampWorkMessageTime(it, rawSettings, now);
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   function nextChatMessageId() {
@@ -647,6 +764,52 @@
       var list = el('div', 'fc-works-list');
       list.id = 'fc-works-list';
 
+      function openDeleteWorkConfirmSheet(work) {
+        openWorkSheet('确认删除作品', function(body) {
+          var preview = el('div', 'fc-chat-confirm-preview', '作品名称：《' + (work.title || '未命名作品') + '》（共 ' + (work.messageCount || 0) + ' 条消息）');
+          var note = el('p', 'fc-chat-sheet-note', work.isCompleted
+            ? '删除后将从「捡手机文学」作品列表中永久移除此草稿及聊天记录；已完结并收录到同好社区「存档」的快照不受影响。'
+            : '删除后将永久移除该作品的全部聊天记录与设置，且无法恢复，确定要继续吗？');
+
+          var actions = el('div', 'fc-chat-sheet-actions');
+          var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
+          cancelBtn.type = 'button';
+          cancelBtn.id = 'fc-work-delete-cancel';
+          cancelBtn.onclick = closeWorkSheet;
+
+          var confirmBtn = el('button', 'fc-chat-btn danger', '确认删除');
+          confirmBtn.type = 'button';
+          confirmBtn.id = 'fc-work-delete-confirm';
+          confirmBtn.onclick = function() {
+            var wApi = worksApi();
+            if (!wApi || typeof wApi.deleteWork !== 'function') {
+              notify('作品删除模块不可用');
+              return;
+            }
+            var delRes = wApi.deleteWork(work.id);
+            if (!delRes.ok) {
+              notify(delRes.error || '删除作品失败');
+              return;
+            }
+            var aApi = assetsApi();
+            if (aApi && typeof aApi.deleteAsset === 'function' && Array.isArray(delRes.orphanedAssetIds)) {
+              delRes.orphanedAssetIds.forEach(function(assetId) {
+                aApi.deleteAsset(assetId).catch(function() {});
+              });
+            }
+            closeWorkSheet();
+            drawWorks();
+            notify('已删除作品《' + (work.title || '未命名作品') + '》');
+          };
+
+          actions.appendChild(cancelBtn);
+          actions.appendChild(confirmBtn);
+          body.appendChild(preview);
+          body.appendChild(note);
+          body.appendChild(actions);
+        });
+      }
+
       works.forEach(function(work) {
         var card = el('article', 'fc-work-card');
         card.dataset.workId = work.id;
@@ -659,6 +822,9 @@
         var modeDef = getCreationModeDef(work.creationMode);
         var modeTag = el('span', 'fc-work-mode-tag' + (modeDef.isAi ? ' is-ai' : ''), modeDef.title);
         titleRow.appendChild(modeTag);
+        if (work.isCompleted) {
+          titleRow.appendChild(el('span', 'fc-work-done-tag', '已完结'));
+        }
         if (work.isLegacy) {
           titleRow.appendChild(el('span', 'fc-work-legacy-tag', '旧版'));
         }
@@ -679,6 +845,15 @@
           openRenameWorkSheet(work);
         };
 
+        var deleteBtn = el('button', 'fc-work-delete-btn', '删除');
+        deleteBtn.type = 'button';
+        deleteBtn.dataset.deleteWorkId = work.id;
+        deleteBtn.setAttribute('aria-label', '删除作品 ' + (work.title || ''));
+        deleteBtn.onclick = function(e) {
+          e.stopPropagation();
+          openDeleteWorkConfirmSheet(work);
+        };
+
         var enterBtn = el('button', 'fc-work-enter-btn', '›');
         enterBtn.type = 'button';
         enterBtn.setAttribute('aria-label', '打开作品');
@@ -687,6 +862,7 @@
         };
 
         actions.appendChild(renameBtn);
+        actions.appendChild(deleteBtn);
         actions.appendChild(enterBtn);
 
         card.appendChild(mainBtn);
@@ -728,10 +904,24 @@
     }
     _state = loaded;
     _state.creationMode = normalizeMode(_state.creationMode);
+    _state.timeSettings = getWorkTimeSettingsSafe(_state.timeSettings);
+    if (!Array.isArray(_state.items)) _state.items = [];
+    syncWorkItemsFloors(_state.items);
     _sendSide = 'right';
     _panelMode = '';
     _selectedIndex = -1;
-    _expandedVoices = Object.create(null);
+    _expandedTextVoices = Object.create(null);
+
+    function appendMessageItem(msg) {
+      if (!msg || typeof msg !== 'object') return;
+      if (!Array.isArray(_state.items)) _state.items = [];
+      if (!msg.id) msg.id = nextChatMessageId();
+      if (msg.type !== 'date') {
+        stampWorkMessageTime(msg, _state.timeSettings);
+      }
+      _state.items.push(msg);
+      syncWorkItemsFloors(_state.items);
+    }
 
     container.replaceChildren();
     var app = el('div', 'fc-chat-app');
@@ -835,11 +1025,6 @@
     roleBtn.setAttribute('title', '切换消息发送身份');
     roleWrap.appendChild(roleBtn);
 
-    // 仅在 AI 创作模式下展示的轻量状态与操作条（手动模式默认隐藏，保留原版视觉）
-    var aiBar = el('div', 'fc-chat-ai-bar');
-    aiBar.id = 'fc-chat-ai-bar';
-    aiBar.hidden = true;
-
     var compose = el('div', 'fc-chat-compose');
 
     var moreBtn = el('button', 'fc-chat-icon-btn plus');
@@ -867,7 +1052,7 @@
     aiReplyBtn.setAttribute('aria-label', 'AI 回复');
     aiReplyBtn.setAttribute('title', '点击触发 AI 回复');
     aiReplyBtn.hidden = true;
-    aiReplyBtn.innerHTML = '<span class="fc-ai-spark" aria-hidden="true">✦</span><span class="fc-ai-label">AI</span>';
+    aiReplyBtn.innerHTML = '<span class="fc-ai-label">AI 回复</span>';
 
     var sendBtn = el('button', 'fc-chat-send', '发送');
     sendBtn.type = 'button';
@@ -885,7 +1070,6 @@
     panelEl.hidden = true;
 
     bottom.appendChild(roleWrap);
-    bottom.appendChild(aiBar);
     bottom.appendChild(compose);
     bottom.appendChild(panelEl);
 
@@ -1133,7 +1317,6 @@
       var count = 0;
       items.forEach(function(it) {
         if (!it) return;
-        if (it.fakeRecall || it.type === 'withdraw') return;
         count += 1;
       });
       return count;
@@ -1445,8 +1628,8 @@
         aiReplyBtn.innerHTML = '<span class="fc-ai-spark is-spin" aria-hidden="true">✦</span><span class="fc-ai-label">生成中</span>';
         aiReplyBtn.setAttribute('title', 'AI 正在生成回复，请稍候');
       } else {
-        aiReplyBtn.innerHTML = '<span class="fc-ai-spark" aria-hidden="true">✦</span><span class="fc-ai-label">AI</span>';
-        aiReplyBtn.setAttribute('title', modeDef.id === 'ai_story' ? '点击触发 AI 剧情回复' : '点击触发 AI 回复');
+        aiReplyBtn.innerHTML = '<span class="fc-ai-label">AI 回复</span>';
+        aiReplyBtn.setAttribute('title', modeDef.id === 'ai_story' ? '点击触发 AI 剧情生成' : '点击触发 AI 回复');
       }
     }
 
@@ -1461,6 +1644,29 @@
       closeMessageContextMenu();
       if (_panelMode) setPanelMode('');
 
+      var visibleItems = Array.isArray(_state.items)
+        ? _state.items.filter(function(it) { return Boolean(it); })
+        : [];
+      var trailingUserTexts = [];
+      var hasTrailingUserMsg = false;
+      for (var vi = visibleItems.length - 1; vi >= 0; vi--) {
+        var vItem = visibleItems[vi];
+        var vReal = (vItem.type === 'withdraw' && vItem.original) ? vItem.original : vItem;
+        var vSide = vItem.side || (vReal && vReal.side);
+        if (vSide === 'right') {
+          hasTrailingUserMsg = true;
+          if ((vReal.type === 'text' || vReal.type === 'text_voice' || vReal.type === 'voice') && String(vReal.text || vReal.content || '').trim()) {
+            trailingUserTexts.unshift(String(vReal.text || vReal.content || '').trim());
+          } else if (vReal.type === 'image' && !vReal.isSticker && String(vReal.text || vReal.alt || '').trim()) {
+            trailingUserTexts.unshift('[图片：' + String(vReal.text || vReal.alt || '').trim() + ']');
+          } else if (vReal.type === 'location' && (vReal.name || vReal.address)) {
+            trailingUserTexts.unshift('[定位：' + String(vReal.name || vReal.address || '').trim() + ']');
+          }
+        } else if (vReal.type !== 'date') {
+          break;
+        }
+      }
+
       if (modeDef.id === 'ai_story') {
         var dirText = input.value.trim();
         if (dirText) {
@@ -1469,20 +1675,17 @@
         }
         triggerAiTurn({
           triggerType: 'story_beat',
-          userDirection: dirText
+          userDirection: dirText,
+          userInput: dirText || trailingUserTexts.join('\n')
         });
         return;
       }
 
-      var visibleItems = Array.isArray(_state.items)
-        ? _state.items.filter(function(it) { return it && !it.fakeRecall && it.type !== 'withdraw'; })
-        : [];
-      var lastVisible = visibleItems.length ? visibleItems[visibleItems.length - 1] : null;
-      if (lastVisible && lastVisible.side === 'right') {
-        var isTextLast = lastVisible.type === 'text' && String(lastVisible.text || '').trim();
+      if (hasTrailingUserMsg) {
+        var combinedUserText = trailingUserTexts.join('\n');
         triggerAiTurn({
-          triggerType: isTextLast ? 'user_message' : 'reply_after_media',
-          userInput: isTextLast ? String(lastVisible.text || '').trim() : ''
+          triggerType: combinedUserText ? 'user_message' : 'reply_after_media',
+          userInput: combinedUserText
         });
       } else {
         triggerAiTurn({
@@ -1494,100 +1697,15 @@
 
     function renderAiModeBar() {
       syncAiReplyButton();
-      if (!aiBar) return;
       var modeDef = getCreationModeDef(_state && _state.creationMode);
       if (!modeDef.isAi) {
-        aiBar.hidden = true;
-        aiBar.replaceChildren();
         input.placeholder = '发消息……';
         return;
       }
-
-      aiBar.hidden = false;
-      aiBar.replaceChildren();
-      aiBar.classList.toggle('is-busy', _aiBusy);
-      aiBar.classList.toggle('is-error', Boolean(_aiErrorText));
-
       input.placeholder = modeDef.id === 'ai_story'
         ? '发消息或输入剧情方向…'
         : '向 ' + currentCharName() + ' 发消息…';
       if (!input.value) input.style.height = '38px';
-
-      var left = el('div', 'fc-chat-ai-bar-left');
-      var badge = el('button', 'fc-chat-ai-mode-tag', modeDef.id === 'ai_story' ? 'AI 剧情' : 'AI 互动');
-      badge.type = 'button';
-      badge.id = 'fc-chat-ai-mode-badge';
-      badge.title = '切换创作模式';
-      badge.onclick = openCreationModeSheet;
-      left.appendChild(badge);
-
-      var statusEl = el('span', 'fc-chat-ai-status');
-      statusEl.id = 'fc-chat-ai-status';
-      if (_aiBusy) {
-        statusEl.textContent = modeDef.id === 'ai_story' ? '正在生成线上聊天剧情…' : (currentCharName() + ' 正在输入…');
-      } else if (_aiErrorText) {
-        statusEl.textContent = _aiErrorText;
-      } else if (_roleStatusState.status === 'missing') {
-        statusEl.textContent = '原绑定角色已不存在（仍按本作品设定运行）';
-      } else {
-        var activeRoleLabel = _roleStatusState.status === 'ok' && _roleStatusState.name
-          ? _roleStatusState.name
-          : currentCharName();
-        statusEl.textContent = activeRoleLabel + (modeDef.id === 'ai_story' ? ' · 点击 ✦AI 生成剧情' : ' · 点击 ✦AI 回复');
-      }
-      left.appendChild(statusEl);
-
-      var right = el('div', 'fc-chat-ai-bar-actions');
-      if (_aiErrorText && !_aiBusy) {
-        var retryBtn = el('button', 'fc-chat-ai-btn is-primary', '重试');
-        retryBtn.type = 'button';
-        retryBtn.id = 'fc-chat-ai-retry-btn';
-        retryBtn.onclick = function() {
-          if (_aiLastTrigger) {
-            triggerAiTurn(_aiLastTrigger);
-          } else {
-            handleManualAiReplyClick();
-          }
-        };
-        right.appendChild(retryBtn);
-        if (_aiErrorCode === 'REPLY_COUNT_OUT_OF_RANGE') {
-          var countSetBtn = el('button', 'fc-chat-ai-btn is-warn', '条数设置');
-          countSetBtn.type = 'button';
-          countSetBtn.id = 'fc-chat-ai-count-settings-btn';
-          countSetBtn.onclick = openPhoneSettingsPanel;
-          right.appendChild(countSetBtn);
-        }
-        var dismissBtn = el('button', 'fc-chat-ai-btn', '×');
-        dismissBtn.type = 'button';
-        dismissBtn.setAttribute('aria-label', '关闭错误提示');
-        dismissBtn.onclick = function() {
-          _aiErrorText = '';
-          _aiErrorCode = '';
-          renderAiModeBar();
-        };
-        right.appendChild(dismissBtn);
-      } else if (!_aiBusy) {
-        if (_roleStatusState.status === 'missing') {
-          var rebindBtn = el('button', 'fc-chat-ai-btn is-warn', '重选角色');
-          rebindBtn.type = 'button';
-          rebindBtn.id = 'fc-chat-ai-rebind-btn';
-          rebindBtn.onclick = function() {
-            openPersonaPickerSheet(function() {
-              syncBoundPersonaUi();
-            });
-          };
-          right.appendChild(rebindBtn);
-        }
-
-        var setBtn = el('button', 'fc-chat-ai-btn', '设定');
-        setBtn.type = 'button';
-        setBtn.id = 'fc-chat-ai-settings-shortcut';
-        setBtn.onclick = openAiSettingsPanel;
-        right.appendChild(setBtn);
-      }
-
-      aiBar.appendChild(left);
-      aiBar.appendChild(right);
     }
 
     function syncCreationModeUi() {
@@ -1698,9 +1816,10 @@
       }
       var lower = _searchQuery.toLowerCase();
       var items = Array.isArray(_state && _state.items) ? _state.items : [];
-      items.forEach(function(item, idx) {
-        if (!item || item.fakeRecall || item.type === 'withdraw') return;
-        var textPool = [item.text, item.content, item.note, item.amount, item.alt].filter(Boolean).join(' ').toLowerCase();
+      items.forEach(function(rawIt, idx) {
+        if (!rawIt) return;
+        var item = (rawIt.type === 'withdraw' && rawIt.original) ? rawIt.original : rawIt;
+        var textPool = [item.text, item.content, item.note, item.amount, item.alt, item.name, item.address].filter(Boolean).join(' ').toLowerCase();
         if (textPool.indexOf(lower) !== -1) {
           _searchMatches.push(idx);
         }
@@ -1926,7 +2045,7 @@
           id: 'fc-menu-item-phone-settings',
           icon: '⚙',
           title: '捡手机设置',
-          sub: 'AI 回复偏好 · 分气泡数量范围（1～20 条）',
+          sub: 'AI 回复条数 · ' + formatTimeSettingsSummary(_state && _state.timeSettings),
           badge: formatReplyPrefsBadge(replyPrefs),
           onClick: openPhoneSettingsPanel
         }
@@ -1994,6 +2113,7 @@
     });
 
     function closeSecondarySettingsPanel() {
+      clearSettingsClockTimer();
       settingsPanel.classList.remove('show');
       settingsPanel.setAttribute('aria-hidden', 'true');
       settingsPanel.replaceChildren();
@@ -2824,7 +2944,7 @@
       infoCard.appendChild(nameLabel);
       infoCard.appendChild(titleRow);
 
-      var statLine = el('p', 'fc-settings-note', '当前显示 ' + countVisibleMessages() + ' 条消息，另有 ' + countRecalledMessages() + ' 条已撤回消息隐藏保留在记录中。');
+      var statLine = el('p', 'fc-settings-note', '当前共有 ' + countVisibleMessages() + ' 条消息，其中 ' + countRecalledMessages() + ' 条处于已撤回状态（保留原气泡并显示撤回提示）。');
       statLine.style.marginTop = '10px';
       infoCard.appendChild(statLine);
 
@@ -2850,7 +2970,7 @@
       infoCard.appendChild(toolsRow);
       sBody.appendChild(infoCard);
 
-      // 2. 已撤回消息列表（撤回后消息彻底在主聊天区隐藏，此处保留原文并支持改写或恢复显示）
+      // 2. 已撤回消息列表（假撤回保留原气泡与撤回提示，此处也可统一恢复或改写）
       var recallCard = el('section', 'fc-settings-card');
       recallCard.id = 'fc-work-manage-recalled-card';
       var recallListEl = el('div', 'fc-recalled-list');
@@ -2864,13 +2984,18 @@
         items.forEach(function(it, idx) {
           if (!it) return;
           if (it.fakeRecall || it.type === 'withdraw') {
-            var textVal = it.type === 'withdraw' && it.original
-              ? (it.original.text || it.original.content)
-              : (it.text || it.content);
+            var realIt = (it.type === 'withdraw' && it.original) ? it.original : it;
+            var textVal = realIt.type === 'location'
+              ? ('[定位] ' + (realIt.name || '') + (realIt.address ? (' · ' + realIt.address) : ''))
+              : (realIt.type === 'image'
+                ? ((realIt.isSticker ? '[表情包] ' : '[图片] ') + (realIt.text || realIt.alt || ''))
+                : (realIt.text || realIt.content || realIt.note || '[消息]'));
             var sideVal = it.type === 'withdraw' && it.original ? (it.side || it.original.side) : it.side;
             recalledEntries.push({
               index: idx,
               side: sideVal === 'right' ? 'right' : 'left',
+              type: realIt.type || 'text',
+              canRewrite: isEditableTextType(realIt.type, realIt),
               text: textVal || '[消息]'
             });
           }
@@ -2882,7 +3007,7 @@
         recallCard.appendChild(rHead);
 
         if (!recalledEntries.length) {
-          recallCard.appendChild(el('p', 'fc-settings-note', '当前没有已撤回消息。长按聊天消息点击「撤回」后，消息会从聊天界面直接消失，但原始内容仍保存在这里以便恢复或改写。'));
+          recallCard.appendChild(el('p', 'fc-settings-note', '当前没有已撤回消息。点击或长按聊天消息选择「撤回」后，原气泡与内容会保留并在旁显示恢复与删除图标，同时展示撤回提示。'));
           return;
         }
 
@@ -2894,22 +3019,24 @@
           var textLine = el('div', 'fc-recalled-item-text', entry.text);
           var ops = el('div', 'fc-recalled-item-ops');
 
-          var rewriteBtn = el('button', 'fc-settings-mini-btn', '改写');
-          rewriteBtn.type = 'button';
-          rewriteBtn.onclick = function() {
-            closeSecondarySettingsPanel();
-            openRewriteSheet(entry.index);
-          };
+          if (entry.canRewrite) {
+            var rewriteBtn = el('button', 'fc-settings-mini-btn', '改写');
+            rewriteBtn.type = 'button';
+            rewriteBtn.onclick = function() {
+              closeSecondarySettingsPanel();
+              openRewriteSheet(entry.index);
+            };
+            ops.appendChild(rewriteBtn);
+          }
 
-          var restoreBtn = el('button', 'fc-settings-mini-btn primary', '恢复显示');
+          var restoreBtn = el('button', 'fc-settings-mini-btn primary', '恢复消息');
           restoreBtn.type = 'button';
           restoreBtn.onclick = function() {
             toggleRecall(entry.index);
             drawRecalledList();
-            statLine.textContent = '当前显示 ' + countVisibleMessages() + ' 条消息，另有 ' + countRecalledMessages() + ' 条已撤回消息隐藏保留在记录中。';
+            statLine.textContent = '当前共有 ' + countVisibleMessages() + ' 条消息，其中 ' + countRecalledMessages() + ' 条处于已撤回状态（保留原气泡并显示撤回提示）。';
           };
 
-          ops.appendChild(rewriteBtn);
           ops.appendChild(restoreBtn);
           itemBox.appendChild(metaLine);
           itemBox.appendChild(textLine);
@@ -2981,9 +3108,13 @@
               return;
             }
             _state.items = nextItems;
+            syncWorkItemsFloors(_state.items);
             if (parsed && !Array.isArray(parsed)) {
               if (typeof parsed.char === 'string' && parsed.char.trim()) _state.char = parsed.char.trim();
               if (typeof parsed.user === 'string' && parsed.user.trim()) _state.user = parsed.user.trim();
+              if (parsed.timeSettings && typeof parsed.timeSettings === 'object') {
+                _state.timeSettings = getWorkTimeSettingsSafe(parsed.timeSettings);
+              }
             }
             saveState(_state);
             syncRoleButton();
@@ -2997,6 +3128,36 @@
         reader.readAsText(file, 'utf-8');
       });
 
+      var exportHtmlBtn = el('button', 'fc-settings-mini-btn primary', '导出 HTML 阅读文件');
+      exportHtmlBtn.type = 'button';
+      exportHtmlBtn.id = 'fc-work-manage-export-html';
+      exportHtmlBtn.onclick = function() {
+        var exApi = global.FanCommunityExport;
+        if (!exApi || typeof exApi.exportWorkAsHtml !== 'function') {
+          notify('导出模块未就绪');
+          return;
+        }
+        exApi.exportWorkAsHtml(_state).then(function(res) {
+          notify('已导出 HTML 阅读文件：' + res.filename);
+        }).catch(function(err) {
+          notify(err && err.message ? err.message : '导出 HTML 失败');
+        });
+      };
+
+      var exportPngBtn = el('button', 'fc-settings-mini-btn primary', '导出 PNG 聊天长图');
+      exportPngBtn.type = 'button';
+      exportPngBtn.id = 'fc-work-manage-export-png';
+      exportPngBtn.onclick = function() {
+        var exApi = global.FanCommunityExport;
+        if (!exApi || typeof exApi.openExportWorkSheet !== 'function') {
+          notify('导出模块未就绪');
+          return;
+        }
+        exApi.openExportWorkSheet(_state, app, notify);
+      };
+
+      ioBtns.appendChild(exportHtmlBtn);
+      ioBtns.appendChild(exportPngBtn);
       ioBtns.appendChild(exportBtn);
       ioBtns.appendChild(importBtn);
       ioCard.appendChild(ioBtns);
@@ -3022,11 +3183,15 @@
       closeSheet();
       closeChatMenu();
       closeAiSettingsPanel();
+      clearSettingsClockTimer();
       settingsPanel.replaceChildren();
 
+      var wApi = worksApi();
       var currentPrefs = getAiReplyPrefs(_state && _state.aiReplyPrefs);
       var draftMinStr = String(currentPrefs.minMessages);
       var draftMaxStr = String(currentPrefs.maxMessages);
+      var draftTime = getWorkTimeSettingsSafe(_state && _state.timeSettings);
+      var draftSpeedStr = String(draftTime.virtualSpeed);
 
       var sHead = el('header', 'fc-settings-head');
       var sBackBtn = el('button', 'fc-settings-back');
@@ -3047,7 +3212,7 @@
       var sBody = el('div', 'fc-settings-body');
       sBody.id = 'fc-phone-settings-body';
 
-      // AI 回复偏好分组
+      // 1. AI 回复偏好分组
       var prefCard = el('section', 'fc-settings-card');
       prefCard.id = 'fc-phone-settings-reply-card';
 
@@ -3140,7 +3305,7 @@
           draftMaxStr = String(preset.max);
           minCtrl.input.value = draftMinStr;
           maxCtrl.input.value = draftMaxStr;
-          syncReplyPrefUi();
+          syncAllSettingsUi();
         };
         presetBtns.push({ preset: preset, btn: btn });
         presetRow.appendChild(btn);
@@ -3152,6 +3317,308 @@
       prefCard.appendChild(rangeHint);
 
       sBody.appendChild(prefCard);
+
+      // 2. 气泡时间与时钟分组
+      var timeCard = el('section', 'fc-settings-card');
+      timeCard.id = 'fc-phone-settings-time-card';
+
+      var timeHead = el('div', 'fc-settings-card-head');
+      timeHead.appendChild(el('span', 'fc-settings-card-title', '气泡时间与时钟'));
+      var timeStatusTag = el('span', 'fc-settings-card-tag', '');
+      timeStatusTag.id = 'fc-time-status-tag';
+      timeHead.appendChild(timeStatusTag);
+      timeCard.appendChild(timeHead);
+
+      // 气泡时间显示开关
+      var showTimeRow = el('div', 'fc-reply-pref-row');
+      var showTimeCopy = el('div', 'fc-reply-pref-copy');
+      showTimeCopy.appendChild(el('span', 'fc-reply-pref-label', '气泡时间显示'));
+      showTimeCopy.appendChild(el('span', 'fc-reply-pref-sub', '开启后在每条消息气泡旁显示发送时间，关闭后隐藏时间'));
+      var showTimeBtn = el('button', 'fc-time-switch');
+      showTimeBtn.type = 'button';
+      showTimeBtn.id = 'fc-time-show-toggle';
+      showTimeBtn.setAttribute('role', 'switch');
+      showTimeBtn.setAttribute('aria-label', '气泡时间显示');
+      showTimeBtn.appendChild(el('span', 'fc-time-switch-thumb'));
+      showTimeRow.appendChild(showTimeCopy);
+      showTimeRow.appendChild(showTimeBtn);
+      timeCard.appendChild(showTimeRow);
+
+      // 时间模式切换
+      var modeLabel = el('div', 'fc-time-section-label', '时间模式（本作品独立保存）');
+      timeCard.appendChild(modeLabel);
+
+      var modeTabs = el('div', 'fc-time-mode-tabs');
+      var realtimeTab = el('button', 'fc-time-mode-tab', '实时时间');
+      realtimeTab.type = 'button';
+      realtimeTab.id = 'fc-time-mode-realtime';
+      var virtualTab = el('button', 'fc-time-mode-tab', '虚拟时间');
+      virtualTab.type = 'button';
+      virtualTab.id = 'fc-time-mode-virtual';
+      modeTabs.appendChild(realtimeTab);
+      modeTabs.appendChild(virtualTab);
+      timeCard.appendChild(modeTabs);
+
+      // 当前时钟实时预览
+      var clockPreviewBox = el('div', 'fc-time-preview-box');
+      clockPreviewBox.id = 'fc-time-live-preview';
+      var clockPreviewLabel = el('span', 'fc-time-preview-label', '');
+      var clockPreviewVal = el('strong', 'fc-time-preview-val', '');
+      clockPreviewBox.appendChild(clockPreviewLabel);
+      clockPreviewBox.appendChild(clockPreviewVal);
+      timeCard.appendChild(clockPreviewBox);
+
+      // 实时时间配置区
+      var realtimePanel = el('div', 'fc-time-mode-panel');
+      realtimePanel.id = 'fc-time-realtime-panel';
+      var tzField = el('div', 'fc-time-field');
+      var tzLbl = el('label', 'fc-time-field-label', '显示时区');
+      tzLbl.setAttribute('for', 'fc-time-timezone-select');
+      var tzSelect = document.createElement('select');
+      tzSelect.id = 'fc-time-timezone-select';
+      tzSelect.className = 'fc-time-select';
+      var tzOptions = (wApi && Array.isArray(wApi.TIMEZONE_OPTIONS))
+        ? wApi.TIMEZONE_OPTIONS.slice()
+        : [
+            { value: 'Asia/Shanghai', label: '北京 / 上海 (UTC+8)' },
+            { value: 'Asia/Tokyo', label: '东京 (UTC+9)' },
+            { value: 'Europe/London', label: '伦敦 (UTC+0/+1)' },
+            { value: 'America/New_York', label: '纽约 (UTC-5/-4)' },
+            { value: 'UTC', label: '世界协调时 (UTC)' }
+          ];
+      var hasDraftTz = tzOptions.some(function(opt) { return opt.value === draftTime.timeZone; });
+      if (!hasDraftTz && draftTime.timeZone) {
+        tzOptions.unshift({ value: draftTime.timeZone, label: '当前时区 (' + draftTime.timeZone + ')' });
+      }
+      tzOptions.forEach(function(opt) {
+        var optionEl = document.createElement('option');
+        optionEl.value = opt.value;
+        optionEl.textContent = opt.label;
+        tzSelect.appendChild(optionEl);
+      });
+      tzSelect.value = draftTime.timeZone;
+      tzField.appendChild(tzLbl);
+      tzField.appendChild(tzSelect);
+      realtimePanel.appendChild(tzField);
+      realtimePanel.appendChild(el('p', 'fc-settings-note', '发送消息时按所选时区记录真实时间；已发送的消息会永久保留发送时的时间。'));
+      timeCard.appendChild(realtimePanel);
+
+      // 虚拟时间配置区
+      var virtualPanel = el('div', 'fc-time-mode-panel');
+      virtualPanel.id = 'fc-time-virtual-panel';
+
+      var vtGrid = el('div', 'fc-time-grid-row');
+      var dateField = el('div', 'fc-time-field');
+      var dateLbl = el('label', 'fc-time-field-label', '起始日期');
+      dateLbl.setAttribute('for', 'fc-time-virtual-date');
+      var vtDateInput = document.createElement('input');
+      vtDateInput.type = 'date';
+      vtDateInput.id = 'fc-time-virtual-date';
+      vtDateInput.className = 'fc-time-input';
+      vtDateInput.value = draftTime.virtualStartDate;
+      dateField.appendChild(dateLbl);
+      dateField.appendChild(vtDateInput);
+
+      var timeField = el('div', 'fc-time-field');
+      var timeLbl = el('label', 'fc-time-field-label', '起始时间');
+      timeLbl.setAttribute('for', 'fc-time-virtual-time');
+      var vtTimeInput = document.createElement('input');
+      vtTimeInput.type = 'time';
+      vtTimeInput.id = 'fc-time-virtual-time';
+      vtTimeInput.className = 'fc-time-input';
+      vtTimeInput.value = draftTime.virtualStartTime;
+      timeField.appendChild(timeLbl);
+      timeField.appendChild(vtTimeInput);
+
+      vtGrid.appendChild(dateField);
+      vtGrid.appendChild(timeField);
+      virtualPanel.appendChild(vtGrid);
+
+      var speedField = el('div', 'fc-time-field');
+      var speedLbl = el('label', 'fc-time-field-label', '时间流速（倍速，0.1～1440）');
+      speedLbl.setAttribute('for', 'fc-time-virtual-speed');
+      var speedRow = el('div', 'fc-time-speed-row');
+      var vtSpeedInput = document.createElement('input');
+      vtSpeedInput.type = 'number';
+      vtSpeedInput.id = 'fc-time-virtual-speed';
+      vtSpeedInput.className = 'fc-time-input fc-time-speed-input';
+      vtSpeedInput.min = '0.1';
+      vtSpeedInput.max = '1440';
+      vtSpeedInput.step = '0.1';
+      vtSpeedInput.value = draftSpeedStr;
+      speedRow.appendChild(vtSpeedInput);
+      speedRow.appendChild(el('span', 'fc-time-speed-unit', '× 实时速度'));
+      speedField.appendChild(speedLbl);
+      speedField.appendChild(speedRow);
+      virtualPanel.appendChild(speedField);
+
+      var SPEED_PRESETS = [0.5, 1, 5, 10, 30, 60];
+      var speedPresetsWrap = el('div', 'fc-time-speed-presets');
+      var speedPresetBtns = [];
+      SPEED_PRESETS.forEach(function(sp) {
+        var spBtn = el('button', 'fc-reply-preset-btn', sp + 'x');
+        spBtn.type = 'button';
+        spBtn.dataset.speedVal = String(sp);
+        spBtn.onclick = function() {
+          draftSpeedStr = String(sp);
+          vtSpeedInput.value = draftSpeedStr;
+          if (wApi && typeof wApi.updateVirtualClockSpeed === 'function') {
+            draftTime = wApi.updateVirtualClockSpeed(draftTime, sp);
+          } else {
+            draftTime.virtualSpeed = sp;
+          }
+          syncAllSettingsUi();
+        };
+        speedPresetBtns.push({ val: sp, btn: spBtn });
+        speedPresetsWrap.appendChild(spBtn);
+      });
+      virtualPanel.appendChild(speedPresetsWrap);
+
+      var vtOps = el('div', 'fc-time-virtual-ops');
+      var vtPauseBtn = el('button', 'fc-settings-mini-btn primary', '');
+      vtPauseBtn.type = 'button';
+      vtPauseBtn.id = 'fc-time-virtual-pause-btn';
+      var vtResetBtn = el('button', 'fc-settings-mini-btn', '重置到起始时间');
+      vtResetBtn.type = 'button';
+      vtResetBtn.id = 'fc-time-virtual-reset-btn';
+      vtOps.appendChild(vtPauseBtn);
+      vtOps.appendChild(vtResetBtn);
+      virtualPanel.appendChild(vtOps);
+
+      var timeErrorHint = el('p', 'fc-reply-range-hint is-error', '');
+      timeErrorHint.id = 'fc-time-error-hint';
+      timeErrorHint.hidden = true;
+      virtualPanel.appendChild(timeErrorHint);
+
+      virtualPanel.appendChild(el('p', 'fc-settings-note', '虚拟时间设定后将按流速自动推进，支持随时暂停与继续；已发送的消息会保留发送时的时间，不随虚拟时间推进而改变。'));
+      timeCard.appendChild(virtualPanel);
+
+      sBody.appendChild(timeCard);
+
+      // 3. 作品完结、归档、转发与导出分组
+      var publishCard = el('section', 'fc-settings-card');
+      publishCard.id = 'fc-phone-settings-publish-card';
+
+      var pubHead = el('div', 'fc-settings-card-head');
+      pubHead.appendChild(el('span', 'fc-settings-card-title', '作品完结与导出'));
+      var pubStatusTag = el('span', 'fc-settings-card-tag', _state && _state.isCompleted ? '已完结 · 已存档' : '创作中');
+      pubStatusTag.id = 'fc-work-complete-status-tag';
+      pubHead.appendChild(pubStatusTag);
+      publishCard.appendChild(pubHead);
+
+      var pubDesc = el('p', 'fc-settings-note', _state && _state.isCompleted
+        ? '本作品已完结并自动收录到同好社区「存档」，可随时在存档中阅读、转发给微信联系人或导出保存。修改内容后可再次点击更新存档。'
+        : '点击「完结作品」将自动收录完整聊天快照到同好社区「存档」，完结后可转发给弯弯机微信联系人讨论剧情。');
+      pubDesc.id = 'fc-work-complete-desc';
+      publishCard.appendChild(pubDesc);
+
+      var pubActionRow = el('div', 'fc-work-publish-ops');
+      var completeBtn = el('button', 'fc-chat-btn fc-work-complete-btn', _state && _state.isCompleted ? '更新完结存档' : '完结作品');
+      completeBtn.type = 'button';
+      completeBtn.id = 'fc-work-complete-btn';
+
+      var forwardBtn = el('button', 'fc-settings-mini-btn primary', '转发给微信联系人');
+      forwardBtn.type = 'button';
+      forwardBtn.id = 'fc-work-forward-btn';
+      forwardBtn.hidden = !(_state && _state.isCompleted);
+
+      var exportHtmlQuickBtn = el('button', 'fc-settings-mini-btn', '导出 HTML 阅读文件');
+      exportHtmlQuickBtn.type = 'button';
+      exportHtmlQuickBtn.id = 'fc-work-export-html-btn';
+
+      var exportPngQuickBtn = el('button', 'fc-settings-mini-btn', '导出 PNG 聊天长图');
+      exportPngQuickBtn.type = 'button';
+      exportPngQuickBtn.id = 'fc-work-export-png-btn';
+
+      function syncPublishCardUi() {
+        var done = Boolean(_state && _state.isCompleted);
+        pubStatusTag.textContent = done ? '已完结 · 已存档' : '创作中';
+        completeBtn.textContent = done ? '更新完结存档' : '完结作品';
+        forwardBtn.hidden = !done;
+        pubDesc.textContent = done
+          ? '本作品已完结并自动收录到同好社区「存档」，可随时在存档中阅读、转发给微信联系人或导出保存。修改内容后可再次点击更新存档。'
+          : '点击「完结作品」将自动收录完整聊天快照到同好社区「存档」，完结后可转发给弯弯机微信联系人讨论剧情。';
+      }
+
+      completeBtn.onclick = function() {
+        var msgCount = Array.isArray(_state && _state.items) ? _state.items.length : 0;
+        openSheet(_state && _state.isCompleted ? '更新完结存档' : '确认完结作品', function(body) {
+          body.appendChild(el('div', 'fc-chat-confirm-preview', '《' + ((_state && _state.title) || '未命名作品') + '》 · ' + currentUserName() + ' × ' + currentCharName() + ' · 共 ' + msgCount + ' 条消息'));
+          body.appendChild(el('p', 'fc-chat-sheet-note', _state && _state.isCompleted
+            ? '将使用当前最新的聊天记录、外观与时间设置覆盖更新同好社区「存档」中的完结快照。'
+            : '完结后会自动将本作品完整收录到同好社区「存档」，点击存档即可阅读全文，也可转发给弯弯机微信联系人。'));
+          var acts = el('div', 'fc-chat-sheet-actions');
+          var cBtn = el('button', 'fc-chat-btn alt', '取消');
+          cBtn.type = 'button';
+          cBtn.onclick = closeSheet;
+          var okBtn = el('button', 'fc-chat-btn', _state && _state.isCompleted ? '确认更新存档' : '确认完结并存档');
+          okBtn.type = 'button';
+          okBtn.id = 'fc-work-complete-confirm-btn';
+          okBtn.onclick = function() {
+            if (!wApi || typeof wApi.completeAndArchiveWork !== 'function') {
+              notify('作品归档模块未就绪');
+              return;
+            }
+            var res = wApi.completeAndArchiveWork(_currentWorkId, _state);
+            if (!res.ok) {
+              notify(res.error || '完结归档失败');
+              return;
+            }
+            _state.isCompleted = true;
+            _state.completedAt = res.workData.completedAt;
+            _state.lastArchiveId = res.workData.lastArchiveId;
+            closeSheet();
+            syncPublishCardUi();
+            notify(res.updatedExisting ? '已更新同好社区「存档」中的完结快照' : '作品已完结并自动收录到同好社区「存档」');
+          };
+          acts.appendChild(cBtn);
+          acts.appendChild(okBtn);
+          body.appendChild(acts);
+        });
+      };
+
+      forwardBtn.onclick = function() {
+        var exApi = global.FanCommunityExport;
+        if (!exApi || typeof exApi.openForwardToWechatSheet !== 'function') {
+          notify('微信转发模块未就绪');
+          return;
+        }
+        var targetData = (_state && _state.lastArchiveId && wApi && typeof wApi.getArchiveData === 'function')
+          ? (wApi.getArchiveData(_state.lastArchiveId) || _state)
+          : _state;
+        exApi.openForwardToWechatSheet(targetData, app, notify);
+      };
+
+      exportHtmlQuickBtn.onclick = function() {
+        var exApi = global.FanCommunityExport;
+        if (!exApi || typeof exApi.exportWorkAsHtml !== 'function') {
+          notify('导出模块未就绪');
+          return;
+        }
+        exApi.exportWorkAsHtml(_state).then(function(res) {
+          notify('已导出 HTML 阅读文件：' + res.filename);
+        }).catch(function(err) {
+          notify(err && err.message ? err.message : '导出 HTML 失败');
+        });
+      };
+
+      exportPngQuickBtn.onclick = function() {
+        var exApi = global.FanCommunityExport;
+        if (!exApi || typeof exApi.openExportWorkSheet !== 'function') {
+          notify('导出模块未就绪');
+          return;
+        }
+        exApi.openExportWorkSheet(_state, app, notify);
+      };
+
+      pubActionRow.appendChild(completeBtn);
+      var pubSubBtns = el('div', 'fc-settings-avatar-btns');
+      pubSubBtns.appendChild(forwardBtn);
+      pubSubBtns.appendChild(exportHtmlQuickBtn);
+      pubSubBtns.appendChild(exportPngQuickBtn);
+      publishCard.appendChild(pubActionRow);
+      publishCard.appendChild(pubSubBtns);
+      sBody.appendChild(publishCard);
 
       var sFoot = el('div', 'fc-settings-foot');
       var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
@@ -3186,8 +3653,32 @@
         return { ok: true, minMessages: minVal, maxMessages: maxVal };
       }
 
-      function syncReplyPrefUi() {
+      function validateTimeDraft() {
+        if (draftTime.mode !== 'virtual') {
+          return { ok: true, speed: draftTime.virtualSpeed };
+        }
+        var spNum = Number(String(draftSpeedStr || '').trim());
+        if (!Number.isFinite(spNum) || spNum < 0.1 || spNum > 1440) {
+          return { ok: false, error: '虚拟时间流速请输入 0.1～1440 之间的数字。' };
+        }
+        return { ok: true, speed: Math.round(spNum * 100) / 100 };
+      }
+
+      function updateLiveClockPreview() {
+        var resolved = resolveWorkTimeSafe(draftTime);
+        if (draftTime.mode === 'virtual') {
+          clockPreviewLabel.textContent = resolved.paused
+            ? ('当前虚拟时间（已暂停 · ' + resolved.speed + 'x）')
+            : ('当前虚拟时间（自动推进 · ' + resolved.speed + 'x）');
+        } else {
+          clockPreviewLabel.textContent = '当前实时时间（' + (resolved.timeZone || draftTime.timeZone) + '）';
+        }
+        clockPreviewVal.textContent = resolved.fullWithSec || resolved.full;
+      }
+
+      function syncAllSettingsUi() {
         var v = validateDraft();
+        var tv = validateTimeDraft();
         var curMinNum = parseStrictInt(draftMinStr);
         var curMaxNum = parseStrictInt(draftMaxStr);
 
@@ -3201,11 +3692,9 @@
           rangeTag.classList.add('is-warn');
           rangeHint.textContent = v.error;
           rangeHint.classList.add('is-error');
-          saveBtn.disabled = true;
         } else {
           rangeTag.classList.remove('is-warn');
           rangeHint.classList.remove('is-error');
-          saveBtn.disabled = false;
           if (v.minMessages === v.maxMessages) {
             rangeTag.textContent = '固定 ' + v.minMessages + ' 条';
             rangeHint.textContent = '当前为固定条数模式：AI 每次将恰好组织为 ' + v.minMessages + ' 条独立聊天气泡（AI 角色互动与 AI 剧情生成统一生效）。';
@@ -3219,6 +3708,44 @@
           var active = v.ok && v.minMessages === item.preset.min && v.maxMessages === item.preset.max;
           item.btn.classList.toggle('is-active', active);
         });
+
+        // 气泡时间 UI 同步
+        showTimeBtn.classList.toggle('is-on', Boolean(draftTime.showBubbleTime));
+        showTimeBtn.setAttribute('aria-checked', draftTime.showBubbleTime ? 'true' : 'false');
+
+        realtimeTab.classList.toggle('is-active', draftTime.mode === 'realtime');
+        virtualTab.classList.toggle('is-active', draftTime.mode === 'virtual');
+        realtimePanel.hidden = draftTime.mode !== 'realtime';
+        virtualPanel.hidden = draftTime.mode !== 'virtual';
+
+        if (!draftTime.showBubbleTime) {
+          timeStatusTag.textContent = '已隐藏';
+          timeStatusTag.classList.remove('is-warn');
+        } else if (draftTime.mode === 'virtual') {
+          timeStatusTag.textContent = draftTime.virtualPaused ? '虚拟 · 已暂停' : ('虚拟 · ' + draftTime.virtualSpeed + 'x');
+          timeStatusTag.classList.toggle('is-warn', !tv.ok);
+        } else {
+          timeStatusTag.textContent = '实时显示';
+          timeStatusTag.classList.remove('is-warn');
+        }
+
+        vtPauseBtn.textContent = draftTime.virtualPaused ? '▶ 继续虚拟时间' : '⏸ 暂停虚拟时间';
+        vtPauseBtn.classList.toggle('primary', Boolean(draftTime.virtualPaused));
+
+        speedPresetBtns.forEach(function(item) {
+          item.btn.classList.toggle('is-active', tv.ok && Math.abs(tv.speed - item.val) < 0.001);
+        });
+
+        if (!tv.ok) {
+          timeErrorHint.textContent = tv.error;
+          timeErrorHint.hidden = false;
+        } else {
+          timeErrorHint.textContent = '';
+          timeErrorHint.hidden = true;
+        }
+
+        saveBtn.disabled = !v.ok || !tv.ok;
+        updateLiveClockPreview();
       }
 
       minCtrl.input.value = draftMinStr;
@@ -3229,18 +3756,18 @@
         var next = Number.isFinite(cur) ? Math.max(1, cur - 1) : 1;
         draftMinStr = String(next);
         minCtrl.input.value = draftMinStr;
-        syncReplyPrefUi();
+        syncAllSettingsUi();
       };
       minCtrl.incBtn.onclick = function() {
         var cur = parseStrictInt(draftMinStr);
         var next = Number.isFinite(cur) ? Math.min(20, cur + 1) : 1;
         draftMinStr = String(next);
         minCtrl.input.value = draftMinStr;
-        syncReplyPrefUi();
+        syncAllSettingsUi();
       };
       minCtrl.input.addEventListener('input', function() {
         draftMinStr = minCtrl.input.value;
-        syncReplyPrefUi();
+        syncAllSettingsUi();
       });
 
       maxCtrl.decBtn.onclick = function() {
@@ -3248,27 +3775,120 @@
         var next = Number.isFinite(cur) ? Math.max(1, cur - 1) : 5;
         draftMaxStr = String(next);
         maxCtrl.input.value = draftMaxStr;
-        syncReplyPrefUi();
+        syncAllSettingsUi();
       };
       maxCtrl.incBtn.onclick = function() {
         var cur = parseStrictInt(draftMaxStr);
         var next = Number.isFinite(cur) ? Math.min(20, cur + 1) : 5;
         draftMaxStr = String(next);
         maxCtrl.input.value = draftMaxStr;
-        syncReplyPrefUi();
+        syncAllSettingsUi();
       };
       maxCtrl.input.addEventListener('input', function() {
         draftMaxStr = maxCtrl.input.value;
-        syncReplyPrefUi();
+        syncAllSettingsUi();
       });
+
+      showTimeBtn.onclick = function() {
+        draftTime.showBubbleTime = !draftTime.showBubbleTime;
+        syncAllSettingsUi();
+      };
+
+      realtimeTab.onclick = function() {
+        if (draftTime.mode === 'realtime') return;
+        draftTime.mode = 'realtime';
+        syncAllSettingsUi();
+      };
+
+      virtualTab.onclick = function() {
+        if (draftTime.mode === 'virtual') return;
+        draftTime.mode = 'virtual';
+        if (!Number.isFinite(draftTime.virtualAnchorRealMs) || draftTime.virtualAnchorRealMs <= 0) {
+          draftTime.virtualAnchorRealMs = Date.now();
+        }
+        syncAllSettingsUi();
+      };
+
+      tzSelect.addEventListener('change', function() {
+        draftTime.timeZone = tzSelect.value || 'Asia/Shanghai';
+        syncAllSettingsUi();
+      });
+
+      function onVirtualStartChanged() {
+        var nextDate = vtDateInput.value || draftTime.virtualStartDate;
+        var nextTime = vtTimeInput.value || draftTime.virtualStartTime;
+        if (wApi && typeof wApi.resetVirtualClockStart === 'function') {
+          draftTime = wApi.resetVirtualClockStart(draftTime, nextDate, nextTime);
+        } else {
+          draftTime.virtualStartDate = nextDate;
+          draftTime.virtualStartTime = nextTime;
+          draftTime.virtualAnchorRealMs = Date.now();
+        }
+        syncAllSettingsUi();
+      }
+      vtDateInput.addEventListener('change', onVirtualStartChanged);
+      vtTimeInput.addEventListener('change', onVirtualStartChanged);
+
+      vtSpeedInput.addEventListener('input', function() {
+        draftSpeedStr = vtSpeedInput.value;
+        var tv = validateTimeDraft();
+        if (tv.ok) {
+          if (wApi && typeof wApi.updateVirtualClockSpeed === 'function') {
+            draftTime = wApi.updateVirtualClockSpeed(draftTime, tv.speed);
+          } else {
+            draftTime.virtualSpeed = tv.speed;
+          }
+        }
+        syncAllSettingsUi();
+      });
+
+      vtPauseBtn.onclick = function() {
+        if (draftTime.virtualPaused) {
+          if (wApi && typeof wApi.resumeVirtualClock === 'function') {
+            draftTime = wApi.resumeVirtualClock(draftTime);
+          } else {
+            draftTime.virtualPaused = false;
+            draftTime.virtualAnchorRealMs = Date.now();
+          }
+        } else {
+          if (wApi && typeof wApi.pauseVirtualClock === 'function') {
+            draftTime = wApi.pauseVirtualClock(draftTime);
+          } else {
+            draftTime.virtualPaused = true;
+          }
+        }
+        syncAllSettingsUi();
+      };
+
+      vtResetBtn.onclick = function() {
+        var dVal = vtDateInput.value || draftTime.virtualStartDate;
+        var tVal = vtTimeInput.value || draftTime.virtualStartTime;
+        if (wApi && typeof wApi.resetVirtualClockStart === 'function') {
+          draftTime = wApi.resetVirtualClockStart(draftTime, dVal, tVal);
+        } else {
+          draftTime.virtualStartDate = dVal;
+          draftTime.virtualStartTime = tVal;
+          draftTime.virtualAnchorRealMs = Date.now();
+        }
+        syncAllSettingsUi();
+        notify('虚拟时钟已重置到设定的起始时间');
+      };
 
       sResetBtn.onclick = function() {
         draftMinStr = '1';
         draftMaxStr = '5';
         minCtrl.input.value = draftMinStr;
         maxCtrl.input.value = draftMaxStr;
-        syncReplyPrefUi();
-        notify('已恢复默认回复条数（1～5 条），点击「保存设置」生效');
+        draftTime = (wApi && typeof wApi.createDefaultTimeSettings === 'function')
+          ? wApi.createDefaultTimeSettings()
+          : getWorkTimeSettingsSafe(null);
+        draftSpeedStr = String(draftTime.virtualSpeed);
+        tzSelect.value = draftTime.timeZone;
+        vtDateInput.value = draftTime.virtualStartDate;
+        vtTimeInput.value = draftTime.virtualStartTime;
+        vtSpeedInput.value = draftSpeedStr;
+        syncAllSettingsUi();
+        notify('已恢复默认设置，点击「保存设置」生效');
       };
 
       saveBtn.onclick = function() {
@@ -3277,11 +3897,23 @@
           notify(v.error);
           return;
         }
+        var tv = validateTimeDraft();
+        if (!tv.ok) {
+          notify(tv.error);
+          return;
+        }
         if (!_state) return;
         _state.aiReplyPrefs = {
           minMessages: v.minMessages,
           maxMessages: v.maxMessages
         };
+        if (draftTime.mode === 'virtual' && wApi && typeof wApi.updateVirtualClockSpeed === 'function') {
+          draftTime = wApi.updateVirtualClockSpeed(draftTime, tv.speed);
+        }
+        _state.timeSettings = getWorkTimeSettingsSafe(draftTime);
+        if (_state.timeSettings.showBubbleTime) {
+          backfillMissingMessageTimes(_state.items, _state.timeSettings);
+        }
         var ok = saveState(_state);
         if (!ok) return;
         if (_aiErrorCode === 'REPLY_COUNT_OUT_OF_RANGE') {
@@ -3290,10 +3922,18 @@
         }
         closeSecondarySettingsPanel();
         renderAiModeBar();
-        notify('已保存 AI 回复条数设置（' + formatReplyPrefsBadge(_state.aiReplyPrefs) + '）');
+        renderMessages(false);
+        notify('已保存设置（' + formatReplyPrefsBadge(_state.aiReplyPrefs) + ' · ' + formatTimeSettingsSummary(_state.timeSettings) + '）');
       };
 
-      syncReplyPrefUi();
+      syncAllSettingsUi();
+      _settingsClockTimer = setInterval(function() {
+        if (!settingsPanel.classList.contains('show')) {
+          clearSettingsClockTimer();
+          return;
+        }
+        updateLiveClockPreview();
+      }, 1000);
 
       settingsPanel.appendChild(sHead);
       settingsPanel.appendChild(sBody);
@@ -3827,31 +4467,64 @@
       return m;
     }
 
-    function isEditableTextType(type) {
-      return type === 'text' || type === 'text_voice';
+    function isTextImageItem(item) {
+      if (!item || item.type !== 'image' || item.isSticker) return false;
+      return Boolean(item.isTextImage || (!item.src && !item.assetId));
+    }
+
+    function isEditableTextType(type, item) {
+      if (type === 'text' || type === 'text_voice' || type === 'voice') return true;
+      if (type === 'image' && item && isTextImageItem(item)) return true;
+      return false;
+    }
+
+    function canRecallMessage(item) {
+      if (!item || typeof item !== 'object') return false;
+      return item.type !== 'date';
+    }
+
+    function estimateSimulatedVoiceDuration(textVal) {
+      var aApi = aiApi();
+      if (aApi && typeof aApi.estimateTextVoiceDuration === 'function') {
+        return aApi.estimateTextVoiceDuration(textVal);
+      }
+      var len = String(textVal || '').replace(/\s+/g, '').length;
+      if (!len) return 4;
+      return Math.max(2, Math.min(59, Math.round(len / 3.8) + 1));
     }
 
     function toggleRecall(index) {
       var m = unwrapWithdrawIfNeeded(index);
-      if (!m || !isEditableTextType(m.type)) return;
+      if (!m || !canRecallMessage(m)) return;
       if (_state.items[index] === m) {
         m.fakeRecall = !m.fakeRecall;
       }
       if (_selectedIndex === index) _selectedIndex = -1;
       saveState(_state);
       renderMessages(false);
-      notify(m.fakeRecall ? '已撤回该消息' : '已恢复消息显示');
+      notify(m.fakeRecall ? '已撤回该消息' : '已恢复消息');
     }
 
     function openEditTextSheet(index) {
-      var m = _state.items[index];
-      if (!m || !isEditableTextType(m.type)) return;
-      var isTextVoice = m.type === 'text_voice';
-      openSheet(isTextVoice ? '编辑文字语音内容' : '编辑消息', function(body) {
-        var label = el('label', '', isTextVoice ? '修改语音条文字内容（将自动重算时长）' : '修改消息内容');
+      var m = unwrapWithdrawIfNeeded(index);
+      if (!m) return;
+      if (m.type === 'location') {
+        openEditLocationSheet(index);
+        return;
+      }
+      if (!isEditableTextType(m.type, m)) return;
+      var isVoice = m.type === 'text_voice' || m.type === 'voice';
+      var isImgCard = isTextImageItem(m);
+      var floorTag = '（第 ' + (index + 1) + ' 楼）';
+      var sheetTitle = (isVoice ? '编辑语音文字内容' : (isImgCard ? '编辑图片内容描述' : '编辑消息')) + floorTag;
+      var fieldLabel = isVoice
+        ? '修改语音条文字内容（将自动重算模拟时长）'
+        : (isImgCard ? '修改图片卡片画面内容' : '修改消息内容');
+      openSheet(sheetTitle, function(body) {
+        var label = el('label', '', fieldLabel);
         var textarea = document.createElement('textarea');
         textarea.id = 'fc-chat-edit-input';
-        textarea.value = m.text || m.content || '';
+        textarea.value = m.text || m.content || (isImgCard ? (m.alt || '') : '');
 
         var actions = el('div', 'fc-chat-sheet-actions');
         var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
@@ -3868,18 +4541,19 @@
             return;
           }
           m.text = nextText;
-          if (isTextVoice) {
+          if (isVoice) {
+            m.type = 'text_voice';
             m.content = nextText;
-            var aApi = aiApi();
-            if (aApi && typeof aApi.estimateTextVoiceDuration === 'function') {
-              m.duration = aApi.estimateTextVoiceDuration(nextText);
-            }
+            m.duration = estimateSimulatedVoiceDuration(nextText);
+          } else if (isImgCard) {
+            m.isTextImage = true;
+            m.alt = nextText;
           }
           _selectedIndex = -1;
           saveState(_state);
           closeSheet();
           renderMessages(false);
-          notify(isTextVoice ? '已修改文字语音内容' : '已修改消息内容');
+          notify(isVoice ? '已修改语音文字内容' : (isImgCard ? '已修改图片卡片内容' : '已修改消息内容'));
         };
 
         actions.appendChild(cancelBtn);
@@ -3891,22 +4565,76 @@
       });
     }
 
-    function openRewriteSheet(index) {
+    function openEditLocationSheet(index) {
       var m = unwrapWithdrawIfNeeded(index);
-      if (!m || !isEditableTextType(m.type)) return;
-      var isTextVoice = m.type === 'text_voice';
-      openSheet(isTextVoice ? '改写文字语音' : '改写消息', function(body) {
-        var label = el('label', '', '修改后的消息内容（保存后将重新显示）');
-        var textarea = document.createElement('textarea');
-        textarea.id = 'fc-chat-rewrite-input';
-        textarea.value = m.text || m.content || '';
+      if (!m || m.type !== 'location') return;
+      openSheet('编辑自定义定位（第 ' + (index + 1) + ' 楼）', function(body) {
+        var nameLabel = el('label', '', '地点名称');
+        var nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.id = 'fc-chat-loc-edit-name';
+        nameInput.value = m.name || '';
+        nameInput.placeholder = '例如：星海广场南门、街角咖啡馆';
+
+        var addrLabel = el('label', '', '详细地址');
+        var addrInput = document.createElement('input');
+        addrInput.type = 'text';
+        addrInput.id = 'fc-chat-loc-edit-addr';
+        addrInput.value = m.address || '';
+        addrInput.placeholder = '例如：滨海大道 88 号近地铁 B 口';
 
         var actions = el('div', 'fc-chat-sheet-actions');
         var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
         cancelBtn.type = 'button';
         cancelBtn.onclick = closeSheet;
 
-        var saveBtn = el('button', 'fc-chat-btn', '保存并显示');
+        var saveBtn = el('button', 'fc-chat-btn', '保存定位');
+        saveBtn.type = 'button';
+        saveBtn.id = 'fc-chat-loc-edit-save';
+        saveBtn.onclick = function() {
+          var nextName = nameInput.value.trim();
+          var nextAddr = addrInput.value.trim();
+          if (!nextName) {
+            notify('请填写地点名称');
+            return;
+          }
+          m.name = nextName;
+          m.address = nextAddr;
+          _selectedIndex = -1;
+          saveState(_state);
+          closeSheet();
+          renderMessages(false);
+          notify('已修改定位信息');
+        };
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(saveBtn);
+        body.appendChild(nameLabel);
+        body.appendChild(nameInput);
+        body.appendChild(addrLabel);
+        body.appendChild(addrInput);
+        body.appendChild(actions);
+        setTimeout(function() { nameInput.focus(); }, 30);
+      });
+    }
+
+    function openRewriteSheet(index) {
+      var m = unwrapWithdrawIfNeeded(index);
+      if (!m || !isEditableTextType(m.type, m)) return;
+      var isVoice = m.type === 'text_voice' || m.type === 'voice';
+      var isImgCard = isTextImageItem(m);
+      openSheet((isVoice ? '改写语音内容' : (isImgCard ? '改写图片内容' : '改写消息')) + '（第 ' + (index + 1) + ' 楼）', function(body) {
+        var label = el('label', '', '修改后的内容（保存后自动取消撤回标记）');
+        var textarea = document.createElement('textarea');
+        textarea.id = 'fc-chat-rewrite-input';
+        textarea.value = m.text || m.content || (isImgCard ? (m.alt || '') : '');
+
+        var actions = el('div', 'fc-chat-sheet-actions');
+        var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
+        cancelBtn.type = 'button';
+        cancelBtn.onclick = closeSheet;
+
+        var saveBtn = el('button', 'fc-chat-btn', '保存并恢复');
         saveBtn.type = 'button';
         saveBtn.id = 'fc-chat-rewrite-save';
         saveBtn.onclick = function() {
@@ -3916,19 +4644,20 @@
             return;
           }
           m.text = nextText;
-          if (isTextVoice) {
+          if (isVoice) {
+            m.type = 'text_voice';
             m.content = nextText;
-            var aApi = aiApi();
-            if (aApi && typeof aApi.estimateTextVoiceDuration === 'function') {
-              m.duration = aApi.estimateTextVoiceDuration(nextText);
-            }
+            m.duration = estimateSimulatedVoiceDuration(nextText);
+          } else if (isImgCard) {
+            m.isTextImage = true;
+            m.alt = nextText;
           }
           m.fakeRecall = false;
           _selectedIndex = -1;
           saveState(_state);
           closeSheet();
           renderMessages(false);
-          notify('消息已改写并重新显示');
+          notify('消息已改写并恢复');
         };
 
         actions.appendChild(cancelBtn);
@@ -3957,119 +4686,8 @@
       notify(nextClaimed ? '已切换为「已领取」状态' : '已切换为「未领取」状态');
     }
 
-    function refreshVoicePlayUI() {
-      var buttons = streamEl.querySelectorAll('.fc-chat-voice');
-      Array.prototype.forEach.call(buttons, function(btn) {
-        var idx = Number(btn.dataset.msgIndex);
-        var active = idx === _playingVoiceIndex;
-        btn.classList.toggle('is-playing', active);
-        var icon = btn.querySelector('.fc-chat-voice-icon');
-        if (icon) icon.textContent = active ? '❚❚' : '▶';
-      });
-    }
-
-    async function playVoiceMessage(index, item) {
-      if (!item) return;
-      if (_playingVoiceIndex === index) {
-        stopVoicePlayback();
-        refreshVoicePlayUI();
-        return;
-      }
-
-      stopVoicePlayback();
-      _playingVoiceIndex = index;
-      refreshVoicePlayUI();
-
-      var audioSrc = item.audio || '';
-      var api = assetsApi();
-      if (!audioSrc && item.assetId && api) {
-        audioSrc = api.getCachedSrc(item.assetId);
-        if (!audioSrc) {
-          try {
-            var record = await api.getAsset(item.assetId);
-            if (_playingVoiceIndex !== index) return;
-            audioSrc = (record && record.src) || '';
-          } catch (_) {
-            audioSrc = '';
-          }
-        }
-      }
-
-      if (audioSrc) {
-        try {
-          var audio = new Audio(audioSrc);
-          _activeAudio = audio;
-          audio.onended = function() {
-            if (_activeAudio === audio) {
-              _activeAudio = null;
-              _playingVoiceIndex = -1;
-              refreshVoicePlayUI();
-            }
-          };
-          audio.onerror = function() {
-            if (_activeAudio === audio) {
-              _activeAudio = null;
-              _playingVoiceIndex = -1;
-              refreshVoicePlayUI();
-            }
-            notify('本地音频播放失败');
-          };
-          await audio.play();
-          return;
-        } catch (_) {
-          _activeAudio = null;
-          _playingVoiceIndex = -1;
-          refreshVoicePlayUI();
-          if (!item.text || !('speechSynthesis' in global)) {
-            notify('音频播放被拦截或格式不支持');
-            return;
-          }
-        }
-      }
-
-      if (item.text && 'speechSynthesis' in global && typeof global.SpeechSynthesisUtterance === 'function') {
-        try {
-          global.speechSynthesis.cancel();
-          var utter = new global.SpeechSynthesisUtterance(item.text);
-          utter.lang = 'zh-CN';
-          utter.onend = function() {
-            if (_playingVoiceIndex === index) {
-              _playingVoiceIndex = -1;
-              refreshVoicePlayUI();
-            }
-          };
-          utter.onerror = function() {
-            if (_playingVoiceIndex === index) {
-              _playingVoiceIndex = -1;
-              refreshVoicePlayUI();
-            }
-          };
-          global.speechSynthesis.speak(utter);
-          notify('正在使用浏览器语音朗读');
-          return;
-        } catch (_) {}
-      }
-
-      _playingVoiceIndex = -1;
-      refreshVoicePlayUI();
-      notify(item.text ? '当前浏览器不支持 speechSynthesis 朗读，可展开查看文字' : '暂无可播放音频');
-    }
-
     function deleteMessageAt(index) {
       if (index < 0 || index >= _state.items.length) return;
-      if (_playingVoiceIndex === index) {
-        stopVoicePlayback();
-      } else if (_playingVoiceIndex > index) {
-        _playingVoiceIndex -= 1;
-      }
-
-      var nextExpanded = Object.create(null);
-      Object.keys(_expandedVoices).forEach(function(key) {
-        var idx = Number(key);
-        if (idx < index) nextExpanded[idx] = _expandedVoices[key];
-        else if (idx > index) nextExpanded[idx - 1] = _expandedVoices[key];
-      });
-      _expandedVoices = nextExpanded;
 
       var nextExpandedTv = Object.create(null);
       Object.keys(_expandedTextVoices).forEach(function(key) {
@@ -4080,6 +4698,7 @@
       _expandedTextVoices = nextExpandedTv;
 
       var removed = _state.items.splice(index, 1)[0];
+      syncWorkItemsFloors(_state.items);
       if (_selectedIndex === index) _selectedIndex = -1;
       else if (_selectedIndex > index) _selectedIndex -= 1;
 
@@ -4118,7 +4737,7 @@
     }
 
     function describeMessageForMenu(rawItem) {
-      if (!rawItem) return { kind: 'unknown', label: '消息', preview: '', isRecalled: false, copyText: '' };
+      if (!rawItem) return { kind: 'unknown', label: '消息', preview: '', isRecalled: false, copyText: '', canRecall: false, canEdit: false, canRewrite: false };
       var item = rawItem;
       var fromWithdraw = false;
       if (rawItem.type === 'withdraw' && rawItem.original) {
@@ -4128,55 +4747,74 @@
         });
         fromWithdraw = true;
       }
+      var recalled = Boolean(item.fakeRecall || fromWithdraw);
       if (item.type === 'text') {
         var txt = String(item.text || '');
         var shortTxt = txt.length > 18 ? (txt.slice(0, 18) + '…') : txt;
-        var recalled = Boolean(item.fakeRecall || fromWithdraw);
         return {
           kind: 'text',
           label: recalled ? '已撤回消息' : '文字消息',
           preview: shortTxt || '(空内容)',
           isRecalled: recalled,
-          copyText: txt
+          copyText: txt,
+          canRecall: true,
+          canEdit: true,
+          canRewrite: true
         };
       }
-      if (item.type === 'text_voice') {
+      if (item.type === 'text_voice' || item.type === 'voice') {
         var tvTxt = String(item.text || item.content || '');
         var shortTv = tvTxt.length > 16 ? (tvTxt.slice(0, 16) + '…') : tvTxt;
-        var tvRecalled = Boolean(item.fakeRecall || fromWithdraw);
         return {
           kind: 'text_voice',
-          label: tvRecalled ? '已撤回文字语音' : '文字语音',
+          label: recalled ? '已撤回语音' : '语音消息',
           preview: (item.duration || '6') + '″' + (shortTv ? (' · ' + shortTv) : ''),
-          isRecalled: tvRecalled,
-          copyText: tvTxt
+          isRecalled: recalled,
+          copyText: tvTxt,
+          canRecall: true,
+          canEdit: true,
+          canRewrite: true
         };
       }
       if (item.type === 'image') {
+        var isTxtImg = isTextImageItem(item);
+        var imgTxt = String(item.text || item.alt || '');
+        var shortImg = imgTxt.length > 18 ? (imgTxt.slice(0, 18) + '…') : imgTxt;
         return {
-          kind: 'image',
-          label: item.isSticker ? '表情包' : '图片消息',
-          preview: item.alt || (item.isSticker ? '表情包' : '本地图片'),
-          isRecalled: false,
-          copyText: ''
+          kind: isTxtImg ? 'text_image' : 'image',
+          label: item.isSticker ? '表情包' : (recalled ? '已撤回图片' : '图片卡片'),
+          preview: shortImg || (item.isSticker ? '表情包' : '图片'),
+          isRecalled: recalled,
+          copyText: isTxtImg ? imgTxt : '',
+          canRecall: true,
+          canEdit: isTxtImg,
+          canRewrite: isTxtImg
         };
       }
-      if (item.type === 'voice') {
+      if (item.type === 'location') {
+        var locSummary = [item.name, item.address].filter(Boolean).join(' · ');
+        var shortLoc = locSummary.length > 20 ? (locSummary.slice(0, 20) + '…') : locSummary;
         return {
-          kind: 'voice',
-          label: '语音消息',
-          preview: (item.duration || '8') + '″',
-          isRecalled: false,
-          copyText: ''
+          kind: 'location',
+          label: recalled ? '已撤回定位' : '定位卡片',
+          preview: shortLoc || '位置分享',
+          isRecalled: recalled,
+          copyText: locSummary,
+          canRecall: true,
+          canEdit: true,
+          canRewrite: false
         };
       }
       if (item.type === 'transfer') {
         return {
           kind: 'transfer',
-          label: '转账卡片',
+          label: recalled ? '已撤回转账' : '转账卡片',
           preview: (item.amount || '0') + (item.note ? (' · ' + item.note) : ''),
-          isRecalled: false,
-          copyText: ''
+          isRecalled: recalled,
+          copyText: '',
+          canRecall: true,
+          canEdit: false,
+          canRewrite: false
         };
       }
       if (item.type === 'call') {
@@ -4184,8 +4822,11 @@
           kind: 'call',
           label: item.video ? '视频通话' : '语音通话',
           preview: item.status || '已接通',
-          isRecalled: false,
-          copyText: ''
+          isRecalled: recalled,
+          copyText: '',
+          canRecall: true,
+          canEdit: false,
+          canRewrite: false
         };
       }
       if (item.type === 'date') {
@@ -4194,7 +4835,10 @@
           label: '日期分隔',
           preview: item.text || '',
           isRecalled: false,
-          copyText: ''
+          copyText: '',
+          canRecall: false,
+          canEdit: false,
+          canRewrite: false
         };
       }
       if (item.type === 'withdraw') {
@@ -4203,15 +4847,21 @@
           label: '撤回提示',
           preview: '撤回记录',
           isRecalled: true,
-          copyText: ''
+          copyText: '',
+          canRecall: false,
+          canEdit: false,
+          canRewrite: false
         };
       }
       return {
         kind: item.type || 'other',
         label: '消息',
         preview: item.text || item.alt || '',
-        isRecalled: false,
-        copyText: ''
+        isRecalled: recalled,
+        copyText: '',
+        canRecall: true,
+        canEdit: false,
+        canRewrite: false
       };
     }
 
@@ -4256,31 +4906,35 @@
       }
     }
 
+    function remapExpandedVoicesByRef(prevItems, nextItems) {
+      var expandedRefs = [];
+      Object.keys(_expandedTextVoices).forEach(function(key) {
+        var idx = Number(key);
+        if (_expandedTextVoices[key] && prevItems[idx]) {
+          expandedRefs.push(prevItems[idx]);
+        }
+      });
+      var nextMap = Object.create(null);
+      for (var i = 0; i < nextItems.length; i++) {
+        if (expandedRefs.indexOf(nextItems[i]) !== -1) {
+          nextMap[i] = true;
+        }
+      }
+      _expandedTextVoices = nextMap;
+    }
+
     function moveMessage(index, delta) {
       var items = Array.isArray(_state && _state.items) ? _state.items : [];
       var target = index + delta;
       if (index < 0 || index >= items.length || target < 0 || target >= items.length) return;
 
+      var prevSnapshot = items.slice();
       var tmp = items[index];
       items[index] = items[target];
       items[target] = tmp;
 
-      var expA = Boolean(_expandedVoices[index]);
-      var expB = Boolean(_expandedVoices[target]);
-      if (expB) _expandedVoices[index] = true;
-      else delete _expandedVoices[index];
-      if (expA) _expandedVoices[target] = true;
-      else delete _expandedVoices[target];
-
-      var expTvA = Boolean(_expandedTextVoices[index]);
-      var expTvB = Boolean(_expandedTextVoices[target]);
-      if (expTvB) _expandedTextVoices[index] = true;
-      else delete _expandedTextVoices[index];
-      if (expTvA) _expandedTextVoices[target] = true;
-      else delete _expandedTextVoices[target];
-
-      if (_playingVoiceIndex === index) _playingVoiceIndex = target;
-      else if (_playingVoiceIndex === target) _playingVoiceIndex = index;
+      syncWorkItemsFloors(items);
+      remapExpandedVoicesByRef(prevSnapshot, items);
 
       if (_selectedIndex === index) _selectedIndex = target;
       else if (_selectedIndex === target) _selectedIndex = index;
@@ -4290,14 +4944,150 @@
       notify(delta < 0 ? '已上移一条消息' : '已下移一条消息');
     }
 
+    function moveMessageToTargetFloor(fromIndex, targetFloor) {
+      var items = Array.isArray(_state && _state.items) ? _state.items : [];
+      var wApi = worksApi();
+      var prevSnapshot = items.slice();
+      var res = null;
+      if (wApi && typeof wApi.moveMessageToFloor === 'function') {
+        res = wApi.moveMessageToFloor(items, fromIndex, targetFloor);
+      } else {
+        var len = items.length;
+        var floorNum = Number(targetFloor);
+        if (!Number.isInteger(fromIndex) || fromIndex < 0 || fromIndex >= len) {
+          res = { ok: false, error: '原消息位置无效' };
+        } else if (!Number.isInteger(floorNum) || floorNum < 1 || floorNum > len) {
+          res = { ok: false, error: '请输入 1～' + len + ' 之间的有效楼层编号' };
+        } else {
+          var nextList = items.slice();
+          var moved = nextList.splice(fromIndex, 1)[0];
+          nextList.splice(floorNum - 1, 0, moved);
+          syncWorkItemsFloors(nextList);
+          res = {
+            ok: true,
+            items: nextList,
+            fromIndex: fromIndex,
+            toIndex: floorNum - 1,
+            fromFloor: fromIndex + 1,
+            toFloor: floorNum
+          };
+        }
+      }
+
+      if (!res || !res.ok) {
+        notify((res && res.error) || '移动楼层失败');
+        return false;
+      }
+
+      _state.items = res.items;
+      remapExpandedVoicesByRef(prevSnapshot, _state.items);
+      _selectedIndex = -1;
+      saveState(_state);
+      renderMessages(false);
+
+      var targetRow = streamEl.querySelector('[data-msg-index="' + res.toIndex + '"]');
+      if (targetRow && typeof targetRow.scrollIntoView === 'function') {
+        try {
+          targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (_) {}
+      }
+
+      if (res.fromFloor === res.toFloor) {
+        notify('消息已在第 ' + res.toFloor + ' 楼');
+      } else {
+        notify('已从第 ' + res.fromFloor + ' 楼移动到第 ' + res.toFloor + ' 楼');
+      }
+      return true;
+    }
+
+    function openMoveToFloorSheet(index) {
+      var items = Array.isArray(_state && _state.items) ? _state.items : [];
+      if (index < 0 || index >= items.length) return;
+      var total = items.length;
+      var currentFloor = index + 1;
+      var meta = describeMessageForMenu(items[index]);
+
+      openSheet('移动到指定楼层', function(body) {
+        var curBox = el('div', 'fc-chat-confirm-preview', '当前位置：第 ' + currentFloor + ' 楼（共 ' + total + ' 楼） · ' + meta.label + (meta.preview ? ('：' + meta.preview) : ''));
+
+        var inputLabel = el('label', '', '目标楼层编号（1～' + total + '）');
+        var floorInput = document.createElement('input');
+        floorInput.type = 'number';
+        floorInput.inputMode = 'numeric';
+        floorInput.min = '1';
+        floorInput.max = String(total);
+        floorInput.step = '1';
+        floorInput.id = 'fc-chat-move-floor-input';
+        floorInput.value = String(currentFloor);
+        floorInput.placeholder = '输入 1～' + total;
+
+        var quickRow = el('div', 'fc-floor-quick-row');
+        var toTopBtn = el('button', 'fc-reply-preset-btn', '移到第 1 楼');
+        toTopBtn.type = 'button';
+        toTopBtn.onclick = function() { floorInput.value = '1'; };
+        var toEndBtn = el('button', 'fc-reply-preset-btn', '移到最末楼（第 ' + total + ' 楼）');
+        toEndBtn.type = 'button';
+        toEndBtn.onclick = function() { floorInput.value = String(total); };
+        quickRow.appendChild(toTopBtn);
+        quickRow.appendChild(toEndBtn);
+
+        var note = el('p', 'fc-chat-sheet-note', '移动后其余消息会自动顺延重新编号，AI 也会按照调整后的最新顺序读取上下文。楼层编号仅在编辑操作时显示，不会展示在聊天界面中。');
+
+        var actions = el('div', 'fc-chat-sheet-actions');
+        var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
+        cancelBtn.type = 'button';
+        cancelBtn.onclick = closeSheet;
+
+        var submitBtn = el('button', 'fc-chat-btn', '确认移动');
+        submitBtn.type = 'button';
+        submitBtn.id = 'fc-chat-move-floor-submit';
+
+        function doMove() {
+          var raw = String(floorInput.value || '').trim();
+          if (!/^\d+$/.test(raw)) {
+            notify('请输入 1～' + total + ' 之间的整数楼层编号');
+            return;
+          }
+          var targetNum = parseInt(raw, 10);
+          if (targetNum < 1 || targetNum > total) {
+            notify('楼层超出范围，请输入 1～' + total);
+            return;
+          }
+          closeSheet();
+          moveMessageToTargetFloor(index, targetNum);
+        }
+
+        submitBtn.onclick = doMove;
+        floorInput.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            doMove();
+          }
+        });
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(submitBtn);
+        body.appendChild(curBox);
+        body.appendChild(inputLabel);
+        body.appendChild(floorInput);
+        body.appendChild(quickRow);
+        body.appendChild(note);
+        body.appendChild(actions);
+        setTimeout(function() {
+          floorInput.focus();
+          floorInput.select();
+        }, 30);
+      });
+    }
+
     function confirmDeleteMessageSheet(index) {
       var items = Array.isArray(_state && _state.items) ? _state.items : [];
       if (index < 0 || index >= items.length) return;
       var meta = describeMessageForMenu(items[index]);
 
-      openSheet('确认删除消息', function(body) {
-        var desc = el('div', 'fc-chat-confirm-preview', meta.label + (meta.preview ? ('：' + meta.preview) : ''));
-        var note = el('p', 'fc-chat-sheet-note', '删除后将从当前作品的聊天记录中移除，此操作无法撤销。');
+      openSheet('确认删除消息（第 ' + (index + 1) + ' 楼）', function(body) {
+        var desc = el('div', 'fc-chat-confirm-preview', '第 ' + (index + 1) + ' 楼 · ' + meta.label + (meta.preview ? ('：' + meta.preview) : ''));
+        var note = el('p', 'fc-chat-sheet-note', '删除后将从当前作品的聊天记录中移除，其余消息楼层顺序将自动更新，此操作无法撤销。');
 
         var actions = el('div', 'fc-chat-sheet-actions');
         var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
@@ -4323,51 +5113,18 @@
 
     function openImageSendSheet() {
       var chosenSide = _sendSide;
-      var pickedFile = null;
-      var pickedDataUrl = '';
 
-      openSheet('发送本地图片', function(body) {
+      openSheet('发送图片卡片', function(body) {
         var sideLabel = el('label', '', '发送身份');
         var sideSelect = buildSideSelect('fc-chat-image-side');
         sideSelect.value = chosenSide;
 
-        var fileLabel = el('label', '', '选择本地图片');
-        var fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = 'image/*';
-        fileInput.id = 'fc-chat-image-file';
+        var contentLabel = el('label', '', '图片画面内容');
+        var contentInput = document.createElement('textarea');
+        contentInput.id = 'fc-chat-image-text';
+        contentInput.placeholder = '填写这张图片拍到了什么（例如：窗外刚下过雨的夜街，路灯在水洼里映出橘黄色光影）';
 
-        var previewWrap = el('div', 'fc-chat-sheet-preview');
-        previewWrap.hidden = true;
-        var previewImg = document.createElement('img');
-        previewImg.alt = '图片预览';
-        previewWrap.appendChild(previewImg);
-
-        fileInput.addEventListener('change', async function() {
-          var file = fileInput.files && fileInput.files[0];
-          if (!file) {
-            pickedFile = null;
-            pickedDataUrl = '';
-            previewWrap.hidden = true;
-            return;
-          }
-          var api = assetsApi();
-          if (!api) return;
-          try {
-            pickedDataUrl = await api.readImageFile(file, 8);
-            pickedFile = file;
-            previewImg.src = pickedDataUrl;
-            previewWrap.hidden = false;
-          } catch (err) {
-            pickedFile = null;
-            pickedDataUrl = '';
-            fileInput.value = '';
-            previewWrap.hidden = true;
-            notify(err && err.message ? err.message : '图片读取失败');
-          }
-        });
-
-        var note = el('p', 'fc-chat-sheet-note', '本地图片将保存在浏览器 IndexedDB 中，刷新后仍可查看。');
+        var note = el('p', 'fc-chat-sheet-note', '发送后将以图片卡片样式呈现，文字显示在图片卡片内部；AI 会将其理解为一张图片及其画面内容。');
 
         var actions = el('div', 'fc-chat-sheet-actions');
         var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
@@ -4377,50 +5134,98 @@
         var submitBtn = el('button', 'fc-chat-btn', '发送图片');
         submitBtn.type = 'button';
         submitBtn.id = 'fc-chat-image-submit';
-        submitBtn.onclick = async function() {
-          if (!pickedDataUrl) {
-            notify('请先选择一张本地图片');
+        submitBtn.onclick = function() {
+          var imgText = contentInput.value.trim();
+          if (!imgText) {
+            notify('请填写图片文字内容');
             return;
           }
-          var api = assetsApi();
-          if (!api) {
-            notify('本地素材存储模块不可用');
-            return;
-          }
-          submitBtn.disabled = true;
-          try {
-            var asset = await api.putAsset({
-              id: api.uid('img_'),
-              name: (pickedFile && pickedFile.name) || '聊天图片',
-              src: pickedDataUrl,
-              kind: 'image'
-            });
-            _state.items.push({
-              type: 'image',
-              side: sideSelect.value === 'left' ? 'left' : 'right',
-              assetId: asset.id,
-              alt: asset.name
-            });
-            saveState(_state);
-            closeSheet();
-            setPanelMode('');
-            renderMessages(true);
-          } catch (err) {
-            notify(err && err.message ? err.message : '图片发送失败');
-          } finally {
-            submitBtn.disabled = false;
-          }
+          appendMessageItem({
+            id: nextChatMessageId(),
+            type: 'image',
+            isTextImage: true,
+            side: sideSelect.value === 'left' ? 'left' : 'right',
+            text: imgText,
+            alt: imgText
+          });
+          saveState(_state);
+          closeSheet();
+          setPanelMode('');
+          renderAiModeBar();
+          renderMessages(true);
         };
 
         actions.appendChild(cancelBtn);
         actions.appendChild(submitBtn);
         body.appendChild(sideLabel);
         body.appendChild(sideSelect);
-        body.appendChild(fileLabel);
-        body.appendChild(fileInput);
-        body.appendChild(previewWrap);
+        body.appendChild(contentLabel);
+        body.appendChild(contentInput);
         body.appendChild(note);
         body.appendChild(actions);
+        setTimeout(function() { contentInput.focus(); }, 30);
+      });
+    }
+
+    function openLocationSheet() {
+      openSheet('发送自定义定位', function(body) {
+        var sideLabel = el('label', '', '发送身份');
+        var sideSelect = buildSideSelect('fc-chat-location-side');
+
+        var nameLabel = el('label', '', '地点名称');
+        var nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.id = 'fc-chat-location-name';
+        nameInput.placeholder = '例如：星海广场南门、老城区转角咖啡馆';
+
+        var addrLabel = el('label', '', '详细地址');
+        var addrInput = document.createElement('input');
+        addrInput.type = 'text';
+        addrInput.id = 'fc-chat-location-address';
+        addrInput.placeholder = '例如：滨海大道 88 号近地铁 2 号线 B 口（选填）';
+
+        var note = el('p', 'fc-chat-sheet-note', '自定义虚构定位卡片，不调用真实定位或地图服务；AI 可直接读取并理解定位地点与详细地址。');
+
+        var actions = el('div', 'fc-chat-sheet-actions');
+        var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
+        cancelBtn.type = 'button';
+        cancelBtn.onclick = closeSheet;
+
+        var submitBtn = el('button', 'fc-chat-btn', '发送定位');
+        submitBtn.type = 'button';
+        submitBtn.id = 'fc-chat-location-submit';
+        submitBtn.onclick = function() {
+          var placeName = nameInput.value.trim();
+          var detailAddr = addrInput.value.trim();
+          if (!placeName) {
+            notify('请填写地点名称');
+            return;
+          }
+          appendMessageItem({
+            id: nextChatMessageId(),
+            type: 'location',
+            side: sideSelect.value === 'left' ? 'left' : 'right',
+            name: placeName,
+            address: detailAddr
+          });
+          saveState(_state);
+          closeSheet();
+          setPanelMode('');
+          renderAiModeBar();
+          renderMessages(true);
+        };
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(submitBtn);
+        body.appendChild(sideLabel);
+        body.appendChild(sideSelect);
+        body.appendChild(nameLabel);
+        body.appendChild(nameInput);
+        body.appendChild(addrLabel);
+        body.appendChild(addrInput);
+        body.appendChild(note);
+        body.appendChild(actions);
+        setTimeout(function() { nameInput.focus(); }, 30);
       });
     }
 
@@ -4468,7 +5273,7 @@
             notify('请输入日期文字');
             return;
           }
-          _state.items.push({ type: 'date', text: val });
+          appendMessageItem({ type: 'date', text: val });
           saveState(_state);
           closeSheet();
           setPanelMode('');
@@ -4550,7 +5355,7 @@
             notify('请输入转账金额');
             return;
           }
-          _state.items.push({
+          appendMessageItem({
             type: 'transfer',
             side: sideSelect.value === 'left' ? 'left' : 'right',
             amount: amt,
@@ -4579,94 +5384,36 @@
     }
 
     function openVoiceSheet() {
-      var pickedFile = null;
-      var pickedAudioData = '';
       var userEditedDuration = false;
 
       openSheet('发送语音消息', function(body) {
         var sideLabel = el('label', '', '发送身份');
         var sideSelect = buildSideSelect('fc-chat-voice-side');
 
-        var modeLabel = el('label', '', '播放方式');
-        var modeSelect = document.createElement('select');
-        modeSelect.id = 'fc-chat-voice-mode';
-        [
-          ['tts', '浏览器朗读语音文字（speechSynthesis）'],
-          ['audio', '导入本地音频文件（IndexedDB 持久保存）']
-        ].forEach(function(pair) {
-          var opt = document.createElement('option');
-          opt.value = pair[0];
-          opt.textContent = pair[1];
-          modeSelect.appendChild(opt);
-        });
-        modeSelect.value = 'tts';
-
         var textLabel = el('label', '', '语音文字内容');
         var textInput = document.createElement('textarea');
         textInput.id = 'fc-chat-voice-text';
-        textInput.placeholder = '输入语音对应的文字内容（用于朗读及在聊天气泡下方展开查看）';
+        textInput.placeholder = '输入这条语音里说的话（点击语音条即可展开查看，再次点击收起）';
 
-        var fileWrap = document.createElement('div');
-        fileWrap.id = 'fc-chat-voice-file-wrap';
-        fileWrap.hidden = true;
-        var fileLabel = el('label', '', '选择本地音频文件');
-        var fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = 'audio/*';
-        fileInput.id = 'fc-chat-voice-file';
-        var fileStatus = el('p', 'fc-chat-sheet-note', '支持 mp3 / wav / m4a / ogg 等音频格式（不超过 12MB），保存在浏览器 IndexedDB 中。');
-        fileWrap.appendChild(fileLabel);
-        fileWrap.appendChild(fileInput);
-        fileWrap.appendChild(fileStatus);
-
-        var durLabel = el('label', '', '语音时长（秒）');
+        var durLabel = el('label', '', '模拟时长（秒）');
         var durInput = document.createElement('input');
         durInput.type = 'text';
         durInput.id = 'fc-chat-voice-duration';
-        durInput.value = '8';
-        durInput.placeholder = '例如 8';
+        durInput.value = '6';
+        durInput.placeholder = '例如 6';
         durInput.addEventListener('input', function() {
           userEditedDuration = true;
         });
 
-        function syncModeUi() {
-          fileWrap.hidden = modeSelect.value !== 'audio';
-        }
-        modeSelect.addEventListener('change', syncModeUi);
-
-        fileInput.addEventListener('change', async function() {
-          var file = fileInput.files && fileInput.files[0];
-          if (!file) {
-            pickedFile = null;
-            pickedAudioData = '';
-            return;
-          }
-          var api = assetsApi();
-          if (!api) return;
-          try {
-            pickedAudioData = await api.readAudioFile(file, 12);
-            pickedFile = file;
-            fileStatus.textContent = '已选择音频：' + file.name;
-            if (!userEditedDuration && typeof global.URL === 'function' && global.URL.createObjectURL) {
-              var objUrl = global.URL.createObjectURL(file);
-              var probe = new Audio(objUrl);
-              probe.addEventListener('loadedmetadata', function() {
-                if (isFinite(probe.duration) && probe.duration > 0 && !userEditedDuration) {
-                  durInput.value = String(Math.max(1, Math.round(probe.duration)));
-                }
-                global.URL.revokeObjectURL(objUrl);
-              }, { once: true });
-              probe.addEventListener('error', function() {
-                global.URL.revokeObjectURL(objUrl);
-              }, { once: true });
-            }
-          } catch (err) {
-            pickedFile = null;
-            pickedAudioData = '';
-            fileInput.value = '';
-            notify(err && err.message ? err.message : '音频读取失败');
+        textInput.addEventListener('input', function() {
+          if (userEditedDuration) return;
+          var txt = textInput.value.trim();
+          if (txt) {
+            durInput.value = String(estimateSimulatedVoiceDuration(txt));
           }
         });
+
+        var note = el('p', 'fc-chat-sheet-note', '保留语音条外观与模拟时长，不播放音频；点击语音条展开文字，再次点击收起。AI 会读取文字并理解这是一条语音消息。');
 
         var actions = el('div', 'fc-chat-sheet-actions');
         var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
@@ -4676,55 +5423,29 @@
         var submitBtn = el('button', 'fc-chat-btn', '发送语音');
         submitBtn.type = 'button';
         submitBtn.id = 'fc-chat-voice-submit';
-        submitBtn.onclick = async function() {
-          var mode = modeSelect.value === 'audio' ? 'audio' : 'tts';
+        submitBtn.onclick = function() {
           var transcript = textInput.value.trim();
-          var durVal = durInput.value.trim().replace(/[^\d]/g, '') || '8';
-
-          if (mode === 'tts' && !transcript) {
+          if (!transcript) {
             notify('请输入语音文字内容');
             return;
           }
-          if (mode === 'audio' && !pickedAudioData) {
-            notify('请先选择一个本地音频文件');
-            return;
-          }
+          var parsedDur = parseInt(durInput.value.trim().replace(/[^\d]/g, ''), 10);
+          var durVal = (isFinite(parsedDur) && parsedDur > 0)
+            ? Math.max(1, Math.min(60, parsedDur))
+            : estimateSimulatedVoiceDuration(transcript);
 
-          var msg = {
-            type: 'voice',
+          appendMessageItem({
+            id: nextChatMessageId(),
+            type: 'text_voice',
             side: sideSelect.value === 'left' ? 'left' : 'right',
-            mode: mode,
             text: transcript,
+            content: transcript,
             duration: durVal
-          };
-
-          if (mode === 'audio') {
-            var api = assetsApi();
-            if (!api) {
-              notify('本地素材存储模块不可用');
-              return;
-            }
-            submitBtn.disabled = true;
-            try {
-              var asset = await api.putAsset({
-                id: api.uid('aud_'),
-                name: (pickedFile && pickedFile.name) || '语音消息',
-                src: pickedAudioData,
-                kind: 'audio'
-              });
-              msg.assetId = asset.id;
-            } catch (err) {
-              submitBtn.disabled = false;
-              notify(err && err.message ? err.message : '音频保存失败');
-              return;
-            }
-            submitBtn.disabled = false;
-          }
-
-          _state.items.push(msg);
+          });
           saveState(_state);
           closeSheet();
           setPanelMode('');
+          renderAiModeBar();
           renderMessages(true);
         };
 
@@ -4732,14 +5453,13 @@
         actions.appendChild(submitBtn);
         body.appendChild(sideLabel);
         body.appendChild(sideSelect);
-        body.appendChild(modeLabel);
-        body.appendChild(modeSelect);
         body.appendChild(textLabel);
         body.appendChild(textInput);
-        body.appendChild(fileWrap);
         body.appendChild(durLabel);
         body.appendChild(durInput);
+        body.appendChild(note);
         body.appendChild(actions);
+        setTimeout(function() { textInput.focus(); }, 30);
       });
     }
 
@@ -4801,7 +5521,7 @@
         submitBtn.onclick = function() {
           var statusVal = statusSelect.value || '已接通';
           var durVal = durInput.value.trim();
-          _state.items.push({
+          appendMessageItem({
             type: 'call',
             side: sideSelect.value === 'left' ? 'left' : 'right',
             video: Boolean(isVideo),
@@ -4834,6 +5554,7 @@
         ['▧', '图片', openImageSendSheet],
         ['♡', '表情包', function() { setPanelMode('emoji'); }],
         ['♫', '语音消息', openVoiceSheet],
+        ['◎', '定位', openLocationSheet],
         ['¥', '转账', openTransferSheet],
         ['☎', '语音通话', function() { openCallSheet(false); }],
         ['▤', '视频通话', function() { openCallSheet(true); }],
@@ -5025,6 +5746,8 @@
         return;
       }
       var isNew = Boolean(opts && opts.isNew);
+      var onSaved = opts && typeof opts.onSaved === 'function' ? opts.onSaved : null;
+      var onCancel = opts && typeof opts.onCancel === 'function' ? opts.onCancel : null;
       var displayName = typeof api.deriveStickerName === 'function'
         ? api.deriveStickerName(sticker.name)
         : (sticker.name || '表情包');
@@ -5079,14 +5802,17 @@
         body.appendChild(el(
           'p',
           'fc-chat-sheet-note',
-          '文字描述与标签仅用于 AI 理解你的表情包和主动挑选发送，聊天页面中只会显示表情包图片。'
+          '保存后将直接关联原图片素材（ID：' + sticker.id + '）。文字描述与标签仅用于 AI 理解你的表情包与自主挑选发送，聊天页面中只会显示表情包图片。'
         ));
 
         var actions = el('div', 'fc-chat-sheet-actions');
-        var cancelBtn = el('button', 'fc-chat-btn alt', '取消');
+        var cancelBtn = el('button', 'fc-chat-btn alt', isNew ? '稍后填写' : '取消');
         cancelBtn.type = 'button';
         cancelBtn.id = 'fc-sticker-edit-cancel';
-        cancelBtn.onclick = closeSheet;
+        cancelBtn.onclick = function() {
+          if (onCancel) onCancel();
+          else closeSheet();
+        };
 
         var saveBtn = el('button', 'fc-chat-btn', '保存');
         saveBtn.type = 'button';
@@ -5106,10 +5832,14 @@
               description: nextDesc,
               tags: nextTags
             });
-            closeSheet();
             notify('表情包信息已保存');
             if (_panelMode === 'emoji') {
               renderStickerPanel();
+            }
+            if (onSaved) {
+              onSaved();
+            } else {
+              closeSheet();
             }
           } catch (err) {
             saveBtn.disabled = false;
@@ -5123,6 +5853,236 @@
       });
     }
 
+    function openBatchStickerMetaSheet(savedAssets) {
+      if (!Array.isArray(savedAssets) || !savedAssets.length) return;
+      var api = assetsApi();
+      if (!api || typeof api.updateStickerMeta !== 'function') return;
+
+      openSheet('补充新导入表情包信息（' + savedAssets.length + ' 个）', function(body) {
+        body.appendChild(el(
+          'p',
+          'fc-chat-sheet-note',
+          '为刚上传的表情包填写名称与文字描述，保存后与原图片素材 ID 关联，供 AI 理解含义并在聊天中自主选用。聊天界面仅显示表情包图片。'
+        ));
+
+        var list = el('div', 'fc-sticker-batch-list');
+        list.id = 'fc-sticker-batch-list';
+        var entries = [];
+
+        savedAssets.forEach(function(asset, idx) {
+          if (!asset || !asset.id) return;
+          var card = el('div', 'fc-sticker-batch-card');
+          card.dataset.stickerId = asset.id;
+
+          var top = el('div', 'fc-sticker-batch-top');
+          var thumb = el('div', 'fc-sticker-manage-thumb');
+          if (asset.src) {
+            var tImg = document.createElement('img');
+            tImg.src = asset.src;
+            tImg.alt = asset.name || '表情包';
+            thumb.appendChild(tImg);
+          } else {
+            thumb.appendChild(el('span', 'fc-sticker-manage-thumb-empty', '图'));
+          }
+
+          var nameInput = document.createElement('input');
+          nameInput.type = 'text';
+          nameInput.className = 'fc-sticker-batch-name';
+          nameInput.maxLength = 40;
+          nameInput.placeholder = '表情包名称';
+          nameInput.value = typeof api.deriveStickerName === 'function'
+            ? api.deriveStickerName(asset.name)
+            : (asset.name || '表情包');
+          nameInput.setAttribute('aria-label', '第 ' + (idx + 1) + ' 个表情包名称');
+
+          top.appendChild(thumb);
+          top.appendChild(nameInput);
+
+          var descInput = document.createElement('textarea');
+          descInput.className = 'fc-sticker-batch-desc';
+          descInput.rows = 2;
+          descInput.maxLength = 300;
+          descInput.placeholder = '文字描述（例如：无语翻白眼，适合吐槽或敷衍时用）';
+          descInput.value = String(asset.description || asset.note || '').trim();
+          descInput.setAttribute('aria-label', '第 ' + (idx + 1) + ' 个表情包文字描述');
+
+          card.appendChild(top);
+          card.appendChild(descInput);
+          list.appendChild(card);
+
+          entries.push({
+            id: asset.id,
+            nameInput: nameInput,
+            descInput: descInput
+          });
+        });
+
+        body.appendChild(list);
+
+        var actions = el('div', 'fc-chat-sheet-actions');
+        var skipBtn = el('button', 'fc-chat-btn alt', '稍后填写');
+        skipBtn.type = 'button';
+        skipBtn.id = 'fc-sticker-batch-skip';
+        skipBtn.onclick = closeSheet;
+
+        var saveAllBtn = el('button', 'fc-chat-btn', '全部保存');
+        saveAllBtn.type = 'button';
+        saveAllBtn.id = 'fc-sticker-batch-save';
+        saveAllBtn.onclick = async function() {
+          saveAllBtn.disabled = true;
+          var okCount = 0;
+          try {
+            for (var i = 0; i < entries.length; i++) {
+              var ent = entries[i];
+              await api.updateStickerMeta(ent.id, {
+                name: ent.nameInput.value.trim() || '表情包',
+                description: ent.descInput.value.trim()
+              });
+              okCount += 1;
+            }
+            closeSheet();
+            notify('已保存 ' + okCount + ' 个表情包的名称与描述');
+            if (_panelMode === 'emoji') {
+              renderStickerPanel();
+            }
+          } catch (err) {
+            saveAllBtn.disabled = false;
+            notify('保存失败：' + ((err && err.message) || '未知错误'));
+          }
+        };
+
+        actions.appendChild(skipBtn);
+        actions.appendChild(saveAllBtn);
+        body.appendChild(actions);
+      });
+    }
+
+    async function openStickerManageSheet() {
+      var api = assetsApi();
+      if (!api || typeof api.listAssets !== 'function') {
+        notify('表情包存储模块不可用');
+        return;
+      }
+      var stickers = [];
+      try {
+        stickers = await api.listAssets('sticker');
+      } catch (err) {
+        notify('读取表情包库失败：' + ((err && err.message) || '未知错误'));
+        return;
+      }
+
+      openSheet('表情包管理（' + stickers.length + '）', function(body) {
+        body.appendChild(el(
+          'p',
+          'fc-chat-sheet-note',
+          '编辑名称与文字描述后会直接关联到原图片素材 ID；AI 在角色互动与剧情生成中会据此理解你发送的表情包并自主选用。聊天窗口中始终只显示表情包图片。'
+        ));
+
+        var list = el('div', 'fc-sticker-manage-list');
+        list.id = 'fc-sticker-manage-list';
+
+        if (!stickers.length) {
+          list.appendChild(el('p', 'fc-chat-empty', '还没有表情包，点击下方「＋ 导入表情包」上传并填写名称与描述'));
+        } else {
+          stickers.forEach(function(sticker) {
+            if (!sticker || !sticker.id) return;
+            var displayName = typeof api.deriveStickerName === 'function'
+              ? api.deriveStickerName(sticker.name)
+              : (sticker.name || '表情包');
+            var descText = String(sticker.description || sticker.note || '').trim();
+            var tags = Array.isArray(sticker.tags) ? sticker.tags.filter(Boolean) : [];
+
+            var row = el('div', 'fc-sticker-manage-item');
+            row.dataset.stickerId = sticker.id;
+
+            var thumb = el('div', 'fc-sticker-manage-thumb');
+            if (sticker.src) {
+              var img = document.createElement('img');
+              img.src = sticker.src;
+              img.alt = displayName;
+              thumb.appendChild(img);
+            } else {
+              thumb.appendChild(el('span', 'fc-sticker-manage-thumb-empty', '无图'));
+            }
+
+            var info = el('div', 'fc-sticker-manage-info');
+            info.appendChild(el('div', 'fc-sticker-manage-name', displayName));
+            var descEl = el(
+              'div',
+              'fc-sticker-manage-desc' + (descText ? '' : ' is-empty'),
+              descText || '未填写文字描述（点击右侧编辑补充，帮助 AI 理解含义）'
+            );
+            info.appendChild(descEl);
+            if (tags.length) {
+              info.appendChild(el('div', 'fc-sticker-manage-tags', '标签：' + tags.join(' / ')));
+            }
+
+            var ops = el('div', 'fc-sticker-manage-ops');
+            var editBtn = el('button', 'fc-sticker-manage-btn', '编辑');
+            editBtn.type = 'button';
+            editBtn.dataset.stickerManageEdit = sticker.id;
+            editBtn.onclick = function() {
+              openStickerEditSheet(sticker, {
+                isNew: false,
+                onSaved: function() {
+                  openStickerManageSheet();
+                },
+                onCancel: function() {
+                  openStickerManageSheet();
+                }
+              });
+            };
+
+            var delBtn = el('button', 'fc-sticker-manage-btn is-del', '删除');
+            delBtn.type = 'button';
+            delBtn.dataset.stickerManageDel = sticker.id;
+            delBtn.onclick = async function() {
+              try {
+                var wApi = worksApi();
+                var allItems = wApi ? wApi.getAllReferencedItems() : (_state.items || []);
+                await api.removeStickerSafely(sticker.id, allItems);
+                notify('已从表情包库移除');
+                if (_panelMode === 'emoji') {
+                  renderStickerPanel();
+                }
+                openStickerManageSheet();
+              } catch (err) {
+                notify('删除表情包失败：' + ((err && err.message) || '未知错误'));
+              }
+            };
+
+            ops.appendChild(editBtn);
+            ops.appendChild(delBtn);
+
+            row.appendChild(thumb);
+            row.appendChild(info);
+            row.appendChild(ops);
+            list.appendChild(row);
+          });
+        }
+
+        body.appendChild(list);
+
+        var actions = el('div', 'fc-chat-sheet-actions');
+        var uploadLabel = document.createElement('label');
+        uploadLabel.className = 'fc-chat-btn';
+        uploadLabel.id = 'fc-sticker-manage-import-btn';
+        uploadLabel.textContent = '＋ 导入表情包';
+        uploadLabel.style.textAlign = 'center';
+        uploadLabel.style.margin = '0';
+        bindStickerPickerTrigger(uploadLabel);
+
+        var closeBtn = el('button', 'fc-chat-btn alt', '关闭');
+        closeBtn.type = 'button';
+        closeBtn.id = 'fc-sticker-manage-close';
+        closeBtn.onclick = closeSheet;
+
+        actions.appendChild(uploadLabel);
+        actions.appendChild(closeBtn);
+        body.appendChild(actions);
+      });
+    }
+
     async function renderStickerPanel() {
       var renderSeq = ++_stickerRenderSeq;
       panelEl.replaceChildren();
@@ -5131,6 +6091,12 @@
       headRow.appendChild(el('span', 'fc-chat-panel-title', '我的表情包'));
 
       var headRight = el('div', 'fc-chat-panel-actions');
+      var manageBtn = el('button', 'fc-chat-panel-action subtle', '管理');
+      manageBtn.type = 'button';
+      manageBtn.id = 'fc-chat-sticker-manage-btn';
+      manageBtn.title = '管理表情包名称与文字描述';
+      manageBtn.onclick = openStickerManageSheet;
+
       var diagBtn = el('button', 'fc-chat-panel-action subtle', '诊断');
       diagBtn.type = 'button';
       diagBtn.id = 'fc-chat-sticker-diag-btn';
@@ -5143,6 +6109,7 @@
       importBtn.textContent = _importingStickers ? '导入中…' : '＋ 导入表情包';
       bindStickerPickerTrigger(importBtn);
 
+      headRight.appendChild(manageBtn);
       headRight.appendChild(diagBtn);
       headRight.appendChild(importBtn);
       headRow.appendChild(headRight);
@@ -5207,13 +6174,14 @@
         var displayName = typeof api.deriveStickerName === 'function'
           ? api.deriveStickerName(sticker.name)
           : (sticker.name || '表情包');
-        var hasDesc = Boolean(String(sticker.description || sticker.note || '').trim());
+        var stickerDesc = String(sticker.description || sticker.note || '').trim();
+        var hasDesc = Boolean(stickerDesc);
 
         var sendTileBtn = el('button', 'fc-chat-sticker-btn');
         sendTileBtn.type = 'button';
         sendTileBtn.setAttribute('aria-label', '发送表情包 ' + displayName);
         if (hasDesc) {
-          sendTileBtn.title = displayName + '：' + String(sticker.description || sticker.note || '').trim();
+          sendTileBtn.title = displayName + '：' + stickerDesc;
         }
 
         if (sticker.src) {
@@ -5230,14 +6198,14 @@
         sendTileBtn.appendChild(el('span', '', displayName));
 
         sendTileBtn.onclick = function() {
-          if (!Array.isArray(_state.items)) _state.items = [];
-          _state.items.push({
+          appendMessageItem({
             id: nextChatMessageId(),
             type: 'image',
             isSticker: true,
             side: _sendSide,
             assetId: sticker.id,
-            alt: displayName
+            alt: displayName,
+            stickerDesc: stickerDesc
           });
           saveState(_state);
           setPanelMode('');
@@ -5313,7 +6281,7 @@
       var added = 0;
       var failed = 0;
       var lastErrorMsg = '';
-      var lastSavedAsset = null;
+      var savedAssets = [];
       try {
         for (var i = 0; i < files.length; i++) {
           var latestDiag = null;
@@ -5344,7 +6312,7 @@
               if (typeof api.updateDiagnosticSaveStatus === 'function') {
                 api.updateDiagnosticSaveStatus(latestDiag, true, savedAsset && savedAsset.id);
               }
-              lastSavedAsset = savedAsset;
+              if (savedAsset) savedAssets.push(savedAsset);
               added += 1;
             } catch (dbErr) {
               if (typeof api.updateDiagnosticSaveStatus === 'function') {
@@ -5368,13 +6336,16 @@
         renderStickerPanel();
       }
 
-      if (added === 1 && failed === 0 && lastSavedAsset) {
+      if (added === 1 && savedAssets.length === 1) {
         notify('已导入表情包，可补充名称与文字描述');
-        openStickerEditSheet(lastSavedAsset, { isNew: true });
-      } else if (added > 0 && failed === 0) {
-        notify('已批量导入 ' + added + ' 个表情包，点击左上角 ✎ 可编辑描述');
-      } else if (added > 0) {
-        notify('已导入 ' + added + ' 个表情包（' + failed + ' 个失败' + (lastErrorMsg ? '：' + lastErrorMsg : '') + '）');
+        openStickerEditSheet(savedAssets[0], { isNew: true });
+      } else if (added > 1 && savedAssets.length > 1) {
+        notify(
+          failed === 0
+            ? ('已导入 ' + added + ' 个表情包，可补充名称与文字描述')
+            : ('已导入 ' + added + ' 个表情包（' + failed + ' 个失败），可补充名称与描述')
+        );
+        openBatchStickerMetaSheet(savedAssets);
       } else {
         notify(lastErrorMsg ? ('导入失败：' + lastErrorMsg) : '导入失败，请确认选择的是支持的图片文件');
       }
@@ -5382,23 +6353,37 @@
 
     function buildInlineControls(index, item) {
       var controls = el('div', 'fc-chat-controls');
-      if (item.type === 'text' || item.type === 'text_voice') {
-        var recallBtn = el('button', 'fc-chat-mini-btn', '撤回');
+      var realItem = (item && item.type === 'withdraw' && item.original) ? item.original : item;
+      var isRecalled = Boolean(item && (item.fakeRecall || item.type === 'withdraw'));
+
+      if (canRecallMessage(realItem)) {
+        var recallBtn = el('button', 'fc-chat-mini-btn', isRecalled ? '恢复' : '撤回');
         recallBtn.type = 'button';
         recallBtn.onclick = function(e) {
           e.stopPropagation();
           toggleRecall(index);
         };
+        controls.appendChild(recallBtn);
+      }
+
+      if (isEditableTextType(realItem.type, realItem)) {
         var rewriteBtn = el('button', 'fc-chat-mini-btn', '改写');
         rewriteBtn.type = 'button';
         rewriteBtn.onclick = function(e) {
           e.stopPropagation();
           openRewriteSheet(index);
         };
-        controls.appendChild(recallBtn);
         controls.appendChild(rewriteBtn);
-      } else if (item.type === 'transfer') {
-        var claimed = isTransferClaimed(item);
+      } else if (realItem.type === 'location') {
+        var editLocBtn = el('button', 'fc-chat-mini-btn', '编辑');
+        editLocBtn.type = 'button';
+        editLocBtn.onclick = function(e) {
+          e.stopPropagation();
+          openEditLocationSheet(index);
+        };
+        controls.appendChild(editLocBtn);
+      } else if (realItem.type === 'transfer') {
+        var claimed = isTransferClaimed(realItem);
         var claimBtn = el('button', 'fc-chat-mini-btn', claimed ? '设为未领取' : '设为已领取');
         claimBtn.type = 'button';
         claimBtn.onclick = function(e) {
@@ -5416,6 +6401,40 @@
       };
       controls.appendChild(delBtn);
       return controls;
+    }
+
+    function buildFakeRecallBadge(index) {
+      var badge = el('div', 'fc-chat-fake-recall');
+      badge.setAttribute('role', 'group');
+      badge.setAttribute('aria-label', '撤回操作');
+
+      var restoreBtn = el('button', 'fc-chat-recall-restore');
+      restoreBtn.type = 'button';
+      restoreBtn.title = '恢复消息';
+      restoreBtn.setAttribute('aria-label', '恢复消息');
+      restoreBtn.innerHTML = '<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M16.2 10a6.2 6.2 0 1 1-1.6-4.15"/><path d="M16.5 3.8v3.1h-3.1"/></svg>';
+      restoreBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleRecall(index);
+      });
+
+      var divider = el('span', 'fc-chat-recall-sep');
+      divider.setAttribute('aria-hidden', 'true');
+
+      var delBtn = el('button', 'fc-chat-recall-del');
+      delBtn.type = 'button';
+      delBtn.title = '删除消息';
+      delBtn.setAttribute('aria-label', '删除消息');
+      delBtn.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></svg>';
+      delBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        deleteMessageAt(index);
+      });
+
+      badge.appendChild(restoreBtn);
+      badge.appendChild(divider);
+      badge.appendChild(delBtn);
+      return badge;
     }
 
     function attachAvatarImg(avatarEl, src, altText) {
@@ -5480,6 +6499,7 @@
       var userAvatarAssetId = (_state && _state.userAvatarAssetId) || '';
       var charAvatarAssetId = (_state && _state.charAvatarAssetId) || '';
 
+      var showBubbleTime = Boolean(_state && _state.timeSettings && _state.timeSettings.showBubbleTime);
       var items = Array.isArray(_state.items) ? _state.items : [];
       var visibleCount = 0;
 
@@ -5487,9 +6507,25 @@
         var item = rawItem;
         if (!item) return;
 
-        // 撤回消息不在聊天界面显示任何气泡或提示文字，底层保留数据供作品管理恢复或改写
-        if (item.fakeRecall || item.type === 'withdraw') {
-          return;
+        var isRecalled = Boolean(item.fakeRecall);
+        if (item.type === 'withdraw') {
+          if (item.original && typeof item.original === 'object') {
+            item = Object.assign({}, item.original, {
+              id: item.id || item.original.id,
+              side: item.side || item.original.side,
+              sentTime: item.sentTime || item.original.sentTime || '',
+              sentTimeFull: item.sentTimeFull || item.original.sentTimeFull || '',
+              fakeRecall: true
+            });
+            isRecalled = true;
+          } else {
+            visibleCount += 1;
+            var legacyTip = el('div', 'fc-chat-recall-tip');
+            legacyTip.dataset.msgIndex = String(index);
+            legacyTip.textContent = item.side === 'right' ? '你撤回了一条消息' : (charDisplayName + '撤回了一条消息');
+            streamEl.appendChild(legacyTip);
+            return;
+          }
         }
         visibleCount += 1;
 
@@ -5513,9 +6549,10 @@
 
         if (!item.id) {
           item.id = nextChatMessageId();
+          if (rawItem && rawItem !== item) rawItem.id = item.id;
         }
         var side = item.side === 'right' ? 'right' : 'left';
-        var row = el('div', 'fc-chat-msg ' + side);
+        var row = el('div', 'fc-chat-msg ' + side + (isRecalled ? ' is-recalled' : ''));
         row.dataset.msgIndex = String(index);
         row.dataset.msgId = String(item.id);
         row.dataset.msgKind = item.type || 'other';
@@ -5541,6 +6578,8 @@
         var body = el('div', 'fc-chat-msgbody');
         body.appendChild(el('div', 'fc-chat-name', roleName));
 
+        var mainBubbleNode = null;
+
         if (item.type === 'transfer') {
           var claimed = isTransferClaimed(item);
           var card = el('button', 'fc-chat-transfer' + (claimed ? ' is-claimed' : ''));
@@ -5557,47 +6596,12 @@
             e.stopPropagation();
             toggleTransferStatus(index);
           });
-          body.appendChild(card);
-        } else if (item.type === 'voice') {
-          var voiceWrap = el('div', 'fc-chat-voice-wrap');
-          var voiceRow = el('div', 'fc-chat-voice-row');
-          var isPlaying = _playingVoiceIndex === index;
-          var voiceBtn = el('button', 'fc-chat-voice' + (isPlaying ? ' is-playing' : ''));
-          voiceBtn.type = 'button';
-          voiceBtn.dataset.msgIndex = String(index);
-          voiceBtn.setAttribute('aria-label', '播放语音消息');
-          voiceBtn.appendChild(el('span', 'fc-chat-voice-icon', isPlaying ? '❚❚' : '▶'));
-          voiceBtn.appendChild(el('span', 'fc-chat-voice-wave', '···'));
-          voiceBtn.appendChild(el('span', 'fc-chat-voice-dur', (item.duration || '8') + '″'));
-          voiceBtn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            playVoiceMessage(index, item);
-          });
-          voiceRow.appendChild(voiceBtn);
-
-          var hasTranscript = Boolean(item.text && String(item.text).trim());
-          var isExpanded = Boolean(_expandedVoices[index]);
-          if (hasTranscript) {
-            var toggleTextBtn = el('button', 'fc-chat-voice-text-btn' + (isExpanded ? ' active' : ''), isExpanded ? '收起文字' : '查看文字');
-            toggleTextBtn.type = 'button';
-            toggleTextBtn.addEventListener('click', function(e) {
-              e.stopPropagation();
-              _expandedVoices[index] = !_expandedVoices[index];
-              renderMessages(false);
-            });
-            voiceRow.appendChild(toggleTextBtn);
-          }
-
-          voiceWrap.appendChild(voiceRow);
-          if (hasTranscript && isExpanded) {
-            voiceWrap.appendChild(el('div', 'fc-chat-voice-transcript', item.text));
-          }
-          body.appendChild(voiceWrap);
-        } else if (item.type === 'text_voice') {
+          mainBubbleNode = card;
+        } else if (item.type === 'text_voice' || item.type === 'voice') {
           var tvText = String(item.text || item.content || '').trim();
-          var tvDur = Number(item.duration) || 6;
+          var tvDur = Number(item.duration) || (item.type === 'voice' ? 8 : 6);
           var isTvExpanded = Boolean(_expandedTextVoices[index]);
-          var tvMinWidth = Math.min(242, Math.max(134, 108 + tvDur * 4));
+          var tvMinWidth = Math.min(238, Math.max(126, 102 + tvDur * 4));
           var tvCard = el('div', 'fc-chat-textvoice' + (isTvExpanded ? ' is-expanded' : ''));
 
           var tvBar = el('button', 'fc-chat-textvoice-bar');
@@ -5605,7 +6609,9 @@
           tvBar.style.minWidth = tvMinWidth + 'px';
           tvBar.setAttribute('aria-expanded', isTvExpanded ? 'true' : 'false');
           tvBar.setAttribute('aria-label', (isTvExpanded ? '收起语音文字' : '展开语音文字') + ' ' + tvDur + '秒');
-          tvBar.appendChild(el('span', 'fc-chat-textvoice-icon', '▶'));
+          var waveIcon = el('span', 'fc-chat-textvoice-icon');
+          waveIcon.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5.5 8.5a2.5 2.5 0 0 1 0 3"/><path d="M8.5 6.2a5.5 5.5 0 0 1 0 7.6"/><path d="M11.6 3.8a8.8 8.8 0 0 1 0 12.4"/></svg>';
+          tvBar.appendChild(waveIcon);
           tvBar.appendChild(el('span', 'fc-chat-textvoice-wave', '··· ···'));
           tvBar.appendChild(el('span', 'fc-chat-textvoice-dur', tvDur + '″'));
           tvBar.addEventListener('click', function(e) {
@@ -5615,21 +6621,13 @@
           });
           tvCard.appendChild(tvBar);
 
-          if (isTvExpanded && tvText) {
+          if (isTvExpanded) {
             var tvBody = el('div', 'fc-chat-textvoice-body');
-            tvBody.appendChild(el('div', 'fc-chat-textvoice-text', tvText));
-            var tvCollapseBtn = el('button', 'fc-chat-textvoice-collapse', '收起');
-            tvCollapseBtn.type = 'button';
-            tvCollapseBtn.addEventListener('click', function(e) {
-              e.stopPropagation();
-              _expandedTextVoices[index] = false;
-              renderMessages(false);
-            });
-            tvBody.appendChild(tvCollapseBtn);
+            tvBody.appendChild(el('div', 'fc-chat-textvoice-text', tvText || '（未填写语音文字）'));
             tvCard.appendChild(tvBody);
           }
 
-          body.appendChild(tvCard);
+          mainBubbleNode = tvCard;
         } else if (item.type === 'call') {
           var statusText = item.status || '已接通';
           var statusCls = '';
@@ -5648,36 +6646,79 @@
             _selectedIndex = _selectedIndex === index ? -1 : index;
             renderMessages(false);
           });
-          body.appendChild(callCard);
-        } else if (item.type === 'image') {
-          var imgBubble = el('div', 'fc-chat-bubble fc-chat-imagebubble' + (item.isSticker ? ' is-sticker' : ''));
-          var directSrc = item.src || (api && item.assetId ? api.getCachedSrc(item.assetId) : '');
-          if (directSrc) {
-            var img = document.createElement('img');
-            img.src = directSrc;
-            img.alt = item.alt || '聊天图片';
-            img.onerror = function() {
-              img.replaceWith(el('div', 'fc-chat-image-placeholder', '图片无法显示'));
-            };
-            img.onclick = function(e) {
-              e.stopPropagation();
-              openLightbox(directSrc, item.alt);
-            };
-            imgBubble.appendChild(img);
-          } else if (item.assetId) {
-            var loadingBox = el('div', 'fc-chat-image-placeholder', '加载中…');
-            imgBubble.appendChild(loadingBox);
-            pendingAssets.push({
-              assetId: item.assetId,
-              alt: item.alt || '图片',
-              holder: loadingBox
-            });
-          } else {
-            imgBubble.appendChild(el('div', 'fc-chat-image-placeholder', item.alt || '图片'));
+          mainBubbleNode = callCard;
+        } else if (item.type === 'location') {
+          var locCard = el('div', 'fc-chat-location');
+          var locHead = el('div', 'fc-chat-loc-info');
+          locHead.appendChild(el('div', 'fc-chat-loc-name', item.name || '位置分享'));
+          if (item.address) {
+            locHead.appendChild(el('div', 'fc-chat-loc-addr', item.address));
           }
-          body.appendChild(imgBubble);
+          locCard.appendChild(locHead);
+
+          var locMap = el('div', 'fc-chat-loc-map');
+          locMap.setAttribute('aria-hidden', 'true');
+          var locPin = el('span', 'fc-chat-loc-pin');
+          locPin.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22" fill="#e65a52"><path d="M12 2C7.86 2 4.5 5.26 4.5 9.3c0 5.15 6.48 11.77 6.76 12.05a1.05 1.05 0 0 0 1.48 0c.28-.28 6.76-6.9 6.76-12.05C19.5 5.26 16.14 2 12 2zm0 10.2a2.9 2.9 0 1 1 0-5.8 2.9 2.9 0 0 1 0 5.8z"/></svg>';
+          locMap.appendChild(locPin);
+          locMap.appendChild(el('span', 'fc-chat-loc-tag', '位置'));
+          locCard.appendChild(locMap);
+
+          locCard.addEventListener('click', function(e) {
+            e.stopPropagation();
+            _selectedIndex = _selectedIndex === index ? -1 : index;
+            renderMessages(false);
+          });
+          mainBubbleNode = locCard;
+        } else if (item.type === 'image') {
+          if (isTextImageItem(item)) {
+            var imgCard = el('div', 'fc-chat-imgcard');
+            var imgCardTop = el('div', 'fc-chat-imgcard-head');
+            var camIcon = el('span', 'fc-chat-imgcard-icon');
+            camIcon.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="15" height="12" rx="2.4"/><circle cx="7.4" cy="8.4" r="1.4"/><path d="M3.5 14l4.1-3.8 2.9 2.7 2.2-2.1 3.8 3.2"/></svg>';
+            imgCardTop.appendChild(camIcon);
+            imgCardTop.appendChild(el('span', 'fc-chat-imgcard-badge', '图片'));
+            imgCard.appendChild(imgCardTop);
+
+            var imgCardFrame = el('div', 'fc-chat-imgcard-body');
+            imgCardFrame.appendChild(el('div', 'fc-chat-imgcard-text', item.text || item.alt || '图片内容'));
+            imgCard.appendChild(imgCardFrame);
+
+            imgCard.addEventListener('click', function(e) {
+              e.stopPropagation();
+              _selectedIndex = _selectedIndex === index ? -1 : index;
+              renderMessages(false);
+            });
+            mainBubbleNode = imgCard;
+          } else {
+            var imgBubble = el('div', 'fc-chat-bubble fc-chat-imagebubble' + (item.isSticker ? ' is-sticker' : ''));
+            var directSrc = item.src || (api && item.assetId ? api.getCachedSrc(item.assetId) : '');
+            if (directSrc) {
+              var img = document.createElement('img');
+              img.src = directSrc;
+              img.alt = item.alt || '聊天图片';
+              img.onerror = function() {
+                img.replaceWith(el('div', 'fc-chat-image-placeholder', '图片无法显示'));
+              };
+              img.onclick = function(e) {
+                e.stopPropagation();
+                openLightbox(directSrc, item.alt);
+              };
+              imgBubble.appendChild(img);
+            } else if (item.assetId) {
+              var loadingBox = el('div', 'fc-chat-image-placeholder', '加载中…');
+              imgBubble.appendChild(loadingBox);
+              pendingAssets.push({
+                assetId: item.assetId,
+                alt: item.alt || '图片',
+                holder: loadingBox
+              });
+            } else {
+              imgBubble.appendChild(el('div', 'fc-chat-image-placeholder', item.alt || '图片'));
+            }
+            mainBubbleNode = imgBubble;
+          }
         } else if (item.type === 'text') {
-          var wrap = el('div', 'fc-chat-bubble-wrap');
           var bubble = el('div', 'fc-chat-bubble');
           bubble.textContent = item.text || '';
 
@@ -5686,17 +6727,46 @@
             _selectedIndex = _selectedIndex === index ? -1 : index;
             renderMessages(false);
           });
-
-          wrap.appendChild(bubble);
-          body.appendChild(wrap);
+          mainBubbleNode = bubble;
         } else {
           var summary = item.text || item.alt || (
-            item.type === 'voice' ? '[语音消息]' :
             item.type === 'call' ? (item.video ? '[视频通话]' : '[语音通话]') :
             item.type === 'video' ? '[视频消息]' : '[消息]'
           );
-          body.appendChild(el('div', 'fc-chat-bubble fc-chat-fallback', summary));
+          mainBubbleNode = el('div', 'fc-chat-bubble fc-chat-fallback', summary);
         }
+
+        var bubbleWrap = el('div', 'fc-chat-bubble-wrap');
+        var sentTimeLabel = String(item.sentTime || (rawItem && rawItem.sentTime) || '').trim();
+        if (!sentTimeLabel) {
+          var fullStr = String(item.sentTimeFull || (rawItem && rawItem.sentTimeFull) || '').trim();
+          var hmMatch = fullStr.match(/(\d{2}:\d{2})/);
+          if (hmMatch) sentTimeLabel = hmMatch[1];
+        }
+        var hasSideMeta = isRecalled || (showBubbleTime && Boolean(sentTimeLabel));
+        if (hasSideMeta) {
+          var sideMeta = el('div', 'fc-chat-side-meta');
+          if (isRecalled) {
+            sideMeta.appendChild(buildFakeRecallBadge(index));
+          }
+          if (showBubbleTime && sentTimeLabel) {
+            var timeEl = el('span', 'fc-chat-bubble-time', sentTimeLabel);
+            timeEl.dataset.sentTime = sentTimeLabel;
+            var fullTip = item.sentTimeFull || (rawItem && rawItem.sentTimeFull) || '';
+            if (fullTip) timeEl.title = fullTip;
+            sideMeta.appendChild(timeEl);
+          }
+          if (side === 'right') {
+            bubbleWrap.appendChild(sideMeta);
+            bubbleWrap.appendChild(mainBubbleNode);
+          } else {
+            bubbleWrap.appendChild(mainBubbleNode);
+            bubbleWrap.appendChild(sideMeta);
+          }
+        } else {
+          bubbleWrap.appendChild(mainBubbleNode);
+        }
+        body.appendChild(bubbleWrap);
 
         if (_state.showTools || _selectedIndex === index) {
           body.appendChild(buildInlineControls(index, item));
@@ -5704,12 +6774,21 @@
 
         row.appendChild(body);
         streamEl.appendChild(row);
+
+        if (isRecalled) {
+          var recallTip = el('div', 'fc-chat-recall-tip');
+          recallTip.dataset.recallForIndex = String(index);
+          recallTip.textContent = side === 'right'
+            ? '你撤回了一条消息'
+            : (charDisplayName + '撤回了一条消息');
+          streamEl.appendChild(recallTip);
+        }
       });
 
       if (visibleCount === 0) {
         var emptyBox = el('div', 'fc-chat-stream-empty');
         emptyBox.appendChild(el('strong', '', '还没有聊天内容'));
-        emptyBox.appendChild(el('span', '', '可以在下方输入文字，或点击 ⊕ 更多工具添加图片、表情包、转账、语音与通话卡片'));
+        emptyBox.appendChild(el('span', '', '可以在下方输入文字，或点击 ⊕ 更多工具添加图片、表情包、语音、定位、转账与通话卡片'));
         streamEl.appendChild(emptyBox);
       }
 
@@ -5809,39 +6888,51 @@
         targetRow.classList.add('fc-msg-hold-active');
       }
 
-      var headText = meta.label + (meta.preview ? (' · ' + meta.preview) : '');
+      var headText = '第 ' + (index + 1) + ' 楼 · ' + meta.label + (meta.preview ? (' · ' + meta.preview) : '');
       ctxMenu.appendChild(el('div', 'fc-ctx-head', headText));
 
       var listEl = el('div', 'fc-ctx-list');
 
-      if (meta.kind === 'text' || meta.kind === 'text_voice') {
+      var hasPrimaryActions = false;
+      if (meta.copyText) {
         listEl.appendChild(buildMenuActionButton({
           action: 'copy',
           icon: '⎘',
           label: '复制',
           onClick: function() { copyMessageText(meta.copyText); }
         }));
+        hasPrimaryActions = true;
+      }
 
+      if (meta.canEdit && !meta.isRecalled) {
+        listEl.appendChild(buildMenuActionButton({
+          action: 'edit',
+          icon: '✎',
+          label: '编辑',
+          onClick: function() { openEditTextSheet(index); }
+        }));
+        hasPrimaryActions = true;
+      }
+
+      if (meta.isRecalled && meta.canRewrite) {
+        listEl.appendChild(buildMenuActionButton({
+          action: 'rewrite',
+          icon: '↻',
+          label: '改写',
+          onClick: function() { openRewriteSheet(index); }
+        }));
+        hasPrimaryActions = true;
+      }
+
+      if (meta.canRecall) {
         if (meta.isRecalled) {
-          listEl.appendChild(buildMenuActionButton({
-            action: 'rewrite',
-            icon: '↻',
-            label: '改写',
-            onClick: function() { openRewriteSheet(index); }
-          }));
           listEl.appendChild(buildMenuActionButton({
             action: 'restore',
             icon: '↺',
-            label: '恢复显示',
+            label: '恢复消息',
             onClick: function() { toggleRecall(index); }
           }));
         } else {
-          listEl.appendChild(buildMenuActionButton({
-            action: 'edit',
-            icon: '✎',
-            label: '编辑',
-            onClick: function() { openEditTextSheet(index); }
-          }));
           listEl.appendChild(buildMenuActionButton({
             action: 'recall',
             icon: '↩',
@@ -5849,9 +6940,20 @@
             onClick: function() { toggleRecall(index); }
           }));
         }
+        hasPrimaryActions = true;
+      }
+
+      if (hasPrimaryActions) {
         listEl.appendChild(el('div', 'fc-ctx-divider'));
       }
 
+      listEl.appendChild(buildMenuActionButton({
+        action: 'moveFloor',
+        icon: '⇅',
+        label: '移动到指定楼层',
+        disabled: items.length <= 1,
+        onClick: function() { openMoveToFloorSheet(index); }
+      }));
       listEl.appendChild(buildMenuActionButton({
         action: 'moveUp',
         icon: '↑',
@@ -6038,14 +7140,12 @@
         if (reqSeq !== _aiRequestSeq || _currentWorkId !== targetWorkId || !document.body.contains(app)) {
           return;
         }
-        if (!Array.isArray(_state.items)) _state.items = [];
         if (Array.isArray(result.messages)) {
           for (var i = 0; i < result.messages.length; i++) {
             var nextMsg = result.messages[i];
-            if (nextMsg && typeof nextMsg === 'object' && !nextMsg.id) {
-              nextMsg.id = nextChatMessageId();
+            if (nextMsg && typeof nextMsg === 'object') {
+              appendMessageItem(nextMsg);
             }
-            _state.items.push(nextMsg);
           }
         }
         saveState(_state);
@@ -6069,9 +7169,8 @@
     function handleSend() {
       var text = input.value.trim();
       if (!text) return;
-      if (!Array.isArray(_state.items)) _state.items = [];
       var sentSide = _sendSide;
-      _state.items.push({
+      appendMessageItem({
         id: nextChatMessageId(),
         type: 'text',
         side: sentSide,
@@ -6207,32 +7306,355 @@
     });
   }
 
-  function stopVoicePlayback() {
-    if (_activeAudio) {
-      try {
-        _activeAudio.onended = null;
-        _activeAudio.onerror = null;
-        _activeAudio.pause();
-      } catch (_) {}
-      _activeAudio = null;
+  function openArchiveReader(container, archiveId, options) {
+    if (!container || !archiveId) return false;
+    var opts = options || {};
+    var onBack = typeof opts.onBack === 'function' ? opts.onBack : function() {};
+    var wApi = worksApi();
+    var archiveData = wApi && typeof wApi.getArchiveData === 'function' ? wApi.getArchiveData(archiveId) : null;
+    if (!archiveData) {
+      notify('未能读取该存档作品，可能已被删除');
+      return false;
     }
-    if ('speechSynthesis' in global && typeof global.speechSynthesis.cancel === 'function') {
-      try {
-        global.speechSynthesis.cancel();
-      } catch (_) {}
+
+    close();
+    container.replaceChildren();
+
+    var app = el('div', 'fc-chat-app fc-archive-reader-app');
+    app.id = 'fc-archive-reader-app';
+
+    var ap = getAppearance(archiveData.appearance);
+    var userTokens = computeBubbleTokens(ap.userBubbleColor);
+    var charTokens = computeBubbleTokens(ap.charBubbleColor);
+    app.style.setProperty('--fc-chat-bg-color', ap.bgColor);
+    app.style.setProperty('--fc-user-bubble-bg', userTokens.bg);
+    app.style.setProperty('--fc-user-bubble-fg', userTokens.fg);
+    app.style.setProperty('--fc-user-bubble-sub', userTokens.sub);
+    app.style.setProperty('--fc-char-bubble-bg', charTokens.bg);
+    app.style.setProperty('--fc-char-bubble-fg', charTokens.fg);
+    app.style.setProperty('--fc-char-bubble-sub', charTokens.sub);
+    if (isDarkHex(ap.bgColor)) {
+      app.classList.add('has-dark-bg');
+      app.style.setProperty('--fc-stream-name-fg', '#e3ebf2');
+    } else {
+      app.style.setProperty('--fc-stream-name-fg', '#4d6172');
     }
-    _playingVoiceIndex = -1;
+
+    var head = el('header', 'fc-chat-head fc-archive-reader-head');
+    var backBtn = el('button', 'fc-works-back');
+    backBtn.type = 'button';
+    backBtn.id = 'fc-archive-reader-back';
+    backBtn.appendChild(el('span', 'fc-works-back-chevron', '‹'));
+    backBtn.appendChild(el('span', '', '存档'));
+    backBtn.onclick = function() {
+      close();
+      container.replaceChildren();
+      onBack();
+    };
+
+    var titleBox = el('div', 'fc-archive-reader-titlebox');
+    titleBox.appendChild(el('b', 'fc-archive-reader-title', archiveData.title || '未命名作品'));
+    titleBox.appendChild(el('span', 'fc-archive-reader-sub', (archiveData.user || '我') + ' × ' + (archiveData.char || '对方') + ' · 已完结 · ' + (archiveData.items ? archiveData.items.length : 0) + ' 条'));
+
+    head.appendChild(backBtn);
+    head.appendChild(titleBox);
+
+    var streamWrap = el('div', 'fc-chat-stream-wrap');
+    var bgLayer = el('div', 'fc-chat-bg-layer');
+    bgLayer.style.backgroundSize = ap.bgImageFit === 'contain' ? 'contain' : 'cover';
+    var streamEl = el('div', 'fc-chat-stream');
+    streamEl.id = 'fc-archive-reader-stream';
+    streamWrap.appendChild(bgLayer);
+    streamWrap.appendChild(streamEl);
+
+    var lightbox = el('div', 'fc-chat-lightbox');
+    var lightboxImg = document.createElement('img');
+    lightboxImg.alt = '图片预览';
+    var lightboxClose = el('button', 'fc-chat-lightbox-close', '×');
+    lightboxClose.type = 'button';
+    lightbox.appendChild(lightboxImg);
+    lightbox.appendChild(lightboxClose);
+    lightbox.addEventListener('click', function(e) {
+      if (e.target === lightbox || e.target === lightboxClose) lightbox.classList.remove('show');
+    });
+
+    var readerExpandedVoices = Object.create(null);
+    var readerResolveSeq = ++_activeResolveSeq;
+    var api = assetsApi();
+
+    if (ap.bgType === 'image' && ap.bgImageAssetId && api) {
+      var cachedBg = api.getCachedSrc(ap.bgImageAssetId);
+      if (cachedBg) {
+        bgLayer.style.backgroundImage = 'url("' + cachedBg + '")';
+        app.classList.add('has-bg-image');
+      } else {
+        api.getAsset(ap.bgImageAssetId).then(function(rec) {
+          if (readerResolveSeq !== _activeResolveSeq || !document.body.contains(app)) return;
+          if (rec && rec.src) {
+            bgLayer.style.backgroundImage = 'url("' + rec.src + '")';
+            app.classList.add('has-bg-image');
+          }
+        }).catch(function() {});
+      }
+    }
+
+    function renderReaderStream() {
+      streamEl.replaceChildren();
+      var pending = [];
+      var seq = ++_activeResolveSeq;
+      var showBubbleTime = Boolean(archiveData.timeSettings && archiveData.timeSettings.showBubbleTime);
+      var userDisplayName = archiveData.user || '我';
+      var charDisplayName = archiveData.char || '对方';
+      var items = Array.isArray(archiveData.items) ? archiveData.items : [];
+
+      if (!items.length) {
+        streamEl.appendChild(el('div', 'fc-chat-empty-hint', '该存档作品暂无聊天消息'));
+        return;
+      }
+
+      items.forEach(function(rawItem, idx) {
+        if (!rawItem) return;
+        var item = rawItem;
+        var isRecalled = Boolean(item.fakeRecall);
+        if (item.type === 'withdraw') {
+          if (item.original && typeof item.original === 'object') {
+            item = Object.assign({}, item.original, {
+              side: item.side || item.original.side,
+              sentTime: item.sentTime || item.original.sentTime || '',
+              sentTimeFull: item.sentTimeFull || item.original.sentTimeFull || '',
+              fakeRecall: true
+            });
+            isRecalled = true;
+          } else {
+            streamEl.appendChild(el('div', 'fc-chat-recall-tip', item.side === 'right' ? '你撤回了一条消息' : (charDisplayName + '撤回了一条消息')));
+            return;
+          }
+        }
+
+        if (item.type === 'date') {
+          var dateRow = el('div', 'fc-chat-date');
+          dateRow.appendChild(el('span', '', item.text || ''));
+          streamEl.appendChild(dateRow);
+          return;
+        }
+
+        var side = item.side === 'right' ? 'right' : 'left';
+        var roleName = side === 'right' ? userDisplayName : charDisplayName;
+        var avatarAssetId = side === 'right' ? (archiveData.userAvatarAssetId || '') : (archiveData.charAvatarAssetId || '');
+        var row = el('div', 'fc-chat-msg ' + side + (isRecalled ? ' is-recalled' : ''));
+        var avatarEl = el('div', 'fc-chat-avatar');
+        if (avatarAssetId) {
+          var avCached = api ? api.getCachedSrc(avatarAssetId) : '';
+          if (avCached) {
+            attachAvatarImg(avatarEl, avCached, roleName + '的头像');
+          } else {
+            pending.push({ kind: 'avatar', assetId: avatarAssetId, avatarEl: avatarEl, alt: roleName + '的头像' });
+          }
+        }
+        row.appendChild(avatarEl);
+
+        var body = el('div', 'fc-chat-msgbody');
+        body.appendChild(el('div', 'fc-chat-name', roleName));
+        var mainNode = null;
+
+        if (item.type === 'transfer') {
+          var claimed = isTransferClaimed(item);
+          var card = el('div', 'fc-chat-transfer' + (claimed ? ' is-claimed' : ''));
+          card.appendChild(el('div', 'fc-chat-transfer-amount', '⇄  ' + (item.amount || '0')));
+          card.appendChild(el('div', 'fc-chat-transfer-label', item.note || '转账'));
+          card.appendChild(document.createElement('hr'));
+          var foot = el('div', 'fc-chat-transfer-foot');
+          foot.appendChild(el('span', '', '转账'));
+          foot.appendChild(el('span', 'fc-chat-transfer-status', claimed ? '已领取' : '未领取'));
+          card.appendChild(foot);
+          mainNode = card;
+        } else if (item.type === 'text_voice' || item.type === 'voice') {
+          var tvText = String(item.text || item.content || '').trim();
+          var tvDur = Number(item.duration) || 6;
+          var expanded = Boolean(readerExpandedVoices[idx]);
+          var tvMinW = Math.min(238, Math.max(126, 102 + tvDur * 4));
+          var tvCard = el('div', 'fc-chat-textvoice' + (expanded ? ' is-expanded' : ''));
+          var tvBar = el('button', 'fc-chat-textvoice-bar');
+          tvBar.type = 'button';
+          tvBar.style.minWidth = tvMinW + 'px';
+          var waveIcon = el('span', 'fc-chat-textvoice-icon');
+          waveIcon.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5.5 8.5a2.5 2.5 0 0 1 0 3"/><path d="M8.5 6.2a5.5 5.5 0 0 1 0 7.6"/><path d="M11.6 3.8a8.8 8.8 0 0 1 0 12.4"/></svg>';
+          tvBar.appendChild(waveIcon);
+          tvBar.appendChild(el('span', 'fc-chat-textvoice-wave', '··· ···'));
+          tvBar.appendChild(el('span', 'fc-chat-textvoice-dur', tvDur + '″'));
+          tvBar.onclick = function() {
+            readerExpandedVoices[idx] = !readerExpandedVoices[idx];
+            renderReaderStream();
+          };
+          tvCard.appendChild(tvBar);
+          if (expanded) {
+            var tvBody = el('div', 'fc-chat-textvoice-body');
+            tvBody.appendChild(el('div', 'fc-chat-textvoice-text', tvText || '（未填写语音文字）'));
+            tvCard.appendChild(tvBody);
+          }
+          mainNode = tvCard;
+        } else if (item.type === 'call') {
+          var callCard = el('div', 'fc-chat-call');
+          callCard.appendChild(el('div', 'fc-chat-call-icon', item.video ? '▣' : '☎'));
+          var callInfo = el('div', 'fc-chat-call-info');
+          callInfo.appendChild(el('div', 'fc-chat-call-title', item.video ? '视频通话' : '语音通话'));
+          callInfo.appendChild(el('div', 'fc-chat-call-meta', (item.status || '已接通') + (item.duration ? (' · ' + item.duration) : '')));
+          callCard.appendChild(callInfo);
+          mainNode = callCard;
+        } else if (item.type === 'location') {
+          var locCard = el('div', 'fc-chat-location');
+          var locHead = el('div', 'fc-chat-loc-info');
+          locHead.appendChild(el('div', 'fc-chat-loc-name', item.name || '位置分享'));
+          if (item.address) locHead.appendChild(el('div', 'fc-chat-loc-addr', item.address));
+          locCard.appendChild(locHead);
+          var locMap = el('div', 'fc-chat-loc-map');
+          var locPin = el('span', 'fc-chat-loc-pin');
+          locPin.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22" fill="#e65a52"><path d="M12 2C7.86 2 4.5 5.26 4.5 9.3c0 5.15 6.48 11.77 6.76 12.05a1.05 1.05 0 0 0 1.48 0c.28-.28 6.76-6.9 6.76-12.05C19.5 5.26 16.14 2 12 2zm0 10.2a2.9 2.9 0 1 1 0-5.8 2.9 2.9 0 0 1 0 5.8z"/></svg>';
+          locMap.appendChild(locPin);
+          locMap.appendChild(el('span', 'fc-chat-loc-tag', '位置'));
+          locCard.appendChild(locMap);
+          mainNode = locCard;
+        } else if (item.type === 'image') {
+          if (isTextImageItem(item)) {
+            var imgCard = el('div', 'fc-chat-imgcard');
+            var imgTop = el('div', 'fc-chat-imgcard-head');
+            imgTop.appendChild(el('span', 'fc-chat-imgcard-badge', '图片'));
+            imgCard.appendChild(imgTop);
+            var imgBody = el('div', 'fc-chat-imgcard-body');
+            imgBody.appendChild(el('div', 'fc-chat-imgcard-text', item.text || item.alt || '图片内容'));
+            imgCard.appendChild(imgBody);
+            mainNode = imgCard;
+          } else {
+            var imgBubble = el('div', 'fc-chat-bubble fc-chat-imagebubble' + (item.isSticker ? ' is-sticker' : ''));
+            var dSrc = item.src || (api && item.assetId ? api.getCachedSrc(item.assetId) : '');
+            if (dSrc) {
+              var img = document.createElement('img');
+              img.src = dSrc;
+              img.alt = item.alt || '图片';
+              img.onclick = function() {
+                lightboxImg.src = dSrc;
+                lightbox.classList.add('show');
+              };
+              imgBubble.appendChild(img);
+            } else if (item.assetId) {
+              var loading = el('div', 'fc-chat-image-placeholder', '加载中…');
+              imgBubble.appendChild(loading);
+              pending.push({ kind: 'img', assetId: item.assetId, alt: item.alt || '图片', holder: loading });
+            } else {
+              imgBubble.appendChild(el('div', 'fc-chat-image-placeholder', item.alt || '图片'));
+            }
+            mainNode = imgBubble;
+          }
+        } else {
+          mainNode = el('div', 'fc-chat-bubble', item.text || item.alt || '[消息]');
+        }
+
+        var bubbleWrap = el('div', 'fc-chat-bubble-wrap');
+        var sentTimeLabel = String(item.sentTime || rawItem.sentTime || '').trim();
+        if (!sentTimeLabel) {
+          var fullStr = String(item.sentTimeFull || rawItem.sentTimeFull || '').trim();
+          var hm = fullStr.match(/(\d{2}:\d{2})/);
+          if (hm) sentTimeLabel = hm[1];
+        }
+        var hasSideMeta = isRecalled || (showBubbleTime && Boolean(sentTimeLabel));
+        if (hasSideMeta) {
+          var sideMeta = el('div', 'fc-chat-side-meta');
+          if (isRecalled) {
+            var badge = el('div', 'fc-fake-recall-capsule is-readonly');
+            badge.appendChild(el('span', 'fc-fake-recall-btn is-restore', '↻'));
+            badge.appendChild(el('span', 'fc-fake-recall-btn is-delete', '✕'));
+            sideMeta.appendChild(badge);
+          }
+          if (showBubbleTime && sentTimeLabel) {
+            sideMeta.appendChild(el('span', 'fc-chat-bubble-time', sentTimeLabel));
+          }
+          if (side === 'right') {
+            bubbleWrap.appendChild(sideMeta);
+            bubbleWrap.appendChild(mainNode);
+          } else {
+            bubbleWrap.appendChild(mainNode);
+            bubbleWrap.appendChild(sideMeta);
+          }
+        } else {
+          bubbleWrap.appendChild(mainNode);
+        }
+
+        body.appendChild(bubbleWrap);
+        row.appendChild(body);
+        streamEl.appendChild(row);
+
+        if (isRecalled) {
+          streamEl.appendChild(el('div', 'fc-chat-recall-tip', side === 'right' ? '你撤回了一条消息' : (charDisplayName + '撤回了一条消息')));
+        }
+      });
+
+      if (pending.length && api) {
+        pending.forEach(function(task) {
+          api.getAsset(task.assetId).then(function(rec) {
+            if (seq !== _activeResolveSeq || !document.body.contains(app)) return;
+            if (!rec || !rec.src) return;
+            if (task.kind === 'avatar') {
+              attachAvatarImg(task.avatarEl, rec.src, task.alt);
+            } else if (task.holder && task.holder.parentNode) {
+              var im = document.createElement('img');
+              im.src = rec.src;
+              im.alt = task.alt;
+              im.onclick = function() {
+                lightboxImg.src = rec.src;
+                lightbox.classList.add('show');
+              };
+              task.holder.replaceWith(im);
+            }
+          }).catch(function() {});
+        });
+      }
+    }
+
+    var actionBar = el('footer', 'fc-archive-reader-bar');
+    var forwardBtn = el('button', 'fc-chat-btn', '转发给微信联系人');
+    forwardBtn.type = 'button';
+    forwardBtn.id = 'fc-archive-reader-forward-btn';
+    forwardBtn.onclick = function() {
+      var exApi = global.FanCommunityExport;
+      if (!exApi || typeof exApi.openForwardToWechatSheet !== 'function') {
+        notify('微信转发模块未就绪');
+        return;
+      }
+      exApi.openForwardToWechatSheet(archiveData, app, notify);
+    };
+
+    var exportBtn = el('button', 'fc-chat-btn alt', '导出 HTML / PNG');
+    exportBtn.type = 'button';
+    exportBtn.id = 'fc-archive-reader-export-btn';
+    exportBtn.onclick = function() {
+      var exApi = global.FanCommunityExport;
+      if (!exApi || typeof exApi.openExportWorkSheet !== 'function') {
+        notify('导出模块未就绪');
+        return;
+      }
+      exApi.openExportWorkSheet(archiveData, app, notify);
+    };
+
+    actionBar.appendChild(forwardBtn);
+    actionBar.appendChild(exportBtn);
+
+    app.appendChild(head);
+    app.appendChild(streamWrap);
+    app.appendChild(actionBar);
+    app.appendChild(lightbox);
+    container.appendChild(app);
+    renderReaderStream();
+    return true;
   }
 
   function close() {
+    clearSettingsClockTimer();
     _activeResolveSeq += 1;
     _stickerRenderSeq += 1;
     _aiRequestSeq += 1;
     _aiBusy = false;
     _aiErrorText = '';
     _aiLastTrigger = null;
-    stopVoicePlayback();
-    _expandedVoices = Object.create(null);
     _expandedTextVoices = Object.create(null);
     if (typeof _cleanupDoc === 'function') {
       _cleanupDoc();
@@ -6249,6 +7671,7 @@
     open: open,
     openWorksList: renderWorksListView,
     openWorkChat: openWorkChat,
+    openArchiveReader: openArchiveReader,
     close: close
   };
 })(window);

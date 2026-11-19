@@ -108,13 +108,10 @@
           '<section class="fc-view" data-fc-view="archive" hidden>' +
             '<div class="fc-page-heading">' +
               '<small>MY STORY ARCHIVE</small>' +
-              '<h2>故事存档</h2>' +
-              '<p>为当前社区创作保存一个快照，随时回来继续写。</p>' +
+              '<h2>作品存档</h2>' +
+              '<p>已完结的同好社区作品会自动收录于此，随时点击阅读全文、转发给微信联系人或导出保存。</p>' +
             '</div>' +
-            '<div class="fc-panel-card">' +
-              '<h3>本地存档管理</h3>' +
-              '<p>存档与导入导出功能将在后续任务中接入。</p>' +
-            '</div>' +
+            '<div id="fc-archive-list-host"></div>' +
           '</section>' +
 
           '<section class="fc-view" data-fc-view="settings" hidden>' +
@@ -157,6 +154,246 @@
       '</div>';
   }
 
+  function formatArchiveTime(ts) {
+    var n = Number(ts);
+    if (!n || !Number.isFinite(n)) return '';
+    var d = new Date(n);
+    if (Number.isNaN(d.getTime())) return '';
+    var pad = function(x) { return String(x).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function openArchiveDeleteConfirm(page, archiveMeta, onDeleted) {
+    var old = page.querySelector('#fc-archive-del-back');
+    if (old) old.remove();
+
+    var back = document.createElement('div');
+    back.id = 'fc-archive-del-back';
+    back.className = 'fc-ext-sheet-back show';
+
+    var sheet = document.createElement('section');
+    sheet.className = 'fc-ext-sheet';
+
+    var head = document.createElement('div');
+    head.className = 'fc-ext-sheet-head';
+    var h3 = document.createElement('h3');
+    h3.textContent = '确认删除存档';
+    head.appendChild(h3);
+
+    var preview = document.createElement('div');
+    preview.className = 'fc-forward-work-pill';
+    var strong = document.createElement('strong');
+    strong.textContent = '《' + (archiveMeta.title || '未命名作品') + '》';
+    var sub = document.createElement('span');
+    sub.textContent = (archiveMeta.user || '我') + ' × ' + (archiveMeta.char || '对方') + ' · 共 ' + (archiveMeta.messageCount || 0) + ' 条消息';
+    preview.appendChild(strong);
+    preview.appendChild(sub);
+
+    var note = document.createElement('p');
+    note.className = 'fc-ext-sheet-note';
+    note.textContent = '删除后将从此存档列表中移除该完结快照，且无法恢复，确定要继续吗？';
+
+    var acts = document.createElement('div');
+    acts.className = 'fc-ext-sheet-actions';
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'fc-ext-btn alt';
+    cancelBtn.textContent = '取消';
+    cancelBtn.onclick = function() { back.remove(); };
+
+    var confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'fc-ext-btn fc-ext-btn-danger';
+    confirmBtn.id = 'fc-archive-delete-confirm';
+    confirmBtn.textContent = '确认删除';
+    confirmBtn.onclick = function() {
+      var wApi = global.FanCommunityWorks;
+      if (!wApi || typeof wApi.deleteArchive !== 'function') {
+        notify('存档模块未就绪');
+        return;
+      }
+      var res = wApi.deleteArchive(archiveMeta.archiveId);
+      if (!res.ok) {
+        notify(res.error || '删除存档失败');
+        return;
+      }
+      var aApi = global.FanCommunityAssets;
+      if (aApi && typeof aApi.deleteAsset === 'function' && Array.isArray(res.orphanedAssetIds)) {
+        res.orphanedAssetIds.forEach(function(id) {
+          aApi.deleteAsset(id).catch(function() {});
+        });
+      }
+      back.remove();
+      notify('已删除存档《' + (archiveMeta.title || '未命名作品') + '》');
+      if (typeof onDeleted === 'function') onDeleted();
+    };
+
+    acts.appendChild(cancelBtn);
+    acts.appendChild(confirmBtn);
+    sheet.appendChild(head);
+    sheet.appendChild(preview);
+    sheet.appendChild(note);
+    sheet.appendChild(acts);
+    back.appendChild(sheet);
+    back.addEventListener('click', function(e) {
+      if (e.target === back) back.remove();
+    });
+    page.appendChild(back);
+  }
+
+  function renderArchiveView(page) {
+    if (!page) return;
+    var host = page.querySelector('#fc-archive-list-host');
+    if (!host) return;
+    host.replaceChildren();
+
+    var wApi = global.FanCommunityWorks;
+    var listRes = (wApi && typeof wApi.listArchives === 'function')
+      ? wApi.listArchives()
+      : { ok: true, archives: [] };
+    var archives = Array.isArray(listRes.archives) ? listRes.archives : [];
+
+    var countRow = document.createElement('div');
+    countRow.className = 'fc-archive-summary-bar';
+    countRow.innerHTML = '<span>已收录完结作品</span><strong>共 ' + archives.length + ' 部</strong>';
+    host.appendChild(countRow);
+
+    if (!archives.length) {
+      var emptyCard = document.createElement('div');
+      emptyCard.className = 'fc-panel-card fc-archive-empty';
+      emptyCard.innerHTML =
+        '<h3>暂无完结作品存档</h3>' +
+        '<p>进入「捡手机文学」任意作品，打开右上角菜单 →「捡手机设置」点击「完结作品」，即可自动收录完整聊天内容到这里。</p>';
+      host.appendChild(emptyCard);
+      return;
+    }
+
+    var listEl = document.createElement('div');
+    listEl.className = 'fc-archive-list';
+    listEl.id = 'fc-archive-list';
+
+    archives.forEach(function(arch) {
+      var card = document.createElement('article');
+      card.className = 'fc-archive-card';
+      card.dataset.archiveId = arch.archiveId;
+
+      var mainBtn = document.createElement('button');
+      mainBtn.type = 'button';
+      mainBtn.className = 'fc-archive-card-main';
+      mainBtn.dataset.archiveOpen = arch.archiveId;
+
+      var topRow = document.createElement('div');
+      topRow.className = 'fc-archive-card-top';
+      var catTag = document.createElement('span');
+      catTag.className = 'fc-archive-cat-tag';
+      catTag.textContent = arch.categoryLabel || '捡手机文学';
+      var doneTag = document.createElement('span');
+      doneTag.className = 'fc-archive-done-tag';
+      doneTag.textContent = '已完结';
+      topRow.appendChild(catTag);
+      topRow.appendChild(doneTag);
+
+      var titleEl = document.createElement('h3');
+      titleEl.className = 'fc-archive-card-title';
+      titleEl.textContent = arch.title || '未命名作品';
+
+      var metaEl = document.createElement('div');
+      metaEl.className = 'fc-archive-card-meta';
+      metaEl.textContent = (arch.user || '我') + ' × ' + (arch.char || '对方') + ' · ' + (arch.messageCount || 0) + ' 条 · 完结于 ' + formatArchiveTime(arch.completedAt || arch.archivedAt);
+
+      mainBtn.appendChild(topRow);
+      mainBtn.appendChild(titleEl);
+      mainBtn.appendChild(metaEl);
+
+      if (arch.excerpt) {
+        var excerptEl = document.createElement('p');
+        excerptEl.className = 'fc-archive-card-excerpt';
+        excerptEl.textContent = arch.excerpt;
+        mainBtn.appendChild(excerptEl);
+      }
+
+      mainBtn.onclick = function() {
+        if (typeof page._fcOpenArchiveReader === 'function') {
+          page._fcOpenArchiveReader(arch.archiveId);
+        }
+      };
+
+      var ops = document.createElement('div');
+      ops.className = 'fc-archive-card-ops';
+
+      var readBtn = document.createElement('button');
+      readBtn.type = 'button';
+      readBtn.className = 'fc-archive-op-btn primary';
+      readBtn.textContent = '阅读全文';
+      readBtn.onclick = function() {
+        if (typeof page._fcOpenArchiveReader === 'function') {
+          page._fcOpenArchiveReader(arch.archiveId);
+        }
+      };
+
+      var forwardBtn = document.createElement('button');
+      forwardBtn.type = 'button';
+      forwardBtn.className = 'fc-archive-op-btn';
+      forwardBtn.dataset.archiveForward = arch.archiveId;
+      forwardBtn.textContent = '转发';
+      forwardBtn.onclick = function() {
+        var exApi = global.FanCommunityExport;
+        var fullData = wApi && typeof wApi.getArchiveData === 'function' ? wApi.getArchiveData(arch.archiveId) : null;
+        if (!fullData) {
+          notify('未能读取存档内容');
+          return;
+        }
+        if (!exApi || typeof exApi.openForwardToWechatSheet !== 'function') {
+          notify('微信转发模块未就绪');
+          return;
+        }
+        exApi.openForwardToWechatSheet(fullData, page, notify);
+      };
+
+      var exportBtn = document.createElement('button');
+      exportBtn.type = 'button';
+      exportBtn.className = 'fc-archive-op-btn';
+      exportBtn.dataset.archiveExport = arch.archiveId;
+      exportBtn.textContent = '导出';
+      exportBtn.onclick = function() {
+        var exApi = global.FanCommunityExport;
+        var fullData = wApi && typeof wApi.getArchiveData === 'function' ? wApi.getArchiveData(arch.archiveId) : null;
+        if (!fullData) {
+          notify('未能读取存档内容');
+          return;
+        }
+        if (!exApi || typeof exApi.openExportWorkSheet !== 'function') {
+          notify('导出模块未就绪');
+          return;
+        }
+        exApi.openExportWorkSheet(fullData, page, notify);
+      };
+
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'fc-archive-op-btn danger';
+      delBtn.dataset.archiveDelete = arch.archiveId;
+      delBtn.textContent = '删除';
+      delBtn.onclick = function() {
+        openArchiveDeleteConfirm(page, arch, function() {
+          renderArchiveView(page);
+        });
+      };
+
+      ops.appendChild(readBtn);
+      ops.appendChild(forwardBtn);
+      ops.appendChild(exportBtn);
+      ops.appendChild(delBtn);
+
+      card.appendChild(mainBtn);
+      card.appendChild(ops);
+      listEl.appendChild(card);
+    });
+
+    host.appendChild(listEl);
+  }
+
   function updateSettingsStats(page) {
     if (!page) return;
     var badge = page.querySelector('#fc-persona-count-badge');
@@ -197,6 +434,8 @@
     });
     if (tab === 'settings') {
       updateSettingsStats(page);
+    } else if (tab === 'archive') {
+      renderArchiveView(page);
     }
     var scroller = page.querySelector('#fc-main-scroll');
     if (scroller) scroller.scrollTop = 0;
@@ -237,7 +476,21 @@
       if (subviewHost) subviewHost.hidden = true;
       if (homeShell) homeShell.hidden = false;
       updateSettingsStats(page);
+      if (_activeTab === 'archive') {
+        renderArchiveView(page);
+      }
     }
+
+    page._fcOpenArchiveReader = function(archiveId) {
+      if (_isClosing || !archiveId) return;
+      if (global.FanCommunityChat && typeof global.FanCommunityChat.openArchiveReader === 'function' && subviewHost && homeShell) {
+        homeShell.hidden = true;
+        subviewHost.hidden = false;
+        global.FanCommunityChat.openArchiveReader(subviewHost, archiveId, { onBack: showHomeFromSubview });
+        return;
+      }
+      notify('存档阅读模块加载中，请稍后再试');
+    };
 
     var personaLibBtn = page.querySelector('#fc-open-persona-lib-btn');
     if (personaLibBtn) {
