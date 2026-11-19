@@ -686,8 +686,39 @@
   var _achFilter = 'all';     // all | origin | study | habit | main | growth | special
   var _journalFilter = 'all'; // all | quest | level_up | milestone | habit | note | memento_card
 
+  var _lgIsClosing = false;
+  var _lgCloseShieldTimer = 0;
+  var LG_CLOSE_SHIELD_ID = 'lg-close-shield';
+
+  function clearLgCloseShield() {
+    if (_lgCloseShieldTimer) {
+      clearTimeout(_lgCloseShieldTimer);
+      _lgCloseShieldTimer = 0;
+    }
+    var oldShield = document.getElementById(LG_CLOSE_SHIELD_ID);
+    if (oldShield) oldShield.remove();
+  }
+
+  function mountLgCloseShield() {
+    clearLgCloseShield();
+    var host = document.getElementById('app') || document.body;
+    if (!host) return;
+    var shield = document.createElement('div');
+    shield.id = LG_CLOSE_SHIELD_ID;
+    shield.className = 'lg-close-shield';
+    shield.setAttribute('aria-hidden', 'true');
+    shield.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    host.appendChild(shield);
+    _lgCloseShieldTimer = setTimeout(clearLgCloseShield, 360);
+  }
+
   var LifeGameApp = {
     async open(options) {
+      clearLgCloseShield();
+      _lgIsClosing = false;
       var existing = document.getElementById('life-game-page');
       if (existing) existing.remove();
 
@@ -728,11 +759,21 @@
     },
 
     close() {
+      var el = document.getElementById('life-game-page');
+      if (_lgIsClosing || !el || el.classList.contains('is-closing')) return;
+      _lgIsClosing = true;
+      mountLgCloseShield();
+      if (global.TimeCalendarIntegrations && typeof global.TimeCalendarIntegrations.clearReturnContext === 'function') {
+        try { global.TimeCalendarIntegrations.clearReturnContext(); } catch (_) {}
+      }
       if (global.closePage) {
         try { global.closePage('life-game-page'); } catch (_) {}
+        setTimeout(function() { _lgIsClosing = false; }, 380);
+        return;
       }
-      var el = document.getElementById('life-game-page');
-      if (el) el.remove();
+      clearLgCloseShield();
+      el.remove();
+      _lgIsClosing = false;
     },
 
     async render() {
@@ -752,8 +793,9 @@
       var retCtx = (global.TimeCalendarIntegrations && typeof global.TimeCalendarIntegrations.peekReturnContext === 'function')
         ? global.TimeCalendarIntegrations.peekReturnContext()
         : null;
-      var backLabel = '桌面';
-      if (retCtx && retCtx.fromApp && retCtx.fromApp !== 'life-game') {
+      var hasCaller = !!(retCtx && retCtx.fromApp && retCtx.fromApp !== 'life-game');
+      var backLabel = '';
+      if (hasCaller) {
         if (retCtx.fromApp === 'time-calendar') backLabel = '返回日历';
         else if (retCtx.fromApp === 'study-room') backLabel = '返回自习室';
         else if (retCtx.fromApp === 'love-diary') backLabel = '返回恋爱记';
@@ -764,13 +806,15 @@
         // 1. 顶部 Header (与自习室 .sr-header 一致)
         '<header class="lg-header">' +
           '<div class="lg-header-left">' +
-            '<button type="button" class="lg-back-btn" id="lg-btn-back">' +
-              '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
+            (hasCaller
+              ? ('<button type="button" class="lg-back-btn" id="lg-btn-back">' +
+                  '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
+                '</button>')
+              : '') +
+            '<button type="button" class="lg-title-home-btn" id="lg-title-home-btn" aria-label="人生游戏，点击返回桌面" title="点击返回桌面">' +
+              '<span class="lg-icon-mini" aria-hidden="true"><i class="fa-solid fa-gamepad"></i></span>' +
+              '<span class="lg-header-title">人生游戏</span>' +
             '</button>' +
-            '<div class="lg-title-group">' +
-              '<div class="lg-icon-mini"><i class="fa-solid fa-gamepad"></i></div>' +
-              '<div class="lg-header-title">人生游戏</div>' +
-            '</div>' +
           '</div>' +
           '<div class="lg-header-right">' +
             '<button type="button" class="lg-btn-icon-subtle" id="lg-btn-companion-settings" title="多 Char 深度陪伴与主动祝贺设置"><i class="fa-solid fa-user-shield"></i></button>' +
@@ -804,7 +848,15 @@
 
       page.innerHTML = html;
 
-      // 绑定返回桌面或来源应用
+      // 绑定点击标题「人生游戏」返回桌面
+      var titleHomeBtn = page.querySelector('#lg-title-home-btn');
+      if (titleHomeBtn) {
+        titleHomeBtn.onclick = function() {
+          LifeGameApp.close();
+        };
+      }
+
+      // 跨应用来源返回按钮（仅跨应用跳转进入时存在）
       var backBtn = page.querySelector('#lg-btn-back');
       if (backBtn) {
         backBtn.onclick = async function() {

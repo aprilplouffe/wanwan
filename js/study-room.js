@@ -737,7 +737,57 @@
   // ====================================================
   // 页面入口与主容器构建
   // ====================================================
+  var _srIsClosing = false;
+  var _srCloseShieldTimer = 0;
+  var SR_CLOSE_SHIELD_ID = 'sr-close-shield';
+
+  function clearSrCloseShield() {
+    if (_srCloseShieldTimer) {
+      clearTimeout(_srCloseShieldTimer);
+      _srCloseShieldTimer = 0;
+    }
+    var oldShield = document.getElementById(SR_CLOSE_SHIELD_ID);
+    if (oldShield) oldShield.remove();
+  }
+
+  function mountSrCloseShield() {
+    clearSrCloseShield();
+    var host = document.getElementById('app') || document.body;
+    if (!host) return;
+    var shield = document.createElement('div');
+    shield.id = SR_CLOSE_SHIELD_ID;
+    shield.className = 'sr-close-shield';
+    shield.setAttribute('aria-hidden', 'true');
+    shield.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    host.appendChild(shield);
+    _srCloseShieldTimer = setTimeout(clearSrCloseShield, 360);
+  }
+
+  // 安全返回桌面（绝不停止运行中的专注计时器与后台学习状态）
+  function closeStudyRoomToDesktop(container) {
+    var page = container || document.getElementById('study-room-page');
+    if (_srIsClosing || !page || page.classList.contains('is-closing')) return;
+    _srIsClosing = true;
+    mountSrCloseShield();
+    if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.clearReturnContext === 'function') {
+      try { window.TimeCalendarIntegrations.clearReturnContext(); } catch (_) {}
+    }
+    if (window.closePage) {
+      window.closePage('study-room-page');
+      setTimeout(function() { _srIsClosing = false; }, 380);
+      return;
+    }
+    clearSrCloseShield();
+    page.remove();
+    _srIsClosing = false;
+  }
+
   window.showStudyRoomPage = async function(options) {
+    clearSrCloseShield();
+    _srIsClosing = false;
     var existing = document.getElementById('study-room-page');
     if (existing) existing.remove();
 
@@ -796,8 +846,9 @@
     var retCtx = (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function')
       ? window.TimeCalendarIntegrations.peekReturnContext()
       : null;
-    var backLabel = '桌面';
-    if (retCtx && retCtx.fromApp && retCtx.fromApp !== 'study-room') {
+    var hasCaller = !!(retCtx && retCtx.fromApp && retCtx.fromApp !== 'study-room');
+    var backLabel = '';
+    if (hasCaller) {
       if (retCtx.fromApp === 'time-calendar') backLabel = '返回日历';
       else if (retCtx.fromApp === 'life-game') backLabel = '返回人生游戏';
       else if (retCtx.fromApp === 'love-diary') backLabel = '返回恋爱记';
@@ -808,13 +859,15 @@
       // 顶部应用条
       '<div class="sr-header">' +
         '<div class="sr-header-left">' +
-          '<button type="button" class="sr-back-btn" id="sr-btn-back">' +
-            '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
+          (hasCaller
+            ? ('<button type="button" class="sr-back-btn" id="sr-btn-back">' +
+                '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
+              '</button>')
+            : '') +
+          '<button type="button" class="sr-title-home-btn" id="sr-title-home-btn" aria-label="陪伴自习室，点击返回桌面" title="点击返回桌面">' +
+            '<span class="sr-icon-mini" aria-hidden="true"><i class="fa-solid fa-hourglass-half"></i></span>' +
+            '<span class="sr-header-title">陪伴自习室</span>' +
           '</button>' +
-          '<div class="sr-title-group">' +
-            '<div class="sr-icon-mini"><i class="fa-solid fa-hourglass-half"></i></div>' +
-            '<div class="sr-header-title">陪伴自习室</div>' +
-          '</div>' +
         '</div>' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
           '<button type="button" class="pl-btn-secondary" id="sr-quick-mode-badge" style="padding:3px 10px;font-size:11px;">' +
@@ -841,21 +894,28 @@
       // 弹窗挂载点
       '<div id="sr-modal-root"></div>';
 
-    // 绑定返回来源应用或桌面 (绝不停止运行中的专注计时器)
-    container.querySelector('#sr-btn-back').onclick = async function() {
-      if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function') {
-        var curRet = window.TimeCalendarIntegrations.peekReturnContext();
-        if (curRet && curRet.fromApp && curRet.fromApp !== 'study-room') {
-          var handled = await window.TimeCalendarIntegrations.returnToCaller('study-room');
-          if (handled) return;
+    // 绑定点击顶部标题「陪伴自习室」返回桌面（绝不停止运行中的专注计时器）
+    var titleHomeBtn = container.querySelector('#sr-title-home-btn');
+    if (titleHomeBtn) {
+      titleHomeBtn.onclick = function() {
+        closeStudyRoomToDesktop(container);
+      };
+    }
+
+    // 若由其他 App 跨应用跳转进入，保留返回原应用按钮
+    var callerBackBtn = container.querySelector('#sr-btn-back');
+    if (callerBackBtn) {
+      callerBackBtn.onclick = async function() {
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function') {
+          var curRet = window.TimeCalendarIntegrations.peekReturnContext();
+          if (curRet && curRet.fromApp && curRet.fromApp !== 'study-room') {
+            var handled = await window.TimeCalendarIntegrations.returnToCaller('study-room');
+            if (handled) return;
+          }
         }
-      }
-      if (window.closePage) {
-        window.closePage('study-room-page');
-      } else {
-        container.remove();
-      }
-    };
+        closeStudyRoomToDesktop(container);
+      };
+    }
 
     // 绑定 Tab 切换
     container.querySelectorAll('.sr-tab-item').forEach(function(item) {
@@ -2047,7 +2107,13 @@
           allowGeneralKnowledge: _state.allowGeneralKnowledge,
           docFilter: _state.docFilter,
           chapterFilter: _state.chapterFilter,
-          chatHistory: _state.assistantMessages.slice(-6)
+          chatHistory: _state.assistantMessages.slice(-6),
+          studyContext: {
+            studyMode: _state.studyMode,
+            timerPhase: _state.timerPhase,
+            taskType: _state.taskType,
+            taskName: _state.taskName
+          }
         });
 
         pendingBubble.remove();

@@ -8630,8 +8630,8 @@
         return;
       }
 
-      // 1. 返回小手机桌面
-      if (target.closest('#wx-back-home')) {
+      // 1. 点击标题「万象镜」返回小手机桌面
+      if (target.closest('#wx-title-home-btn')) {
         close();
         return;
       }
@@ -10350,6 +10350,8 @@
     _runtime.confirm.data = null;
     _runtime.pendingAction = false;
     _runtime.aiLoading = false;
+    clearWxCloseShield();
+    _wxIsClosing = false;
     _runtime.timeMenuOpen = false;
 
     var periodInfo = getActivePeriodInfo(_runtime.timePreview);
@@ -10363,13 +10365,10 @@
       '<div class="wx-shell">' +
         '<header class="wx-topbar">' +
           '<div class="wx-topbar-left">' +
-            '<button type="button" class="wx-icon-btn" id="wx-back-home" aria-label="返回桌面">' +
-              '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+            '<button type="button" class="wx-title-home-btn" id="wx-title-home-btn" aria-label="万象镜，点击返回桌面" title="点击返回桌面">' +
+              '<span class="wx-title">万象镜</span>' +
+              '<span class="wx-subtitle" id="wx-topbar-sub">' + esc((periodInfo.isPreview ? '预览 · ' : '') + periodInfo.period.label + ' · 镜中小镇') + '</span>' +
             '</button>' +
-            '<div class="wx-title-group">' +
-              '<div class="wx-title">万象镜</div>' +
-              '<div class="wx-subtitle" id="wx-topbar-sub">' + esc((periodInfo.isPreview ? '预览 · ' : '') + periodInfo.period.label + ' · 镜中小镇') + '</div>' +
-            '</div>' +
           '</div>' +
           '<div class="wx-topbar-right">' +
             '<div class="wx-coin-readout wx-num" title="共享金币余额"><i class="fa-solid fa-coins"></i><span id="wx-coin-val">' + (eco.coins || 0) + '</span></div>' +
@@ -10510,7 +10509,41 @@
     return page;
   }
 
+  var _wxIsClosing = false;
+  var _wxCloseShieldTimer = 0;
+  var WX_CLOSE_SHIELD_ID = 'wx-close-shield';
+
+  function clearWxCloseShield() {
+    if (_wxCloseShieldTimer) {
+      clearTimeout(_wxCloseShieldTimer);
+      _wxCloseShieldTimer = 0;
+    }
+    var oldShield = global.document.getElementById(WX_CLOSE_SHIELD_ID);
+    if (oldShield) oldShield.remove();
+  }
+
+  function mountWxCloseShield() {
+    clearWxCloseShield();
+    var host = global.document.getElementById('app') || global.document.body;
+    if (!host) return;
+    var shield = global.document.createElement('div');
+    shield.id = WX_CLOSE_SHIELD_ID;
+    shield.className = 'wx-close-shield';
+    shield.setAttribute('aria-hidden', 'true');
+    shield.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    host.appendChild(shield);
+    _wxCloseShieldTimer = setTimeout(clearWxCloseShield, 360);
+  }
+
   function close(fromPopstate) {
+    if (_wxIsClosing) return;
+    var p = _runtime.pageEl || global.document.getElementById(PAGE_ID);
+    if (!p && !fromPopstate) return;
+    _wxIsClosing = true;
+    mountWxCloseShield();
     clearTypewriter();
     clearCarouselAnimTimer();
     _aiSeq++;
@@ -10525,7 +10558,6 @@
       });
     }
     unbindNavigationGuards();
-    var p = _runtime.pageEl;
     _runtime.pageEl = null;
     _runtime.sheet.open = false;
     _runtime.sheet.canStepBack = false;
@@ -10538,10 +10570,14 @@
     if (p) {
       if (typeof global.closePage === 'function') {
         global.closePage(PAGE_ID);
+        setTimeout(function() { _wxIsClosing = false; }, 380);
+        return;
       } else {
         p.remove();
       }
     }
+    clearWxCloseShield();
+    _wxIsClosing = false;
   }
 
   var WanxiangMirror = {

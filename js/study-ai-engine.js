@@ -777,7 +777,7 @@
       var answer = '';
       var cfg = await this.getAiConfig();
 
-      var studyContext = params.studyContext || null;
+      var studyContext = (opts && opts.studyContext) || null;
 
       if (cfg && cfg.url && cfg.key) {
         answer = await this.callCloudAi(query, mode, companionChar, evidenceText, isFallback, cfg, chatHistory, docFilter, chapterFilter, studyContext);

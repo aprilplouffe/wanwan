@@ -649,8 +649,9 @@
     var retCtx = (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function')
       ? window.TimeCalendarIntegrations.peekReturnContext()
       : null;
-    var backLabel = '桌面';
-    if (retCtx && retCtx.fromApp && retCtx.fromApp !== 'time-calendar') {
+    var hasCaller = !!(retCtx && retCtx.fromApp && retCtx.fromApp !== 'time-calendar');
+    var backLabel = '';
+    if (hasCaller) {
       if (retCtx.fromApp === 'study-room') backLabel = '返回自习室';
       else if (retCtx.fromApp === 'life-game') backLabel = '返回人生游戏';
       else if (retCtx.fromApp === 'love-diary') backLabel = '返回恋爱记';
@@ -660,13 +661,15 @@
     page.innerHTML =
       '<div class="tc-header">' +
         '<div class="tc-header-left">' +
-          '<button class="tc-back-btn" id="tc-btn-back">' +
-            '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
+          (hasCaller
+            ? ('<button type="button" class="tc-back-btn" id="tc-btn-back">' +
+                '<i class="fa fa-angle-left"></i><span>' + backLabel + '</span>' +
+              '</button>')
+            : '') +
+          '<button type="button" class="tc-title-home-btn" id="tc-title-home-btn" aria-label="时光日历，点击返回桌面" title="点击返回桌面">' +
+            '<span class="tc-icon-mini" aria-hidden="true"><i class="fa-solid fa-calendar-days"></i></span>' +
+            '<span class="tc-title-text">时光日历</span>' +
           '</button>' +
-          '<div class="tc-title-group">' +
-            '<div class="tc-icon-mini"><i class="fa-solid fa-calendar-days"></i></div>' +
-            '<div class="tc-title-text">时光日历</div>' +
-          '</div>' +
         '</div>' +
         '<div class="tc-header-right">' +
           '<div class="tc-char-pill" id="tc-char-selector" title="切换角色与筛选">' +
@@ -713,21 +716,28 @@
   }
 
   function bindShellEvents(page) {
-    // 返回来源应用或桌面生命周期
-    page.querySelector('#tc-btn-back').addEventListener('click', async function() {
-      if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function') {
-        var curRet = window.TimeCalendarIntegrations.peekReturnContext();
-        if (curRet && curRet.fromApp && curRet.fromApp !== 'time-calendar') {
-          var handled = await window.TimeCalendarIntegrations.returnToCaller('time-calendar');
-          if (handled) return;
+    // 点击标题「时光日历」返回桌面
+    var titleHomeBtn = page.querySelector('#tc-title-home-btn');
+    if (titleHomeBtn) {
+      titleHomeBtn.addEventListener('click', function() {
+        closeTimeCalendar();
+      });
+    }
+
+    // 跨应用返回按钮（仅跨应用跳转进入时渲染）
+    var callerBackBtn = page.querySelector('#tc-btn-back');
+    if (callerBackBtn) {
+      callerBackBtn.addEventListener('click', async function() {
+        if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.peekReturnContext === 'function') {
+          var curRet = window.TimeCalendarIntegrations.peekReturnContext();
+          if (curRet && curRet.fromApp && curRet.fromApp !== 'time-calendar') {
+            var handled = await window.TimeCalendarIntegrations.returnToCaller('time-calendar');
+            if (handled) return;
+          }
         }
-      }
-      if (window.closePage) {
-        window.closePage('time-calendar-page');
-      } else {
-        page.remove();
-      }
-    });
+        closeTimeCalendar();
+      });
+    }
 
     // 底部 4 入口 Tab 切换
     page.querySelectorAll('.tc-tab-btn').forEach(function(btn) {
@@ -4492,6 +4502,8 @@
     }
 
     // 2. 渲染 UI
+    clearTcCloseShield();
+    _tcIsClosing = false;
     var page = renderAppShell();
     renderActiveTabContent();
 
@@ -4517,13 +4529,51 @@
     }
   }
 
+  var _tcIsClosing = false;
+  var _tcCloseShieldTimer = 0;
+  var TC_CLOSE_SHIELD_ID = 'tc-close-shield';
+
+  function clearTcCloseShield() {
+    if (_tcCloseShieldTimer) {
+      clearTimeout(_tcCloseShieldTimer);
+      _tcCloseShieldTimer = 0;
+    }
+    var oldShield = document.getElementById(TC_CLOSE_SHIELD_ID);
+    if (oldShield) oldShield.remove();
+  }
+
+  function mountTcCloseShield() {
+    clearTcCloseShield();
+    var host = document.getElementById('app') || document.body;
+    if (!host) return;
+    var shield = document.createElement('div');
+    shield.id = TC_CLOSE_SHIELD_ID;
+    shield.className = 'tc-close-shield';
+    shield.setAttribute('aria-hidden', 'true');
+    shield.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    host.appendChild(shield);
+    _tcCloseShieldTimer = setTimeout(clearTcCloseShield, 360);
+  }
+
   function closeTimeCalendar() {
+    var existing = document.getElementById('time-calendar-page');
+    if (_tcIsClosing || !existing || existing.classList.contains('is-closing')) return;
+    _tcIsClosing = true;
+    mountTcCloseShield();
+    if (window.TimeCalendarIntegrations && typeof window.TimeCalendarIntegrations.clearReturnContext === 'function') {
+      try { window.TimeCalendarIntegrations.clearReturnContext(); } catch (_) {}
+    }
     if (window.closePage) {
       window.closePage('time-calendar-page');
-    } else {
-      var existing = document.getElementById('time-calendar-page');
-      if (existing) existing.remove();
+      setTimeout(function() { _tcIsClosing = false; }, 380);
+      return;
     }
+    clearTcCloseShield();
+    existing.remove();
+    _tcIsClosing = false;
   }
 
   // ===== 12. 挂载到全局，确保占位函数无法覆盖 =====

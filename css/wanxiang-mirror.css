@@ -145,7 +145,53 @@
   min-width: 0;
 }
 
+.wx-title-home-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 2px 8px 2px 4px;
+  margin-left: -4px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--wx-text);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 150ms ease, transform 150ms var(--wx-anim-ease), opacity 150ms ease;
+}
+
+@media (hover: hover) {
+  .wx-title-home-btn:hover {
+    background: var(--wx-accent-soft);
+  }
+}
+
+.wx-title-home-btn:active {
+  background: var(--wx-accent-soft);
+  opacity: 0.78;
+  transform: scale(0.98);
+}
+
+.wx-title-home-btn:focus-visible {
+  outline: 2px solid var(--wx-accent);
+  outline-offset: 2px;
+}
+
+.wx-close-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: transparent;
+}
+
 .wx-title {
+  display: block;
+  max-width: 100%;
   font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -157,6 +203,8 @@
 }
 
 .wx-subtitle {
+  display: block;
+  max-width: 100%;
   font-size: 11px;
   color: var(--wx-sub);
   white-space: nowrap;

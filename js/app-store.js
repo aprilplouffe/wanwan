@@ -776,8 +776,54 @@
     }
   }
 
+  var _asIsClosing = false;
+  var _asCloseShieldTimer = 0;
+  var AS_CLOSE_SHIELD_ID = 'as-close-shield';
+
+  function clearAsCloseShield() {
+    if (_asCloseShieldTimer) {
+      clearTimeout(_asCloseShieldTimer);
+      _asCloseShieldTimer = 0;
+    }
+    var oldShield = document.getElementById(AS_CLOSE_SHIELD_ID);
+    if (oldShield) oldShield.remove();
+  }
+
+  function mountAsCloseShield() {
+    clearAsCloseShield();
+    var host = document.getElementById('app') || document.body;
+    if (!host) return;
+    var shield = document.createElement('div');
+    shield.id = AS_CLOSE_SHIELD_ID;
+    shield.className = 'as-close-shield';
+    shield.setAttribute('aria-hidden', 'true');
+    shield.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    host.appendChild(shield);
+    _asCloseShieldTimer = setTimeout(clearAsCloseShield, 360);
+  }
+
+  function closeAppStoreSafe() {
+    var target = document.getElementById(APP_STORE_PAGE_ID);
+    if (_asIsClosing || !target || target.classList.contains('is-closing')) return;
+    _asIsClosing = true;
+    mountAsCloseShield();
+    if (window.closePage) {
+      window.closePage(APP_STORE_PAGE_ID);
+      setTimeout(function() { _asIsClosing = false; }, 380);
+      return;
+    }
+    clearAsCloseShield();
+    target.remove();
+    _asIsClosing = false;
+  }
+
   // ===== 打开应用市场主页面 =====
   window.showAppStorePage = async function() {
+    clearAsCloseShield();
+    _asIsClosing = false;
     var existing = document.getElementById(APP_STORE_PAGE_ID);
     if (existing) existing.remove();
 
@@ -799,11 +845,9 @@
       container.innerHTML =
         '<div class="as-navbar">' +
           '<div class="as-nav-left">' +
-            '<button class="as-back-btn" id="as-back">' +
-              '<i class="fa fa-angle-left" style="font-size:22px;"></i>' +
-              '<span>桌面</span>' +
+            '<button type="button" class="as-title-home-btn" id="as-title-home-btn" aria-label="App Store，点击返回桌面" title="点击返回桌面">' +
+              '<span class="as-title">App Store</span>' +
             '</button>' +
-            '<span class="as-title">App Store</span>' +
           '</div>' +
           '<div class="as-nav-right">' +
             '<img class="as-user-avatar" src="' + (user.avatar || 'img/ava-00.jpg') + '" alt="">' +
@@ -827,10 +871,13 @@
 
         '<div class="as-content-area" id="as-tab-content"></div>';
 
-      // 绑定返回
-      container.querySelector('#as-back').addEventListener('click', function() {
-        window.closePage(APP_STORE_PAGE_ID);
-      });
+      // 绑定点击标题「App Store」返回桌面
+      var titleHomeBtn = container.querySelector('#as-title-home-btn');
+      if (titleHomeBtn) {
+        titleHomeBtn.addEventListener('click', function() {
+          closeAppStoreSafe();
+        });
+      }
 
       // 绑定分段标签切换
       container.querySelectorAll('.as-seg-tab').forEach(function(btn) {

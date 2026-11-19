@@ -56,6 +56,46 @@
   gap: 8px;
 }
 
+.pl-app-title-home-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 8px 4px 2px;
+  margin-left: -2px;
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: background var(--dur) var(--ease), opacity 140ms ease, transform 140ms ease;
+}
+
+@media (hover: hover) {
+  .pl-app-title-home-btn:hover {
+    background: var(--c-surface-2);
+  }
+}
+
+.pl-app-title-home-btn:active {
+  opacity: 0.72;
+  transform: scale(0.98);
+}
+
+.pl-app-title-home-btn:focus-visible {
+  outline: 2px solid var(--c-text);
+  outline-offset: 2px;
+}
+
+.pl-app-close-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: transparent;
+}
+
 .pl-app-icon-mini {
   width: 24px;
   height: 24px;

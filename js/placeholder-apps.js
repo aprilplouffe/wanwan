@@ -283,7 +283,53 @@
   // ====================================================
   // 3. 我们的家 & 弯弯农场 (联动共享经济服务与农场数据)
   // ====================================================
+  var _ourHomeIsClosing = false;
+  var _ourHomeCloseShieldTimer = 0;
+  var OUR_HOME_CLOSE_SHIELD_ID = 'our-home-close-shield';
+
+  function clearOurHomeCloseShield() {
+    if (_ourHomeCloseShieldTimer) {
+      clearTimeout(_ourHomeCloseShieldTimer);
+      _ourHomeCloseShieldTimer = 0;
+    }
+    var oldShield = document.getElementById(OUR_HOME_CLOSE_SHIELD_ID);
+    if (oldShield) oldShield.remove();
+  }
+
+  function mountOurHomeCloseShield() {
+    clearOurHomeCloseShield();
+    var host = document.getElementById('app') || document.body;
+    if (!host) return;
+    var shield = document.createElement('div');
+    shield.id = OUR_HOME_CLOSE_SHIELD_ID;
+    shield.className = 'pl-app-close-shield';
+    shield.setAttribute('aria-hidden', 'true');
+    shield.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    host.appendChild(shield);
+    _ourHomeCloseShieldTimer = setTimeout(clearOurHomeCloseShield, 360);
+  }
+
+  function closeOurHomePageSafe(page) {
+    var target = page || document.getElementById('our-home-page');
+    if (_ourHomeIsClosing || !target || target.classList.contains('is-closing')) return;
+    _ourHomeIsClosing = true;
+    mountOurHomeCloseShield();
+    if (window.closePage) {
+      window.closePage('our-home-page');
+      setTimeout(function() { _ourHomeIsClosing = false; }, 380);
+      return;
+    }
+    clearOurHomeCloseShield();
+    target.remove();
+    _ourHomeIsClosing = false;
+  }
+
   async function showOurHomePage() {
+    clearOurHomeCloseShield();
+    _ourHomeIsClosing = false;
     var existing = document.getElementById('our-home-page');
     if (existing) existing.remove();
 
@@ -303,13 +349,10 @@
         '<div class="pl-app-container">' +
           '<div class="pl-app-header">' +
             '<div class="pl-app-header-left">' +
-              '<button class="pl-app-back-btn">' +
-                '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+              '<button type="button" class="pl-app-title-home-btn" id="our-home-title-btn" aria-label="我们的家，点击返回桌面" title="点击返回桌面">' +
+                '<span class="pl-app-icon-mini" aria-hidden="true"><i class="fa-solid fa-house-chimney-heart"></i></span>' +
+                '<span class="pl-app-header-title">我们的家</span>' +
               '</button>' +
-              '<div class="pl-app-title-group">' +
-                '<div class="pl-app-icon-mini"><i class="fa-solid fa-house-chimney-heart"></i></div>' +
-                '<div class="pl-app-header-title">我们的家</div>' +
-              '</div>' +
             '</div>' +
             '<div class="pl-app-header-right">' +
               '<span class="pl-app-badge-dev" id="home-comfort-badge"><i class="fa-solid fa-couch"></i> 舒适度 ' + (100 + placedFurniture.length * 25) + '</span>' +
@@ -483,8 +526,13 @@
       html += '</div></div>';
       page.innerHTML = html;
 
-      // 重新绑定事件
-      bindBackBtn(page, 'our-home-page');
+      // 重新绑定点击标题「我们的家」返回桌面
+      var titleHomeBtn = page.querySelector('#our-home-title-btn');
+      if (titleHomeBtn) {
+        titleHomeBtn.onclick = function() {
+          closeOurHomePageSafe(page);
+        };
+      }
 
       // 切换标签
       page.querySelectorAll('.shared-tab-btn').forEach(function(btn) {

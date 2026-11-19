@@ -68,6 +68,47 @@
   background: var(--c-surface-2);
 }
 
+.ah-title-home-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 10px 0 4px;
+  margin-left: -4px;
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  min-width: 0;
+  transition: background 140ms ease, opacity 140ms ease, transform 140ms ease;
+}
+
+@media (hover: hover) {
+  .ah-title-home-btn:hover {
+    background: var(--c-surface-2);
+  }
+}
+
+.ah-title-home-btn:active {
+  background: var(--c-surface-2);
+  opacity: 0.72;
+  transform: scale(0.98);
+}
+
+.ah-title-home-btn:focus-visible {
+  outline: 2px solid var(--c-text);
+  outline-offset: 2px;
+}
+
+.ah-close-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: transparent;
+}
+
 .ah-title {
   font-size: 17px;
   font-weight: 700;

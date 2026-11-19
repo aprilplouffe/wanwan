@@ -50,6 +50,42 @@
   opacity: 0.6;
 }
 
+.as-title-home-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 4px 10px 4px 4px;
+  margin-left: -4px;
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: background var(--dur) var(--ease), opacity 140ms ease, transform 140ms ease;
+}
+@media (hover: hover) {
+  .as-title-home-btn:hover {
+    background: var(--c-surface-2);
+  }
+}
+.as-title-home-btn:active {
+  opacity: 0.68;
+  transform: scale(0.98);
+}
+.as-title-home-btn:focus-visible {
+  outline: 2px solid var(--c-text);
+  outline-offset: 2px;
+}
+
+.as-close-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: transparent;
+}
+
 .as-title {
   font-size: 18px;
   font-weight: 700;

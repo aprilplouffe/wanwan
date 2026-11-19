@@ -69,6 +69,46 @@
   gap: 8px;
 }
 
+.lg-title-home-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 8px 4px 2px;
+  margin-left: -2px;
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: background var(--dur), opacity 140ms ease, transform 140ms ease;
+}
+
+@media (hover: hover) {
+  .lg-title-home-btn:hover {
+    background: var(--c-surface-2);
+  }
+}
+
+.lg-title-home-btn:active {
+  opacity: 0.72;
+  transform: scale(0.98);
+}
+
+.lg-title-home-btn:focus-visible {
+  outline: 2px solid var(--c-text);
+  outline-offset: 2px;
+}
+
+.lg-close-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: transparent;
+}
+
 .lg-icon-mini {
   width: 28px;
   height: 28px;

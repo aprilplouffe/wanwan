@@ -3712,10 +3712,9 @@
       '<div class="ah-shell">' +
         '<header class="ah-header">' +
           '<div class="ah-header-left">' +
-            '<button type="button" class="ah-back-btn" id="ah-btn-back" aria-label="返回桌面">' +
-              '<i class="fa fa-angle-left"></i><span>返回</span>' +
+            '<button type="button" class="ah-title-home-btn" id="ah-title-home-btn" aria-label="成就馆，点击返回桌面" title="点击返回桌面">' +
+              '<span class="ah-title">成就馆</span>' +
             '</button>' +
-            '<div class="ah-title">成就馆</div>' +
           '</div>' +
           '<div class="ah-header-right">' +
             '<div class="ah-score-chip" title="成就馆累计荣誉点">' +
@@ -4306,16 +4305,59 @@
     });
   }
 
+  var _ahIsClosing = false;
+  var _ahCloseShieldTimer = 0;
+  var AH_CLOSE_SHIELD_ID = 'ah-close-shield';
+
+  function clearAhCloseShield() {
+    if (_ahCloseShieldTimer) {
+      clearTimeout(_ahCloseShieldTimer);
+      _ahCloseShieldTimer = 0;
+    }
+    var oldShield = document.getElementById(AH_CLOSE_SHIELD_ID);
+    if (oldShield) oldShield.remove();
+  }
+
+  function mountAhCloseShield() {
+    clearAhCloseShield();
+    var host = document.getElementById('app') || document.body;
+    if (!host) return;
+    var shield = document.createElement('div');
+    shield.id = AH_CLOSE_SHIELD_ID;
+    shield.className = 'ah-close-shield';
+    shield.setAttribute('aria-hidden', 'true');
+    shield.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    host.appendChild(shield);
+    _ahCloseShieldTimer = setTimeout(clearAhCloseShield, 360);
+  }
+
+  function closeAchievementHallPage(pageEl) {
+    var target = pageEl || document.getElementById('achievement-page');
+    if (_ahIsClosing || !target || target.classList.contains('is-closing')) return;
+    _ahIsClosing = true;
+    mountAhCloseShield();
+    closeModalByClass('ah-sheet-backdrop');
+    closeModalByClass('ah-live-toast');
+    if (global.closePage) {
+      global.closePage('achievement-page');
+      setTimeout(function() { _ahIsClosing = false; }, 380);
+      return;
+    }
+    clearAhCloseShield();
+    target.remove();
+    _ahIsClosing = false;
+  }
+
   function bindPageEvents(pageEl) {
     var comp = global.AchievementHallCompanion;
 
-    var backBtn = pageEl.querySelector('#ah-btn-back');
-    if (backBtn) {
-      backBtn.onclick = function() {
-        closeModalByClass('ah-sheet-backdrop');
-        closeModalByClass('ah-live-toast');
-        if (global.closePage) global.closePage('achievement-page');
-        else pageEl.remove();
+    var titleHomeBtn = pageEl.querySelector('#ah-title-home-btn');
+    if (titleHomeBtn) {
+      titleHomeBtn.onclick = function() {
+        closeAchievementHallPage(pageEl);
       };
     }
 
@@ -4482,6 +4524,8 @@
 
       initAutoSync();
 
+      clearAhCloseShield();
+      _ahIsClosing = false;
       closeModalByClass('ah-sheet-backdrop');
       var existing = document.getElementById('achievement-page');
       if (existing) existing.remove();
