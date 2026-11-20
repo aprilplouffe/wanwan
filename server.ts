@@ -610,10 +610,24 @@ async function startServer(): Promise<void> {
   if (!isProd) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa"
+      server: { middlewareMode: true, allowedHosts: true, hmr: false, ws: false },
+      appType: "custom"
+    });
+    const indexPath = path.resolve(__dirname, "index.html");
+    app.get(["/", "/index.html"], (_req: Request, res: Response) => {
+      res.sendFile(indexPath);
+    });
+    app.get("/@vite/client", (_req: Request, res: Response) => {
+      res.type("application/javascript").send("export {};\n");
     });
     app.use(vite.middlewares);
+    app.get("/{*splat}", (req: Request, res: Response, next: NextFunction) => {
+      if (req.method !== "GET" || !req.accepts("html")) {
+        next();
+        return;
+      }
+      res.sendFile(indexPath);
+    });
   } else {
     const distDir = path.resolve(__dirname, "dist");
     app.use(express.static(distDir));

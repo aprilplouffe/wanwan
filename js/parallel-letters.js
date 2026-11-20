@@ -43,11 +43,11 @@
       page.innerHTML =
         '<div class="pl-navbar">' +
           '<div class="pl-nav-left">' +
-            '<button class="pl-back-btn" id="pl-main-back">' +
-              '<i class="fa fa-angle-left"></i><span>桌面</span>' +
+            '<button class="pl-back-btn" id="pl-main-back" aria-label="返回">' +
+              '<i class="fa fa-angle-left"></i>' +
             '</button>' +
           '</div>' +
-          '<div class="pl-nav-title">平行来信 · IF剧场</div>' +
+          '<div class="pl-nav-title">平行来信</div>' +
           '<div class="pl-nav-actions">' +
             '<button class="pl-icon-btn" id="pl-nav-audit" title="安全隔离与合规自检"><i class="fa-solid fa-shield-halved"></i></button>' +
             '<button class="pl-icon-btn" id="pl-nav-blindbox" title="命运盲盒"><i class="fa-solid fa-dice"></i></button>' +
