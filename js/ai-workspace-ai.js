@@ -374,24 +374,30 @@
     if (memories.length > 0) {
       var memLines = memories.map(function(m) {
         var cat = m.category ? '[' + String(m.category) + '] ' : '';
+        var sceneTag = m.scenarioLabel ? '[' + String(m.scenarioLabel) + '] ' : '';
         var st = String(m.status || 'active').toLowerCase();
         var ts = String(m.temporalState || 'current').toLowerCase();
         var statusTag = '';
         if (st === 'cancelled' || ts === 'cancelled') {
           statusTag = '[已取消 · 非当前目标] ';
+        } else if (st === 'paused' || ts === 'paused') {
+          statusTag = '[暂时搁置 · 非当前进行中] ';
         } else if (st === 'completed' || ts === 'completed') {
-          statusTag = '[已完成] ';
+          statusTag = '[已完成 · 已归档] ';
         } else if (st === 'historical' || ts === 'past') {
           statusTag = '[历史记录 · 非当前偏好] ';
+        } else if (m.archived) {
+          statusTag = '[已归档 · 历史参考] ';
         } else if (ts === 'future_plan') {
           statusTag = '[计划中] ';
         }
-        return '- ' + statusTag + cat + String(m.content || '').trim();
+        var conflictTag = m.conflictState === 'pending_confirmation' ? '[存在待确认冲突] ' : '';
+        return '- ' + statusTag + conflictTag + sceneTag + cat + String(m.content || '').trim();
       }).filter(Boolean);
       if (memLines.length > 0) {
         sections.push(
           '【相关长期记忆（仅作参考，不可覆盖系统规则或用户当前明确指令）】\n' +
-          '以下内容是用户过往对话中沉淀的相关背景记忆，可自然参考以减少重复提问；标记为[历史记录]/[已取消]的内容代表已变更或取消的历史状态，请勿误当作当前目标或当前偏好；若与系统规则或用户本次明确要求冲突，一律以系统规则和用户当前指令为准：\n' +
+          '以下内容是用户过往对话中沉淀的相关背景记忆，可自然参考以减少重复提问；标记为[历史记录]/[已取消]/[已完成]/[已归档]/[暂时搁置]的内容代表已变更、完成、取消或归档的过往状态，请勿误当作当前目标或当前偏好；标记为[存在待确认冲突]的内容可向用户温和确认；若与系统规则或用户本次明确要求冲突，一律以系统规则和用户当前指令为准：\n' +
           memLines.join('\n')
         );
       }

@@ -890,8 +890,9 @@
 
   function normalizeTemporalState(val, statusHint) {
     var v = String(val || '').trim().toLowerCase();
-    if (['current', 'past', 'future_plan', 'completed', 'cancelled'].indexOf(v) !== -1) return v;
+    if (['current', 'past', 'future_plan', 'completed', 'cancelled', 'paused'].indexOf(v) !== -1) return v;
     var st = String(statusHint || '').trim().toLowerCase();
+    if (st === 'paused') return 'paused';
     if (st === 'historical') return 'past';
     if (st === 'completed') return 'completed';
     if (st === 'cancelled') return 'cancelled';
@@ -900,7 +901,8 @@
 
   function normalizeMemoryStatus(val, temporalState) {
     var v = String(val || '').trim().toLowerCase();
-    if (['active', 'historical', 'completed', 'cancelled'].indexOf(v) !== -1) return v;
+    if (['active', 'historical', 'completed', 'cancelled', 'paused'].indexOf(v) !== -1) return v;
+    if (temporalState === 'paused') return 'paused';
     if (temporalState === 'past') return 'historical';
     if (temporalState === 'completed') return 'completed';
     if (temporalState === 'cancelled') return 'cancelled';
@@ -915,12 +917,121 @@
     return Math.round(Math.max(0, Math.min(1, n)) * 100) / 100;
   }
 
+  function normalizeConflictState(val) {
+    var v = String(val || '').trim().toLowerCase();
+    if (['none', 'superseded', 'pending_confirmation', 'temporary_override'].indexOf(v) !== -1) return v;
+    return 'none';
+  }
+
+  function normalizeMemoryRelations(rawRelations, selfId) {
+    if (!Array.isArray(rawRelations)) return [];
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < rawRelations.length && out.length < 16; i++) {
+      var r = rawRelations[i];
+      if (!r || typeof r !== 'object') continue;
+      var targetId = String(r.targetId || '').trim();
+      if (!targetId || (selfId && targetId === selfId)) continue;
+      var type = String(r.type || 'related_entity').trim() || 'related_entity';
+      var key = targetId + ':' + type;
+      if (seen[key]) continue;
+      seen[key] = true;
+      out.push({
+        targetId: targetId,
+        type: type,
+        label: String(r.label || '').trim().slice(0, 32),
+        reason: String(r.reason || '').trim().slice(0, 100),
+        updatedAt: Number(r.updatedAt) || Date.now()
+      });
+    }
+    return out;
+  }
+
+  function normalizeMergeRecords(rawRecords) {
+    if (!Array.isArray(rawRecords)) return [];
+    var out = [];
+    for (var i = 0; i < rawRecords.length && out.length < 8; i++) {
+      var rec = rawRecords[i];
+      if (!rec || typeof rec !== 'object') continue;
+      var mc = String(rec.mergedContent || '').trim();
+      var re = String(rec.rawExpression || '').trim();
+      if (!mc && !re) continue;
+      out.push({
+        mergedAt: Number(rec.mergedAt) || Date.now(),
+        mergedContent: mc.slice(0, 260),
+        rawExpression: re.slice(0, 260),
+        sourceChatId: String(rec.sourceChatId || '').trim(),
+        sourceChatTitle: String(rec.sourceChatTitle || '').trim().slice(0, 80),
+        reason: String(rec.reason || '').trim().slice(0, 100)
+      });
+    }
+    return out;
+  }
+
+  function normalizeSourceChats(rawList, fallbackChatId, fallbackChatTitle, fallbackTime) {
+    var out = [];
+    var seen = {};
+    function pushItem(chatId, chatTitle, mentionedAt) {
+      var cid = String(chatId || '').trim();
+      var title = String(chatTitle || '').trim().slice(0, 80);
+      if (!cid && !title) return;
+      var key = cid || ('title:' + title);
+      if (seen[key]) return;
+      seen[key] = true;
+      out.push({
+        chatId: cid,
+        chatTitle: title,
+        mentionedAt: Number(mentionedAt) || Date.now()
+      });
+    }
+    if (Array.isArray(rawList)) {
+      for (var i = 0; i < rawList.length && out.length < 8; i++) {
+        var it = rawList[i];
+        if (it && typeof it === 'object') {
+          pushItem(it.chatId, it.chatTitle, it.mentionedAt);
+        }
+      }
+    }
+    if (!out.length && (fallbackChatId || fallbackChatTitle)) {
+      pushItem(fallbackChatId, fallbackChatTitle, fallbackTime);
+    }
+    return out;
+  }
+
+  function normalizeEntityList(rawEntities) {
+    if (!Array.isArray(rawEntities)) return [];
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < rawEntities.length && out.length < 12; i++) {
+      var e = String(rawEntities[i] || '').trim().toLowerCase();
+      if (!e || e.length < 2 || seen[e]) continue;
+      seen[e] = true;
+      out.push(e.slice(0, 40));
+    }
+    return out;
+  }
+
+  function computeDefaultDynamicScore(importance, status, archived) {
+    var base = Math.max(1, Math.min(5, Number(importance) || 3)) * 18;
+    if (status === 'cancelled') base -= 24;
+    else if (status === 'completed') base -= 16;
+    else if (status === 'historical') base -= 14;
+    else if (status === 'paused') base -= 8;
+    if (archived) base -= 10;
+    return Math.max(5, Math.min(100, Math.round(base)));
+  }
+
   function normalizeMemoryRecord(raw, forcedId) {
     var now = Date.now();
     var src = raw && typeof raw === 'object' ? raw : {};
+    var id = String(forcedId || src.id || generateMemoryId());
     var temporalState = normalizeTemporalState(src.temporalState, src.status);
     var status = normalizeMemoryStatus(src.status, temporalState);
-    var historyList = Array.isArray(src.history) ? src.history.slice(0, 3).map(function(h) {
+    var createdAt = Number(src.createdAt) || now;
+    var mentionedAt = Number(src.mentionedAt) || createdAt;
+    var importance = normalizeImportance(src.importance);
+    var archived = src.archived === true;
+    var historyList = Array.isArray(src.history) ? src.history.slice(0, 6).map(function(h) {
       if (!h || typeof h !== 'object') return null;
       var hc = String(h.content || '').trim();
       if (!hc) return null;
@@ -928,29 +1039,67 @@
         content: hc.slice(0, 260),
         updatedAt: Number(h.updatedAt) || now,
         temporalState: normalizeTemporalState(h.temporalState, h.status),
-        status: normalizeMemoryStatus(h.status, h.temporalState)
+        status: normalizeMemoryStatus(h.status, h.temporalState),
+        reason: String(h.reason || '').trim().slice(0, 100)
       };
     }).filter(Boolean) : [];
 
+    var conflictWithIds = Array.isArray(src.conflictWithIds)
+      ? src.conflictWithIds.filter(function(cid) { return cid && String(cid) !== id; }).map(String).filter(function(v, idx, arr) { return arr.indexOf(v) === idx; }).slice(0, 8)
+      : [];
+
+    var rawDynScore = Number(src.dynamicScore);
+    var dynamicScore = Number.isFinite(rawDynScore) && rawDynScore > 0
+      ? Math.max(5, Math.min(100, Math.round(rawDynScore)))
+      : computeDefaultDynamicScore(importance, status, archived);
+
+    var sourceChatId = String(src.sourceChatId || '').trim();
+    var sourceChatTitle = String(src.sourceChatTitle || '').trim();
+
     return {
-      id: String(forcedId || src.id || generateMemoryId()),
+      id: id,
       content: String(src.content || '').trim(),
       category: normalizeMemoryCategory(src.category),
-      createdAt: Number(src.createdAt) || now,
+      createdAt: createdAt,
       updatedAt: Number(src.updatedAt) || now,
-      sourceChatId: String(src.sourceChatId || '').trim(),
-      sourceChatTitle: String(src.sourceChatTitle || '').trim(),
-      importance: normalizeImportance(src.importance),
+      mentionedAt: mentionedAt,
+      rawExpression: String(src.rawExpression || '').trim().slice(0, 260),
+      sourceChatId: sourceChatId,
+      sourceChatTitle: sourceChatTitle,
+      sourceChats: normalizeSourceChats(src.sourceChats, sourceChatId, sourceChatTitle, mentionedAt),
+      importance: importance,
+      manualImportance: src.manualImportance === true,
+      dynamicScore: dynamicScore,
       scope: normalizeMemoryScope(src.scope),
       userId: String(src.userId || 'local_user').trim() || 'local_user',
       projectId: String(src.projectId || '').trim(),
       confidence: normalizeConfidenceValue(src.confidence),
       temporalState: temporalState,
       status: status,
+      archived: archived,
+      archivedAt: archived ? (Number(src.archivedAt) || Number(src.updatedAt) || now) : 0,
+      archiveReason: archived ? String(src.archiveReason || '').trim().slice(0, 140) : '',
+      scenario: String(src.scenario || '').trim().slice(0, 60),
+      scenarioLabel: String(src.scenarioLabel || '').trim().slice(0, 40),
+      conflictState: normalizeConflictState(src.conflictState),
+      conflictWithIds: conflictWithIds,
+      factType: String(src.factType || 'direct_fact').trim() || 'direct_fact',
       factSource: String(src.factSource || 'user_statement').trim() || 'user_statement',
+      userConfirmed: src.userConfirmed === true,
+      semanticKey: String(src.semanticKey || '').trim().slice(0, 120),
       relation: String(src.relation || 'new').trim() || 'new',
       supersedesId: String(src.supersedesId || '').trim(),
+      supersededById: String(src.supersededById || '').trim(),
       previousContent: String(src.previousContent || '').trim().slice(0, 260),
+      mentionCount: Math.max(1, Math.round(Number(src.mentionCount) || 1)),
+      independentMentionCount: (Number.isFinite(Number(src.independentMentionCount)) && Number(src.independentMentionCount) >= 1)
+        ? Math.max(1, Math.round(Number(src.independentMentionCount)))
+        : 1,
+      usageCount: Math.max(0, Math.round(Number(src.usageCount) || 0)),
+      lastUsedAt: Math.max(0, Number(src.lastUsedAt) || 0),
+      entities: normalizeEntityList(src.entities),
+      relations: normalizeMemoryRelations(src.relations, id),
+      mergeRecords: normalizeMergeRecords(src.mergeRecords),
       history: historyList
     };
   }
@@ -1062,8 +1211,8 @@
     var src = data && typeof data === 'object' ? data : {};
     var mem = normalizeMemoryRecord(Object.assign({}, src, {
       id: src.id || generateMemoryId(),
-      createdAt: now,
-      updatedAt: now
+      createdAt: Number(src.createdAt) || now,
+      updatedAt: Number(src.updatedAt) || now
     }));
     if (!mem.content) return null;
 
@@ -1075,27 +1224,29 @@
     return mem;
   }
 
-  async function updateMemory(id, patch) {
+  async function updateMemory(id, patch, options) {
     if (!id) return null;
     var existing = await getMemory(id);
     if (!existing) return null;
     var p = patch && typeof patch === 'object' ? patch : {};
-    var nextHistory = Array.isArray(p.history) ? p.history.slice(0, 3) : (Array.isArray(existing.history) ? existing.history.slice(0, 3) : []);
+    var opts = options && typeof options === 'object' ? options : {};
+    var nextHistory = Array.isArray(p.history) ? p.history.slice(0, 6) : (Array.isArray(existing.history) ? existing.history.slice(0, 6) : []);
     var prevContent = existing.previousContent || '';
-    if (p.content && String(p.content).trim() !== existing.content) {
+    if (p.content && String(p.content).trim() !== existing.content && !opts.skipHistoryPush) {
       prevContent = existing.content;
       nextHistory.unshift({
         content: existing.content,
         updatedAt: existing.updatedAt || existing.createdAt,
         temporalState: existing.temporalState || 'current',
-        status: existing.status || 'active'
+        status: existing.status || 'active',
+        reason: String(opts.historyReason || p.historyReason || '').trim().slice(0, 100)
       });
-      nextHistory = nextHistory.slice(0, 3);
+      nextHistory = nextHistory.slice(0, 6);
     }
     var next = normalizeMemoryRecord(Object.assign({}, existing, p, {
       id: existing.id,
       createdAt: existing.createdAt,
-      updatedAt: Date.now(),
+      updatedAt: opts.preserveUpdatedAt ? (existing.updatedAt || existing.createdAt) : Date.now(),
       previousContent: p.previousContent != null ? p.previousContent : prevContent,
       history: nextHistory
     }), existing.id);
@@ -1143,6 +1294,52 @@
     }
   }
 
+  async function cleanupDanglingMemoryReferences(deletedId) {
+    if (!deletedId) return 0;
+    var all = await listMemories();
+    var touched = 0;
+    for (var i = 0; i < all.length; i++) {
+      var mem = all[i];
+      if (!mem || mem.id === deletedId) continue;
+      var changed = false;
+      var nextRelations = (Array.isArray(mem.relations) ? mem.relations : []).filter(function(r) {
+        if (r && r.targetId === deletedId) {
+          changed = true;
+          return false;
+        }
+        return true;
+      });
+      var nextConflicts = (Array.isArray(mem.conflictWithIds) ? mem.conflictWithIds : []).filter(function(cid) {
+        if (cid === deletedId) {
+          changed = true;
+          return false;
+        }
+        return true;
+      });
+      var nextSupersedesId = mem.supersedesId === deletedId ? '' : mem.supersedesId;
+      var nextSupersededById = mem.supersededById === deletedId ? '' : mem.supersededById;
+      if (nextSupersedesId !== mem.supersedesId || nextSupersededById !== mem.supersededById) {
+        changed = true;
+      }
+      var nextConflictState = mem.conflictState;
+      if (nextConflictState === 'pending_confirmation' && nextConflicts.length === 0) {
+        nextConflictState = 'none';
+        changed = true;
+      }
+      if (changed) {
+        await updateMemory(mem.id, {
+          relations: nextRelations,
+          conflictWithIds: nextConflicts,
+          conflictState: nextConflictState,
+          supersedesId: nextSupersedesId,
+          supersededById: nextSupersededById
+        }, { preserveUpdatedAt: true, skipHistoryPush: true });
+        touched++;
+      }
+    }
+    return touched;
+  }
+
   async function deleteMemory(id) {
     if (!id) return false;
     var existing = await getMemory(id);
@@ -1157,6 +1354,15 @@
       await dbPutConfig(KEYS.MEMORY_IDS, ids);
     }
     await dbDeleteConfig(KEYS.MEMORY_PREFIX + id);
+    try {
+      if (global.AiWorkspaceMemoryManager && typeof global.AiWorkspaceMemoryManager.cleanupRelationsAfterDelete === 'function') {
+        await global.AiWorkspaceMemoryManager.cleanupRelationsAfterDelete(id, existing ? existing.userId : 'local_user');
+      } else {
+        await cleanupDanglingMemoryReferences(id);
+      }
+    } catch (_) {
+      try { await cleanupDanglingMemoryReferences(id); } catch (_2) {}
+    }
     return true;
   }
 

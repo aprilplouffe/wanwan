@@ -63,7 +63,8 @@
     recentSelectedChatId: '',
     summarySelectedChatId: '',
     advancedMemoryOpen: false,
-    memorySearchQuery: ''
+    memorySearchQuery: '',
+    memoryLifecycleTab: 'active'
   };
 
   function S() {
@@ -76,6 +77,10 @@
 
   function M() {
     return global.AiWorkspaceMemory;
+  }
+
+  function Mgr() {
+    return global.AiWorkspaceMemoryManager;
   }
 
   function escapeHtml(str) {
@@ -1609,71 +1614,353 @@
     return '跨窗口共享';
   }
 
+  function isMemoryInLifecycleTab(mem, tab) {
+    if (!mem) return false;
+    var st = String(mem.status || 'active').toLowerCase();
+    var isArchived = mem.archived === true;
+    if (tab === 'active') return st === 'active' && !isArchived;
+    if (tab === 'historical') return st !== 'active';
+    if (tab === 'archived') return isArchived;
+    return true;
+  }
+
+  function getMemoryLifecycleCounts(list) {
+    var arr = Array.isArray(list) ? list : [];
+    var counts = { active: 0, historical: 0, archived: 0, all: arr.length };
+    for (var i = 0; i < arr.length; i++) {
+      var m = arr[i];
+      if (!m) continue;
+      if (isMemoryInLifecycleTab(m, 'active')) counts.active++;
+      if (isMemoryInLifecycleTab(m, 'historical')) counts.historical++;
+      if (isMemoryInLifecycleTab(m, 'archived')) counts.archived++;
+    }
+    return counts;
+  }
+
   function getFilteredMemories() {
     var list = Array.isArray(_ctx.memories) ? _ctx.memories : [];
+    var tab = _ctx.memoryLifecycleTab || 'active';
     var q = String(_ctx.memorySearchQuery || '').trim().toLowerCase();
-    if (!q) return list;
     return list.filter(function(m) {
+      if (!isMemoryInLifecycleTab(m, tab)) return false;
+      if (!q) return true;
+      var entitiesStr = Array.isArray(m.entities) ? m.entities.join(' ') : '';
       return String(m.content || '').toLowerCase().indexOf(q) !== -1 ||
         String(m.category || '').toLowerCase().indexOf(q) !== -1 ||
-        String(m.sourceChatTitle || '').toLowerCase().indexOf(q) !== -1;
+        String(m.sourceChatTitle || '').toLowerCase().indexOf(q) !== -1 ||
+        String(m.scenarioLabel || '').toLowerCase().indexOf(q) !== -1 ||
+        String(m.archiveReason || '').toLowerCase().indexOf(q) !== -1 ||
+        String(m.rawExpression || '').toLowerCase().indexOf(q) !== -1 ||
+        entitiesStr.toLowerCase().indexOf(q) !== -1;
     });
   }
 
-  function renderMemoryCardsHtml(list) {
+  function buildMemoryDecayDiagnostics(mem, nowTs) {
+    var now = (typeof nowTs === 'number' && Number.isFinite(nowTs) && nowTs > 0) ? nowTs : Date.now();
+    var m = mem && typeof mem === 'object' ? mem : null;
+    var mgr = Mgr();
+    var missingText = '暂无可靠记录';
+
+    if (!m) {
+      return {
+        rawImportance: null,
+        rawImportanceText: missingText,
+        dynamicScore: null,
+        dynamicScoreText: missingText,
+        lastMentionAt: 0,
+        lastMentionText: missingText,
+        decayPenalty: null,
+        decayPenaltyText: missingText,
+        protectionReason: '',
+        protectionText: missingText,
+        protectionTone: 'neutral'
+      };
+    }
+
+    var hasRawImp = m.importance != null && m.importance !== '' && Number.isFinite(Number(m.importance));
+    var rawImp = hasRawImp ? Math.max(1, Math.min(5, Math.round(Number(m.importance)))) : null;
+    var rawImportanceText = rawImp != null ? (rawImp + ' / 5') : missingText;
+
+    var hasCalcFns = !!(
+      mgr &&
+      typeof mgr.computeDynamicScore === 'function' &&
+      typeof mgr.computeTimeDecayPenalty === 'function' &&
+      typeof mgr.getLastEffectiveMentionTimestamp === 'function'
+    );
+
+    if (!hasCalcFns) {
+      return {
+        rawImportance: rawImp,
+        rawImportanceText: rawImportanceText,
+        dynamicScore: null,
+        dynamicScoreText: missingText,
+        lastMentionAt: 0,
+        lastMentionText: missingText,
+        decayPenalty: null,
+        decayPenaltyText: missingText,
+        protectionReason: '',
+        protectionText: missingText,
+        protectionTone: 'neutral'
+      };
+    }
+
+    var st = String(m.status || 'active').toLowerCase();
+    var ts = String(m.temporalState || 'current').toLowerCase();
+    var isArchived = m.archived === true;
+    var isActive = st === 'active' && !isArchived &&
+      ts !== 'cancelled' && ts !== 'completed' && ts !== 'past' && ts !== 'paused';
+
+    var dynScore = mgr.computeDynamicScore(m, now);
+    var lastMentionAt = mgr.getLastEffectiveMentionTimestamp(m, now);
+    var decayInfo = mgr.computeTimeDecayPenalty(m, now);
+
+    var formattedLastMention = lastMentionAt > 0 ? formatMemoryDate(lastMentionAt) : '';
+    var lastMentionText = formattedLastMention || missingText;
+    if (formattedLastMention && decayInfo && typeof decayInfo.daysSinceMention === 'number' && Number.isFinite(decayInfo.daysSinceMention)) {
+      var wholeDays = Math.floor(decayInfo.daysSinceMention);
+      if (wholeDays >= 1) {
+        lastMentionText = formattedLastMention + '（' + wholeDays + '天前）';
+      } else {
+        lastMentionText = formattedLastMention + '（今天）';
+      }
+    }
+
+    var penaltyVal = decayInfo && typeof decayInfo.penalty === 'number' && Number.isFinite(decayInfo.penalty)
+      ? decayInfo.penalty
+      : null;
+    var decayPenaltyText = missingText;
+    if (!isActive) {
+      decayPenaltyText = '0 分（非活跃）';
+    } else if (penaltyVal != null) {
+      decayPenaltyText = penaltyVal > 0 ? ('-' + penaltyVal + ' 分') : '0 分';
+    }
+
+    var reason = (decayInfo && decayInfo.protectedReason) ? String(decayInfo.protectedReason) : '';
+    var protectionText = '常规渐进衰减';
+    var protectionTone = 'neutral';
+
+    if (m.manualImportance === true || reason === 'manual_importance') {
+      protectionText = '手动评分锁定（免衰减）';
+      protectionTone = 'protected';
+    } else if (!isActive) {
+      protectionText = isArchived ? '已归档（状态降权）' : '非活跃状态（状态降权）';
+      protectionTone = 'muted';
+    } else if (reason === 'no_reliable_timestamp' || !(lastMentionAt > 0)) {
+      protectionText = '无可靠时间戳（免衰减兜底）';
+      protectionTone = 'muted';
+    } else if (reason === 'core_importance_grace') {
+      protectionText = '核心重要保护（30天免衰减）';
+      protectionTone = 'protected';
+    } else if (reason === 'core_importance_protected') {
+      protectionText = '核心重要保护（低速衰减）';
+      protectionTone = 'protected';
+    } else if (reason === 'high_mention_protected') {
+      protectionText = '高频提及保护（减缓衰减）';
+      protectionTone = 'protected';
+    } else if (reason === 'recent_grace_period') {
+      protectionText = '近期宽限期（7天内免衰减）';
+      protectionTone = 'safe';
+    } else if (penaltyVal != null && penaltyVal > 0) {
+      protectionText = '常规渐进衰减中';
+      protectionTone = 'decaying';
+    }
+
+    return {
+      rawImportance: rawImp,
+      rawImportanceText: rawImportanceText,
+      dynamicScore: dynScore,
+      dynamicScoreText: Number.isFinite(dynScore) ? (Math.round(dynScore) + ' 分') : missingText,
+      lastMentionAt: lastMentionAt,
+      lastMentionText: lastMentionText,
+      decayPenalty: isActive ? penaltyVal : 0,
+      decayPenaltyText: decayPenaltyText,
+      protectionReason: reason,
+      protectionText: protectionText,
+      protectionTone: protectionTone
+    };
+  }
+
+  function renderMemoryCardsHtml(list, nowTs) {
+    var allMemories = Array.isArray(_ctx.memories) ? _ctx.memories : [];
+    var renderNow = (typeof nowTs === 'number' && Number.isFinite(nowTs) && nowTs > 0) ? nowTs : Date.now();
+    var byId = {};
+    for (var bi = 0; bi < allMemories.length; bi++) {
+      if (allMemories[bi] && allMemories[bi].id) byId[allMemories[bi].id] = allMemories[bi];
+    }
+
     if (!list.length) {
       var hasQuery = !!String(_ctx.memorySearchQuery || '').trim();
+      var tab = _ctx.memoryLifecycleTab || 'active';
+      var emptyTitle = hasQuery
+        ? '没有匹配的长期记忆'
+        : (tab === 'archived'
+            ? '暂无已归档记忆'
+            : (tab === 'historical' ? '暂无历史变更记忆' : '当前分类下暂无长期记忆'));
+      var emptySub = hasQuery
+        ? '换个关键词试试，或切换上方状态标签查看全部记忆。'
+        : (tab === 'archived'
+            ? '已完成项目、已取消计划、被替代的历史偏好或长期未使用的低价值备忘会自动归档于此，仍可随时检索与恢复。'
+            : (tab === 'historical'
+                ? '当你的偏好或计划状态发生变更时，旧记录会自动转入历史并保留完整演进脉络。'
+                : '当开启「自动记忆」后，知屿会在对话中自动记住你的偏好、习惯、长期计划与重要决定，也可以点击右上角手动新增。'));
       return (
         '<div class="aiw-mem-empty">' +
           '<div class="aiw-mem-empty-icon"><i class="fa-regular fa-bookmark"></i></div>' +
-          '<div class="aiw-mem-empty-title">' + (hasQuery ? '没有匹配的长期记忆' : '还没有保存任何长期记忆') + '</div>' +
-          '<div class="aiw-mem-empty-sub">' +
-            (hasQuery
-              ? '换个关键词试试，或清空搜索查看全部记忆。'
-              : '当开启「自动记忆」后，知屿会在对话中自动记住你的偏好、习惯、长期计划与重要决定，也可以点击右上角手动新增。') +
-          '</div>' +
+          '<div class="aiw-mem-empty-title">' + escapeHtml(emptyTitle) + '</div>' +
+          '<div class="aiw-mem-empty-sub">' + escapeHtml(emptySub) + '</div>' +
         '</div>'
       );
     }
 
     return list.map(function(m) {
+      var sourceChats = Array.isArray(m.sourceChats) ? m.sourceChats : [];
       var sourceLabel = m.sourceChatTitle
         ? (m.sourceChatTitle === '手动添加' ? '来源：手动添加' : ('来源：' + m.sourceChatTitle))
         : (m.sourceChatId ? '来源：对话自动提取' : '来源：手动添加');
+      if (sourceChats.length > 1) {
+        sourceLabel += ' 等 ' + sourceChats.length + ' 个对话';
+      }
       if (m.factSource === 'context_resolved') sourceLabel += ' · 上下文指代消解';
       var timeLabel = formatMemoryDate(m.updatedAt || m.createdAt);
       var statusLabel = '';
       var st = String(m.status || 'active').toLowerCase();
       var ts = String(m.temporalState || 'current').toLowerCase();
       if (st === 'cancelled' || ts === 'cancelled') statusLabel = '已取消';
+      else if (st === 'paused' || ts === 'paused') statusLabel = '暂时搁置';
       else if (st === 'completed' || ts === 'completed') statusLabel = '已完成';
       else if (st === 'historical' || ts === 'past') statusLabel = '历史记录';
       else if (ts === 'future_plan') statusLabel = '计划中';
 
+      var decayDiag = buildMemoryDecayDiagnostics(m, renderNow);
+      var dynScore = decayDiag.dynamicScore != null
+        ? Math.round(decayDiag.dynamicScore)
+        : (typeof m.dynamicScore === 'number' && Number.isFinite(m.dynamicScore)
+            ? Math.round(m.dynamicScore)
+            : Math.round((Number(m.importance) || 3) * 18));
       var confPct = typeof m.confidence === 'number' && Number.isFinite(m.confidence)
         ? Math.round(m.confidence * 100) + '%'
         : '';
-      var prevHint = m.previousContent ? ('变更自「' + m.previousContent + '」') : '';
+
+      var statsParts = [];
+      if ((Number(m.mentionCount) || 1) > 1) statsParts.push('提及 ' + m.mentionCount + ' 次');
+      if ((Number(m.usageCount) || 0) > 0) statsParts.push('召回 ' + m.usageCount + ' 次');
+      var statsHint = statsParts.join(' · ');
+
+      var rawExprHint = m.rawExpression && m.rawExpression !== m.content
+        ? ('原句：' + m.rawExpression)
+        : '';
+
+      // 关联关系网络展示
+      var rels = Array.isArray(m.relations) ? m.relations.filter(function(r) { return r && r.targetId && byId[r.targetId]; }) : [];
+      var relationsHtml = '';
+      if (rels.length > 0) {
+        var relChips = rels.slice(0, 6).map(function(r) {
+          var targetMem = byId[r.targetId];
+          var relLabel = r.label || '关联';
+          var snippet = targetMem ? String(targetMem.content || '').slice(0, 22) : '';
+          if (targetMem && String(targetMem.content || '').length > 22) snippet += '…';
+          return (
+            '<span class="aiw-mem-rel-chip" title="' + escapeHtml(r.reason || relLabel) + '">' +
+              '<span class="aiw-mem-rel-type">' + escapeHtml(relLabel) + '</span>' +
+              '<span class="aiw-mem-rel-text">' + escapeHtml(snippet) + '</span>' +
+            '</span>'
+          );
+        }).join('');
+        relationsHtml = (
+          '<div class="aiw-mem-rel-box">' +
+            '<div class="aiw-mem-sub-title"><i class="fa-solid fa-diagram-project"></i> 记忆关联（' + rels.length + '）</div>' +
+            '<div class="aiw-mem-rel-list">' + relChips + '</div>' +
+          '</div>'
+        );
+      }
+
+      // 合并与变更记录、归档原因展示
+      var mergeRecs = Array.isArray(m.mergeRecords) ? m.mergeRecords : [];
+      var histRecs = Array.isArray(m.history) ? m.history : [];
+      var auditLines = [];
+      if (m.archived && m.archiveReason) {
+        auditLines.push('<div class="aiw-mem-audit-line is-archive"><i class="fa-solid fa-box-archive"></i> 归档原因：' + escapeHtml(m.archiveReason) + '</div>');
+      }
+      if (m.previousContent) {
+        auditLines.push('<div class="aiw-mem-audit-line"><i class="fa-solid fa-clock-rotate-left"></i> 变更自：「' + escapeHtml(m.previousContent) + '」</div>');
+      }
+      if (mergeRecs.length > 0) {
+        var latestMerge = mergeRecs[0];
+        auditLines.push(
+          '<div class="aiw-mem-audit-line"><i class="fa-solid fa-code-merge"></i> 合并记录（共 ' + mergeRecs.length + ' 次）：最近合并「' +
+          escapeHtml((latestMerge.mergedContent || latestMerge.rawExpression || '').slice(0, 48)) + '」' +
+          (latestMerge.sourceChatTitle ? ('（来自 ' + escapeHtml(latestMerge.sourceChatTitle) + '）') : '') +
+          '</div>'
+        );
+      }
+      if (histRecs.length > 0 && !m.previousContent) {
+        auditLines.push('<div class="aiw-mem-audit-line"><i class="fa-solid fa-clock-rotate-left"></i> 历史记录（' + histRecs.length + ' 条）：曾为「' + escapeHtml(histRecs[0].content.slice(0, 48)) + '」</div>');
+      }
+      var auditHtml = auditLines.length ? ('<div class="aiw-mem-audit-box">' + auditLines.join('') + '</div>') : '';
+
+      var decayDiagHtml = (
+        '<div class="aiw-mem-decay-box" data-mem-decay-id="' + escapeHtml(m.id) + '">' +
+          '<div class="aiw-mem-decay-head">' +
+            '<span class="aiw-mem-decay-title"><i class="fa-regular fa-clock"></i> 时间衰减诊断</span>' +
+            '<span class="aiw-mem-decay-status is-' + escapeHtml(decayDiag.protectionTone) + '">' + escapeHtml(decayDiag.protectionText) + '</span>' +
+          '</div>' +
+          '<div class="aiw-mem-decay-grid">' +
+            '<div class="aiw-mem-decay-cell">' +
+              '<span class="aiw-mem-decay-label">原始重要度</span>' +
+              '<span class="aiw-mem-decay-val">' + escapeHtml(decayDiag.rawImportanceText) + '</span>' +
+            '</div>' +
+            '<div class="aiw-mem-decay-cell">' +
+              '<span class="aiw-mem-decay-label">当前动态分</span>' +
+              '<span class="aiw-mem-decay-val">' + escapeHtml(decayDiag.dynamicScoreText) + '</span>' +
+            '</div>' +
+            '<div class="aiw-mem-decay-cell">' +
+              '<span class="aiw-mem-decay-label">时间衰减</span>' +
+              '<span class="aiw-mem-decay-val' + (decayDiag.decayPenalty > 0 ? ' is-decayed' : '') + '">' + escapeHtml(decayDiag.decayPenaltyText) + '</span>' +
+            '</div>' +
+            '<div class="aiw-mem-decay-cell is-full">' +
+              '<span class="aiw-mem-decay-label">最后有效提及</span>' +
+              '<span class="aiw-mem-decay-val">' + escapeHtml(decayDiag.lastMentionText) + '</span>' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      );
+
+      var cardCls = 'aiw-mem-card' + (m.archived ? ' is-archived' : '') + (m.conflictState === 'pending_confirmation' ? ' is-conflict' : '');
+      var isManualImp = m.manualImportance === true;
+      var impModeLabel = isManualImp ? '手动锁定' : '自动管理';
+      var impModeCls = isManualImp ? 'is-imp-manual' : 'is-imp-auto';
+      var archiveBtnHtml = m.archived
+        ? '<button type="button" class="aiw-preset-act" data-mem-act="unarchive" data-mem-id="' + escapeHtml(m.id) + '"><i class="fa-solid fa-box-open"></i> 恢复有效</button>'
+        : '<button type="button" class="aiw-preset-act" data-mem-act="archive" data-mem-id="' + escapeHtml(m.id) + '"><i class="fa-solid fa-box-archive"></i> 归档</button>';
 
       return (
-        '<div class="aiw-mem-card" data-mem-id="' + escapeHtml(m.id) + '">' +
+        '<div class="' + cardCls + '" data-mem-id="' + escapeHtml(m.id) + '">' +
           '<div class="aiw-mem-card-top">' +
             '<div class="aiw-mem-badges">' +
               '<span class="aiw-mem-badge is-cat">' + escapeHtml(m.category || '备忘') + '</span>' +
               (statusLabel ? '<span class="aiw-mem-badge is-status">' + escapeHtml(statusLabel) + '</span>' : '') +
+              (m.archived ? '<span class="aiw-mem-badge is-archived-tag">已归档</span>' : '') +
+              (m.scenarioLabel ? '<span class="aiw-mem-badge is-scene">' + escapeHtml(m.scenarioLabel) + '</span>' : '') +
+              (m.conflictState === 'pending_confirmation' ? '<span class="aiw-mem-badge is-conflict-tag">待确认冲突</span>' : '') +
               '<span class="aiw-mem-badge is-scope">' + escapeHtml(formatScopeLabel(m.scope)) + '</span>' +
-              '<span class="aiw-mem-badge is-imp">重要度 ' + escapeHtml(String(m.importance || 3)) + '/5</span>' +
+              '<span class="aiw-mem-badge is-imp">重要度 ' + escapeHtml(String(m.importance || 3)) + '/5 · ' + escapeHtml(String(dynScore)) + '分</span>' +
+              '<span class="aiw-mem-badge ' + impModeCls + '" data-mem-imp-mode="' + (isManualImp ? 'manual' : 'auto') + '">' + impModeLabel + '</span>' +
               (confPct ? '<span class="aiw-mem-badge is-conf">置信 ' + escapeHtml(confPct) + '</span>' : '') +
+              (m.userConfirmed ? '<span class="aiw-mem-badge is-active-win">已确认</span>' : '') +
             '</div>' +
           '</div>' +
           '<div class="aiw-mem-content">' + escapeHtml(m.content) + '</div>' +
-          (prevHint ? '<div class="aiw-mem-meta" style="margin-top:4px;"><span class="aiw-mem-source">' + escapeHtml(prevHint) + '</span></div>' : '') +
+          (rawExprHint ? '<div class="aiw-mem-meta" style="margin-top:4px;"><span class="aiw-mem-source">' + escapeHtml(rawExprHint) + '</span></div>' : '') +
+          decayDiagHtml +
+          relationsHtml +
+          auditHtml +
           '<div class="aiw-mem-meta">' +
-            '<span class="aiw-mem-source">' + escapeHtml(sourceLabel) + '</span>' +
+            '<span class="aiw-mem-source">' + escapeHtml(sourceLabel) + (statsHint ? (' · ' + escapeHtml(statsHint)) : '') + '</span>' +
             (timeLabel ? '<span class="aiw-mem-time">' + escapeHtml(timeLabel) + '</span>' : '') +
           '</div>' +
           '<div class="aiw-mem-actions">' +
             '<button type="button" class="aiw-preset-act" data-mem-act="edit" data-mem-id="' + escapeHtml(m.id) + '"><i class="fa-regular fa-pen-to-square"></i> 编辑</button>' +
+            archiveBtnHtml +
             '<button type="button" class="aiw-preset-act is-danger" data-mem-act="delete" data-mem-id="' + escapeHtml(m.id) + '"><i class="fa-regular fa-trash-can"></i> 删除</button>' +
           '</div>' +
         '</div>'
@@ -2333,7 +2620,25 @@
   // ===== 视图 7C：长期记忆独立页面 =====
   function renderLongMemoryHtml() {
     var allList = _ctx.memories || [];
+    var counts = getMemoryLifecycleCounts(allList);
+    var curTab = _ctx.memoryLifecycleTab || 'active';
     var filtered = getFilteredMemories();
+
+    var tabsSpec = [
+      { id: 'active', label: '当前有效', count: counts.active },
+      { id: 'historical', label: '历史记忆', count: counts.historical },
+      { id: 'archived', label: '已归档', count: counts.archived },
+      { id: 'all', label: '全部', count: counts.all }
+    ];
+    var tabsHtml = tabsSpec.map(function(t) {
+      var activeCls = curTab === t.id ? ' active' : '';
+      return (
+        '<button type="button" class="aiw-mem-tab-btn' + activeCls + '" data-mem-tab="' + t.id + '">' +
+          '<span>' + t.label + '</span>' +
+          '<span class="aiw-mem-tab-num">' + t.count + '</span>' +
+        '</button>'
+      );
+    }).join('');
 
     return (
       '<div class="aiw-st-topbar">' +
@@ -2348,15 +2653,22 @@
         '<div class="aiw-mem-toolbar is-top">' +
           '<div class="aiw-mem-search-wrap">' +
             '<i class="fa-solid fa-magnifying-glass"></i>' +
-            '<input type="search" class="aiw-mem-search-input" id="aiw-mem-search" value="' + escapeHtml(_ctx.memorySearchQuery || '') + '" placeholder="搜索长期记忆内容、分类或来源对话">' +
+            '<input type="search" class="aiw-mem-search-input" id="aiw-mem-search" value="' + escapeHtml(_ctx.memorySearchQuery || '') + '" placeholder="搜索长期记忆内容、场景、分类或来源对话">' +
           '</div>' +
         '</div>' +
 
+        '<div class="aiw-mem-tabs" id="aiw-mem-tabs">' + tabsHtml + '</div>' +
+
         '<div class="aiw-mem-count-bar">' +
-          '<span class="aiw-pr-count" id="aiw-mem-count-text">共 ' + allList.length + ' 条长期记忆' + (_ctx.memorySearchQuery ? ('（筛选出 ' + filtered.length + ' 条）') : '') + '</span>' +
-          '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm aiw-btn-text-danger" id="aiw-mem-clear-all"' + (allList.length ? '' : ' disabled') + '>' +
-            '<i class="fa-regular fa-trash-can"></i> 清空全部' +
-          '</button>' +
+          '<span class="aiw-pr-count" id="aiw-mem-count-text">当前视图 ' + filtered.length + ' 条 / 共 ' + allList.length + ' 条</span>' +
+          '<div class="aiw-mem-bar-btns">' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-mem-organize-btn"' + (allList.length ? '' : ' disabled') + '>' +
+              '<i class="fa-solid fa-wand-magic-sparkles"></i> 智能整理' +
+            '</button>' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm aiw-btn-text-danger" id="aiw-mem-clear-all"' + (allList.length ? '' : ' disabled') + '>' +
+              '<i class="fa-regular fa-trash-can"></i> 清空全部' +
+            '</button>' +
+          '</div>' +
         '</div>' +
 
         '<div class="aiw-mem-list" id="aiw-mem-list">' + renderMemoryCardsHtml(filtered) + '</div>' +
@@ -2367,7 +2679,15 @@
   function bindLongMemoryEvents(layer) {
     var searchInput = layer.querySelector('#aiw-mem-search');
     var addBtn = layer.querySelector('#aiw-mem-add-btn');
+    var organizeBtn = layer.querySelector('#aiw-mem-organize-btn');
     var clearAllBtn = layer.querySelector('#aiw-mem-clear-all');
+
+    layer.querySelectorAll('[data-mem-tab]').forEach(function(tabBtn) {
+      tabBtn.addEventListener('click', function() {
+        _ctx.memoryLifecycleTab = tabBtn.getAttribute('data-mem-tab') || 'active';
+        renderCurrentView();
+      });
+    });
 
     if (searchInput) {
       searchInput.addEventListener('input', function() {
@@ -2377,7 +2697,7 @@
         var countEl = layer.querySelector('#aiw-mem-count-text');
         if (listEl) listEl.innerHTML = renderMemoryCardsHtml(filtered);
         if (countEl) {
-          countEl.textContent = '共 ' + (_ctx.memories || []).length + ' 条长期记忆' + (_ctx.memorySearchQuery ? ('（筛选出 ' + filtered.length + ' 条）') : '');
+          countEl.textContent = '当前视图 ' + filtered.length + ' 条 / 共 ' + (_ctx.memories || []).length + ' 条';
         }
         bindMemoryListItemEvents(layer);
       });
@@ -2386,6 +2706,28 @@
     if (addBtn) {
       addBtn.addEventListener('click', function() {
         openMemoryEditorModal(layer, null);
+      });
+    }
+
+    if (organizeBtn) {
+      organizeBtn.addEventListener('click', async function() {
+        if (!Mgr() || typeof Mgr().runLifecycleMaintenance !== 'function') return;
+        organizeBtn.disabled = true;
+        try {
+          var res = await Mgr().runLifecycleMaintenance({ userId: 'local_user' });
+          _ctx.memories = await S().listMemories();
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          var parts = [];
+          if (res.mergedCount) parts.push('合并 ' + res.mergedCount + ' 条重复');
+          if (res.archivedCount) parts.push('归档 ' + res.archivedCount + ' 条过时');
+          if (res.rescoredCount) parts.push('更新 ' + res.rescoredCount + ' 条评分');
+          if (res.linkedCount) parts.push('刷新 ' + res.linkedCount + ' 条关联');
+          notifyToast(parts.length ? ('智能整理完成：' + parts.join('，')) : '记忆库状态整洁，无需额外调整');
+        } catch (_) {
+          organizeBtn.disabled = false;
+          notifyToast('智能整理执行失败，请稍后重试');
+        }
       });
     }
 
@@ -2412,6 +2754,242 @@
     bindMemoryListItemEvents(layer);
   }
 
+  var RECALL_SOURCE_LABEL_MAP = {
+    direct: '直接召回',
+    semantic_fallback: '语义兜底',
+    related: '关联补充'
+  };
+
+  var RECALL_RELATION_LABEL_MAP = {
+    project_part: '同项目',
+    supports_goal: '项目目标',
+    uses_tech: '技术栈',
+    related_plan: '关联计划',
+    related_entity: '关联主题'
+  };
+
+  function formatRecallTimestamp(ts) {
+    var num = Number(ts);
+    if (!Number.isFinite(num) || num <= 0) return '暂无时间';
+    var d = new Date(num);
+    if (isNaN(d.getTime())) return '暂无时间';
+    var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+    return (
+      d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+    );
+  }
+
+  function formatRecallRelationLabel(relationType) {
+    var raw = String(relationType || '').trim();
+    if (!raw) return '未标注关系';
+    var mapped = RECALL_RELATION_LABEL_MAP[raw];
+    return mapped ? (mapped + ' (' + raw + ')') : raw;
+  }
+
+  function getRecallSourceClass(source) {
+    if (source === 'direct') return 'is-direct';
+    if (source === 'semantic_fallback') return 'is-semantic';
+    if (source === 'related') return 'is-related';
+    return 'is-unknown';
+  }
+
+  function resolveSettingsTrustedUserId() {
+    var store = S();
+    if (!store) return '';
+    if (typeof store.getCurrentUserId === 'function') {
+      try {
+        return String(store.getCurrentUserId() || '').trim();
+      } catch (_) {
+        return '';
+      }
+    }
+    return 'local_user';
+  }
+
+  function buildRecallDiagnosticsFilter() {
+    var store = S();
+    var memMod = M();
+    if (!store || !memMod || typeof memMod.getRecentRecallDiagnostics !== 'function' || typeof memMod.filterAccessibleMemories !== 'function') {
+      return { ok: false, filter: null };
+    }
+
+    var userId = resolveSettingsTrustedUserId();
+    if (!userId) {
+      return { ok: false, filter: null };
+    }
+
+    var ms = _ctx.memorySettings;
+    if (!ms || typeof ms !== 'object' || typeof ms.crossChatMemory !== 'boolean') {
+      return { ok: false, filter: null };
+    }
+    var allowCrossChat = ms.crossChatMemory;
+
+    var rawActiveChatId = String(_ctx.activeChatId || '').trim();
+    var chats = Array.isArray(_ctx.chats) ? _ctx.chats : [];
+    var chatId = '';
+    var projectId = '';
+
+    if (rawActiveChatId) {
+      var activeChat = chats.find(function(c) { return c && String(c.id || '').trim() === rawActiveChatId; });
+      if (!activeChat) {
+        return { ok: false, filter: null };
+      }
+      chatId = String(activeChat.id || '').trim();
+      projectId = String(activeChat.projectId || '').trim();
+    } else if (!allowCrossChat) {
+      return { ok: false, filter: null };
+    }
+
+    var allMemories = Array.isArray(_ctx.memories) ? _ctx.memories : [];
+    var accessibleMemories = memMod.filterAccessibleMemories(allMemories, {
+      userId: userId,
+      chatId: chatId,
+      projectId: projectId,
+      allowCrossChat: allowCrossChat
+    });
+    var validMemoryIds = [];
+    for (var i = 0; i < accessibleMemories.length; i++) {
+      if (accessibleMemories[i] && accessibleMemories[i].id) {
+        validMemoryIds.push(String(accessibleMemories[i].id));
+      }
+    }
+
+    return {
+      ok: true,
+      filter: {
+        userId: userId,
+        chatId: chatId,
+        projectId: projectId,
+        allowCrossChat: allowCrossChat,
+        validMemoryIds: validMemoryIds
+      }
+    };
+  }
+
+  function renderRecentRecallDiagnosticsHtml() {
+    var built = buildRecallDiagnosticsFilter();
+    var headerHtml =
+      '<div class="aiw-recall-diag-head">' +
+        '<div class="aiw-recall-diag-title-row">' +
+          '<span class="aiw-recall-diag-title"><i class="fa-solid fa-magnifying-glass-chart"></i> 最近召回诊断</span>' +
+        '</div>' +
+        '<div class="aiw-recall-diag-note">仅显示本次运行最近 5 次召回，不会永久保存。</div>' +
+      '</div>';
+
+    if (!built.ok) {
+      return (
+        '<div id="aiw-recall-diag-section" class="aiw-st-card aiw-st-pad aiw-recall-diag-card">' +
+          headerHtml +
+          '<div class="aiw-recall-diag-state is-unavailable" id="aiw-recall-diag-unavailable">' +
+            '<i class="fa-solid fa-shield-halved"></i>' +
+            '<span>当前无法读取召回诊断</span>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    var snapshots = [];
+    try {
+      var raw = M().getRecentRecallDiagnostics(built.filter);
+      snapshots = Array.isArray(raw) ? raw.slice() : [];
+    } catch (_) {
+      return (
+        '<div id="aiw-recall-diag-section" class="aiw-st-card aiw-st-pad aiw-recall-diag-card">' +
+          headerHtml +
+          '<div class="aiw-recall-diag-state is-unavailable" id="aiw-recall-diag-unavailable">' +
+            '<i class="fa-solid fa-shield-halved"></i>' +
+            '<span>当前无法读取召回诊断</span>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    if (!snapshots.length) {
+      return (
+        '<div id="aiw-recall-diag-section" class="aiw-st-card aiw-st-pad aiw-recall-diag-card">' +
+          headerHtml +
+          '<div class="aiw-recall-diag-state is-empty" id="aiw-recall-diag-empty">' +
+            '<i class="fa-regular fa-clock"></i>' +
+            '<span>本次运行暂无召回记录，发送消息后可查看。</span>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    snapshots.sort(function(a, b) {
+      return (Number(b && b.timestamp) || 0) - (Number(a && a.timestamp) || 0);
+    });
+    if (snapshots.length > 5) snapshots = snapshots.slice(0, 5);
+
+    var snapsHtml = snapshots.map(function(snap, idx) {
+      var timeText = formatRecallTimestamp(snap && snap.timestamp);
+      var directCount = Math.max(0, Number(snap && snap.directCount) || 0);
+      var semCount = Math.max(0, Number(snap && snap.semanticFallbackCount) || 0);
+      var relCount = Math.max(0, Number(snap && snap.relatedCount) || 0);
+      var items = Array.isArray(snap && snap.items) ? snap.items : [];
+
+      var itemsHtml = items.length
+        ? items.map(function(it) {
+            var memId = String((it && it.memoryId) || '').trim();
+            var src = String((it && it.source) || '').trim();
+            var srcLabel = RECALL_SOURCE_LABEL_MAP[src] || src || '未知来源';
+            var srcCls = getRecallSourceClass(src);
+            var relExtraHtml = '';
+            if (src === 'related') {
+              var relLabel = formatRecallRelationLabel(it && it.relationType);
+              var seedId = String((it && it.seedMemoryId) || '').trim();
+              relExtraHtml =
+                '<div class="aiw-recall-item-rel">' +
+                  '<span class="aiw-recall-rel-type">关系：' + escapeHtml(relLabel) + '</span>' +
+                  (seedId ? ('<span class="aiw-recall-rel-seed">起点：' + escapeHtml(seedId) + '</span>') : '') +
+                '</div>';
+            }
+            return (
+              '<div class="aiw-recall-item">' +
+                '<div class="aiw-recall-item-main">' +
+                  '<span class="aiw-recall-item-id">' + escapeHtml(memId || '未知ID') + '</span>' +
+                  '<span class="aiw-recall-source-badge ' + srcCls + '">' + escapeHtml(srcLabel) + '</span>' +
+                '</div>' +
+                relExtraHtml +
+              '</div>'
+            );
+          }).join('')
+        : '<div class="aiw-recall-item-none">本次召回未命中可展示的长期记忆</div>';
+
+      return (
+        '<div class="aiw-recall-snap-item">' +
+          '<div class="aiw-recall-snap-top">' +
+            '<span class="aiw-recall-snap-idx">#' + (idx + 1) + '</span>' +
+            '<span class="aiw-recall-snap-time">' + escapeHtml(timeText) + '</span>' +
+          '</div>' +
+          '<div class="aiw-recall-counts">' +
+            '<div class="aiw-recall-count-cell is-direct">' +
+              '<span class="aiw-recall-count-lbl">直接召回</span>' +
+              '<span class="aiw-recall-count-val">' + directCount + '</span>' +
+            '</div>' +
+            '<div class="aiw-recall-count-cell is-semantic">' +
+              '<span class="aiw-recall-count-lbl">语义兜底</span>' +
+              '<span class="aiw-recall-count-val">' + semCount + '</span>' +
+            '</div>' +
+            '<div class="aiw-recall-count-cell is-related">' +
+              '<span class="aiw-recall-count-lbl">关联补充</span>' +
+              '<span class="aiw-recall-count-val">' + relCount + '</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="aiw-recall-items">' + itemsHtml + '</div>' +
+        '</div>'
+      );
+    }).join('');
+
+    return (
+      '<div id="aiw-recall-diag-section" class="aiw-st-card aiw-st-pad aiw-recall-diag-card">' +
+        headerHtml +
+        '<div class="aiw-recall-snap-list">' + snapsHtml + '</div>' +
+      '</div>'
+    );
+  }
+
   // ===== 视图 7D：记忆诊断独立页面 =====
   function renderMemoryDiagnosticsHtml() {
     return (
@@ -2424,6 +3002,7 @@
       '</div>' +
 
       '<div class="aiw-st-scroll">' +
+        renderRecentRecallDiagnosticsHtml() +
         '<div class="aiw-rm-notice">' +
           '<i class="fa-solid fa-circle-info"></i>' +
           '<span>此处记录自动提取、明确记住、修改删除及短期摘要任务的真实执行状态、失败原因与七步诊断详情，支持对失败任务发起重试。</span>' +
@@ -2437,12 +3016,56 @@
     bindMemoryTaskActions(layer);
   }
 
+  function computeRestoredAutoImportance(existingMem, draftOverrides) {
+    var base = existingMem && typeof existingMem === 'object' ? existingMem : {};
+    var ov = draftOverrides && typeof draftOverrides === 'object' ? draftOverrides : {};
+    var mgr = Mgr();
+    var origContent = String(base.content || '').trim();
+    var contentVal = ov.content != null ? String(ov.content).trim() : origContent;
+    if (!contentVal) contentVal = origContent;
+    var categoryVal = ov.category != null ? String(ov.category).trim() : String(base.category || '').trim();
+
+    // 显式解除手动锁定并移除旧手动分，确保 evaluateInitialImportance 基于内容与语义重新计算
+    var autoDraft = {
+      category: categoryVal,
+      content: contentVal,
+      rawExpression: contentVal === origContent ? String(base.rawExpression || '') : '',
+      temporalState: base.temporalState || 'current',
+      status: base.status || 'active',
+      factType: base.factType || 'direct_fact',
+      userConfirmed: base.userConfirmed === true,
+      manualImportance: false
+    };
+
+    var initialImp = (mgr && typeof mgr.evaluateInitialImportance === 'function')
+      ? mgr.evaluateInitialImportance(autoDraft, {})
+      : 3;
+    initialImp = Number.isFinite(Number(initialImp))
+      ? Math.max(1, Math.min(5, Math.round(Number(initialImp))))
+      : 3;
+
+    var indepCount = Math.max(1, Math.round(Number(base.independentMentionCount) || 1));
+    var mentionBoost = (mgr && typeof mgr.getIndependentMentionBoost === 'function')
+      ? (Number(mgr.getIndependentMentionBoost(indepCount)) || 0)
+      : 0;
+    var finalImp = Math.max(1, Math.min(5, Math.round(initialImp + mentionBoost)));
+
+    return {
+      initialImportance: initialImp,
+      independentMentionCount: indepCount,
+      mentionBoost: mentionBoost,
+      importance: finalImp
+    };
+  }
+
   function openMemoryEditorModal(layer, existingMem) {
     var isEdit = !!(existingMem && existingMem.id);
     var categories = (S() && S().MEMORY_CATEGORIES) || ['偏好', '习惯', '长期计划', '项目', '决定', '备忘', '身份信息'];
     var draftCat = (existingMem && existingMem.category) || '偏好';
     var draftScope = (existingMem && existingMem.scope) || 'user';
     var draftImp = (existingMem && existingMem.importance) || 3;
+    var draftManualImp = isEdit ? (existingMem.manualImportance === true) : true;
+    var lastAutoRestoreInfo = null;
     var maxSingleLen = (_ctx.memorySettings && _ctx.memorySettings.maxSingleMemoryLength) || 260;
 
     var catChips = categories.map(function(cat) {
@@ -2464,6 +3087,26 @@
       return '<button type="button" class="aiw-seg-btn' + (num === draftImp ? ' active' : '') + '" data-mem-imp="' + num + '">' + num + '</button>';
     }).join('');
 
+    var impHeaderHtml = isEdit
+      ? (
+        '<div class="aiw-mem-imp-head" style="margin-top:12px;">' +
+          '<div class="aiw-mem-imp-title-wrap">' +
+            '<label class="aiw-field-label" style="margin:0;">重要程度（1-5）</label>' +
+            '<span class="aiw-mem-imp-mode ' + (draftManualImp ? 'is-manual' : 'is-auto') + '" id="aiw-mem-ed-imp-mode">' + (draftManualImp ? '手动锁定' : '自动评分') + '</span>' +
+          '</div>' +
+          '<button type="button" class="aiw-mem-imp-restore-btn" id="aiw-mem-ed-restore-auto"' + (draftManualImp ? '' : ' hidden') + '>' +
+            '<i class="fa-solid fa-rotate-left"></i><span>恢复自动评分</span>' +
+          '</button>' +
+        '</div>'
+      )
+      : '<label class="aiw-field-label" style="margin-top:12px;">重要程度（1-5）</label>';
+
+    var impHintHtml = isEdit
+      ? '<div class="aiw-mem-imp-hint" id="aiw-mem-ed-imp-hint">' +
+          (draftManualImp ? '当前为手动锁定评分，不受自动加权与时间衰减影响' : '当前为自动评分管理，将随重复提及与时间变化自动评估') +
+        '</div>'
+      : '';
+
     var bodyHtml =
       '<label class="aiw-field-label" for="aiw-mem-ed-content">记忆内容 *</label>' +
       '<textarea class="aiw-field-textarea" id="aiw-mem-ed-content" rows="4" maxlength="' + escapeHtml(String(maxSingleLen)) + '" placeholder="例如：用户不喜欢香菜，点外卖或推荐食谱时请避开">' + escapeHtml(existingMem ? existingMem.content : '') + '</textarea>' +
@@ -2471,8 +3114,9 @@
       '<div class="aiw-chip-grid">' + catChips + '</div>' +
       '<label class="aiw-field-label" style="margin-top:12px;">适用范围</label>' +
       '<div class="aiw-seg-control">' + scopeSegs + '</div>' +
-      '<label class="aiw-field-label" style="margin-top:12px;">重要程度（1-5）</label>' +
-      '<div class="aiw-seg-control">' + impBtns + '</div>';
+      impHeaderHtml +
+      '<div class="aiw-seg-control">' + impBtns + '</div>' +
+      impHintHtml;
 
     var footerHtml =
       '<button type="button" class="aiw-st-btn-secondary" id="aiw-mem-ed-cancel">取消</button>' +
@@ -2480,6 +3124,37 @@
 
     var modal = showCustomModal(isEdit ? '编辑长期记忆' : '新增长期记忆', bodyHtml, footerHtml);
     if (!modal) return;
+
+    function syncImportanceUi() {
+      modal.querySelectorAll('[data-mem-imp]').forEach(function(b) {
+        var val = Number(b.getAttribute('data-mem-imp')) || 3;
+        b.classList.toggle('active', val === draftImp);
+      });
+      if (!isEdit) return;
+      var modeEl = modal.querySelector('#aiw-mem-ed-imp-mode');
+      var restoreBtn = modal.querySelector('#aiw-mem-ed-restore-auto');
+      var hintEl = modal.querySelector('#aiw-mem-ed-imp-hint');
+      if (modeEl) {
+        modeEl.textContent = draftManualImp ? '手动锁定' : '自动评分';
+        modeEl.classList.toggle('is-manual', draftManualImp);
+        modeEl.classList.toggle('is-auto', !draftManualImp);
+      }
+      if (restoreBtn) {
+        restoreBtn.hidden = !draftManualImp;
+      }
+      if (hintEl) {
+        if (draftManualImp) {
+          hintEl.textContent = '当前为手动锁定评分，不受自动加权与时间衰减影响';
+        } else if (lastAutoRestoreInfo) {
+          var boostPart = lastAutoRestoreInfo.mentionBoost > 0
+            ? ('，含 ' + lastAutoRestoreInfo.independentMentionCount + ' 次独立提及 +' + lastAutoRestoreInfo.mentionBoost + ' 分')
+            : '';
+          hintEl.textContent = '已恢复自动评分，建议 ' + lastAutoRestoreInfo.importance + ' 分（基础 ' + lastAutoRestoreInfo.initialImportance + ' 分' + boostPart + '），保存后生效';
+        } else {
+          hintEl.textContent = '当前为自动评分管理，将随重复提及与时间变化自动评估';
+        }
+      }
+    }
 
     modal.querySelectorAll('[data-mem-cat]').forEach(function(btn) {
       btn.addEventListener('click', function() {
@@ -2502,11 +3177,28 @@
     modal.querySelectorAll('[data-mem-imp]').forEach(function(btn) {
       btn.addEventListener('click', function() {
         draftImp = Number(btn.getAttribute('data-mem-imp')) || 3;
-        modal.querySelectorAll('[data-mem-imp]').forEach(function(b) {
-          b.classList.toggle('active', b === btn);
-        });
+        // 主动点击评分按钮即视为明确手动评分操作，即使与原分值相同也进入手动锁定
+        draftManualImp = true;
+        lastAutoRestoreInfo = null;
+        syncImportanceUi();
       });
     });
+
+    var restoreAutoBtn = modal.querySelector('#aiw-mem-ed-restore-auto');
+    if (restoreAutoBtn && isEdit) {
+      restoreAutoBtn.addEventListener('click', function() {
+        var contentEl = modal.querySelector('#aiw-mem-ed-content');
+        var currentContent = contentEl ? contentEl.value.trim() : '';
+        var calc = computeRestoredAutoImportance(existingMem, {
+          content: currentContent || existingMem.content,
+          category: draftCat
+        });
+        draftManualImp = false;
+        draftImp = calc.importance;
+        lastAutoRestoreInfo = calc;
+        syncImportanceUi();
+      });
+    }
 
     modal.querySelector('#aiw-mem-ed-cancel').addEventListener('click', closeModalOverlay);
     modal.querySelector('#aiw-mem-ed-save').addEventListener('click', async function() {
@@ -2519,26 +3211,60 @@
         notifyToast('为了安全，长期记忆不支持保存密码、API Key 或验证码等敏感信息');
         return;
       }
+      var savedId = '';
+      var mgr = Mgr();
+      var sc = (mgr && typeof mgr.extractScenarioContext === 'function') ? mgr.extractScenarioContext(content) : { code: '', label: '' };
+      var ents = (mgr && typeof mgr.extractConcreteEntities === 'function') ? mgr.extractConcreteEntities({ content: content, category: draftCat }) : [];
       if (isEdit) {
-        await S().updateMemory(existingMem.id, {
+        var nextManualImp = draftManualImp === true;
+        var updDraft = Object.assign({}, existingMem, {
           content: content,
           category: draftCat,
           scope: draftScope,
-          importance: draftImp
+          importance: draftImp,
+          manualImportance: nextManualImp,
+          userConfirmed: true
         });
+        var updScore = (mgr && typeof mgr.computeDynamicScore === 'function') ? mgr.computeDynamicScore(updDraft) : existingMem.dynamicScore;
+        var editReason = (existingMem.manualImportance === true && !nextManualImp) ? '恢复自动评分' : '用户手动编辑';
+        var updatedMem = await S().updateMemory(existingMem.id, {
+          content: content,
+          category: draftCat,
+          scope: draftScope,
+          importance: draftImp,
+          manualImportance: nextManualImp,
+          dynamicScore: updScore,
+          userConfirmed: true,
+          scenario: sc.code || existingMem.scenario || '',
+          scenarioLabel: sc.label || existingMem.scenarioLabel || '',
+          entities: ents
+        }, { historyReason: editReason });
+        savedId = updatedMem ? updatedMem.id : existingMem.id;
         notifyToast('记忆已更新');
       } else {
         if (typeof S().removeDeletedMemorySignatureByContent === 'function') {
           await S().removeDeletedMemorySignatureByContent(content);
         }
-        await S().createMemory({
+        var newDraft = { content: content, category: draftCat, importance: draftImp, manualImportance: true, userConfirmed: true, status: 'active' };
+        var newScore = (mgr && typeof mgr.computeDynamicScore === 'function') ? mgr.computeDynamicScore(newDraft) : (draftImp * 18);
+        var createdMem = await S().createMemory({
           content: content,
           category: draftCat,
           scope: draftScope,
           importance: draftImp,
+          manualImportance: true,
+          dynamicScore: newScore,
+          userConfirmed: true,
+          scenario: sc.code || '',
+          scenarioLabel: sc.label || '',
+          entities: ents,
           sourceChatTitle: '手动添加'
         });
+        savedId = createdMem ? createdMem.id : '';
         notifyToast('已添加长期记忆');
+      }
+      if (savedId && mgr && typeof mgr.syncRelationsForMemory === 'function') {
+        await mgr.syncRelationsForMemory(savedId, 'local_user');
       }
       _ctx.memories = await S().listMemories();
       closeModalOverlay();
@@ -2549,7 +3275,7 @@
 
   function bindMemoryListItemEvents(layer) {
     layer.querySelectorAll('[data-mem-act]').forEach(function(btn) {
-      btn.addEventListener('click', function() {
+      btn.addEventListener('click', async function() {
         var act = btn.getAttribute('data-mem-act');
         var id = btn.getAttribute('data-mem-id');
         var mem = (_ctx.memories || []).find(function(m) { return m.id === id; });
@@ -2557,10 +3283,30 @@
 
         if (act === 'edit') {
           openMemoryEditorModal(layer, mem);
+        } else if (act === 'archive') {
+          if (Mgr() && typeof Mgr().archiveMemory === 'function') {
+            await Mgr().archiveMemory(id, '用户手动归档留存');
+          } else {
+            await S().updateMemory(id, { archived: true, archivedAt: Date.now(), archiveReason: '用户手动归档留存' });
+          }
+          _ctx.memories = await S().listMemories();
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast('已归档该条记忆（仍可在「已归档」中查看和恢复）');
+        } else if (act === 'unarchive') {
+          if (Mgr() && typeof Mgr().unarchiveMemory === 'function') {
+            await Mgr().unarchiveMemory(id);
+          } else {
+            await S().updateMemory(id, { archived: false, archivedAt: 0, archiveReason: '', status: 'active', temporalState: 'current' });
+          }
+          _ctx.memories = await S().listMemories();
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast('已恢复为当前有效记忆');
         } else if (act === 'delete') {
           showConfirmModal(
             '删除长期记忆',
-            '确定要删除这条记忆吗？删除后将立即停止在对话中检索使用。',
+            '确定要删除这条记忆吗？删除后将立即停止在对话中检索使用，并自动清理相关联记录中的断链。',
             '确认删除',
             true,
             async function() {
@@ -2947,6 +3693,12 @@
   global.AiWorkspaceSettings = {
     openSettingsCenter: openSettingsCenter,
     closeSettingsCenter: closeLayer,
-    refreshMemoryViewsIfOpen: refreshMemoryViewsIfOpen
+    refreshMemoryViewsIfOpen: refreshMemoryViewsIfOpen,
+    buildMemoryDecayDiagnostics: buildMemoryDecayDiagnostics,
+    renderMemoryCardsHtml: renderMemoryCardsHtml,
+    renderRecentRecallDiagnosticsHtml: renderRecentRecallDiagnosticsHtml,
+    renderMemoryDiagnosticsHtml: renderMemoryDiagnosticsHtml,
+    computeRestoredAutoImportance: computeRestoredAutoImportance,
+    openMemoryEditorModal: openMemoryEditorModal
   };
 })(window);

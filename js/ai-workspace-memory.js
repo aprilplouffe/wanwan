@@ -114,6 +114,14 @@
     return global.AiWorkspaceAI;
   }
 
+  function Sem() {
+    return global.AiWorkspaceSemantic;
+  }
+
+  function Mgr() {
+    return global.AiWorkspaceMemoryManager;
+  }
+
   function resolveMemoryParams(settings) {
     var store = S();
     var sanitized = (store && typeof store.sanitizeMemorySettings === 'function')
@@ -263,6 +271,31 @@
       }
     }
 
+    var sem = Sem();
+    if (sem && typeof sem.extractSemanticConcepts === 'function') {
+      var semInfo = sem.extractSemanticConcepts(text);
+      if (semInfo && Array.isArray(semInfo.concepts)) {
+        for (var sc = 0; sc < semInfo.concepts.length; sc++) {
+          concepts.add('sem:' + semInfo.concepts[sc]);
+        }
+      }
+    }
+    if (sem && typeof sem.canonicalizeSemanticText === 'function') {
+      var canonText = sem.canonicalizeSemanticText(src).toLowerCase();
+      if (canonText && canonText !== src) {
+        var canonRuns = canonText.match(/[\u4e00-\u9fa5]+/g) || [];
+        for (var cr = 0; cr < canonRuns.length; cr++) {
+          var cRun = canonRuns[cr];
+          for (var cg = 0; cg <= cRun.length - 2; cg++) {
+            var cbg = cRun.slice(cg, cg + 2);
+            if (!STOP_CHARS.has(cbg.charAt(0)) && !STOP_CHARS.has(cbg.charAt(1))) {
+              bigrams.add(cbg);
+            }
+          }
+        }
+      }
+    }
+
     return {
       terms: terms,
       enTerms: enTerms,
@@ -278,9 +311,15 @@
     if (!normA || !normB) return 0;
     if (normA === normB) return 1;
 
+    var sem = Sem();
+    var semSim = (sem && typeof sem.computeSemanticEquivalence === 'function')
+      ? sem.computeSemanticEquivalence(textA, textB)
+      : 0;
+    if (semSim >= 0.9) return semSim;
+
     if ((normA.indexOf(normB) !== -1 || normB.indexOf(normA) !== -1) &&
         Math.min(normA.length, normB.length) / Math.max(normA.length, normB.length) >= 0.72) {
-      return 0.85;
+      return Math.max(0.85, semSim);
     }
 
     var fa = extractSearchFeatures(textA);
@@ -288,14 +327,15 @@
 
     var setA = fa.bigrams.size > 0 ? fa.bigrams : fa.terms;
     var setB = fb.bigrams.size > 0 ? fb.bigrams : fb.terms;
-    if (setA.size === 0 || setB.size === 0) return 0;
+    if (setA.size === 0 || setB.size === 0) return semSim;
 
     var inter = 0;
     setA.forEach(function(item) {
       if (setB.has(item)) inter++;
     });
     var union = setA.size + setB.size - inter;
-    return union > 0 ? (inter / union) : 0;
+    var lexSim = union > 0 ? (inter / union) : 0;
+    return Math.max(lexSim, semSim);
   }
 
   // ===== 3. 作用域、权限与墓碑过滤 =====
@@ -334,12 +374,20 @@
     if (!text || !Array.isArray(deletedSigs) || !deletedSigs.length) return null;
     var norm = normalizeMemoryText(text);
     if (!norm) return null;
+    var sem = Sem();
+    var mgr = Mgr();
 
     for (var i = 0; i < deletedSigs.length; i++) {
       var sig = deletedSigs[i];
       if (!sig || !sig.norm) continue;
       if (sig.norm === norm) return sig;
       if (sig.content && computeTextSimilarity(text, sig.content) >= 0.65) return sig;
+      if (sig.content && sem && typeof sem.computeSemanticEquivalence === 'function') {
+        if (sem.computeSemanticEquivalence(text, sig.content, '', '') >= 0.8) return sig;
+      }
+      if (sig.content && mgr && typeof mgr.isSemanticDuplicatePair === 'function') {
+        if (mgr.isSemanticDuplicatePair(text, '', { content: sig.content, category: '' })) return sig;
+      }
 
       if (sig.content) {
         var sigFeat = extractSearchFeatures(sig.content);
@@ -442,6 +490,9 @@
 
     return {
       score: score,
+      specificBigramHits: specificBigramHits,
+      enTermHits: enTermHits,
+      conceptHits: conceptHits,
       hasLexicalOrConceptMatch: (specificBigramHits > 0 || enTermHits > 0 || conceptHits > 0)
     };
   }
@@ -698,6 +749,420 @@
   }
 
   // ===== 6. 统一三层记忆检索入口（供聊天主流程调用） =====
+  var ALLOWED_EXPAND_RELATION_WEIGHTS = {
+    project_part: 1.0,
+    supports_goal: 0.95,
+    uses_tech: 0.9,
+    related_plan: 0.85,
+    related_entity: 0.75
+  };
+
+  function measureMemoryContextChars(mem) {
+    if (!mem || typeof mem !== 'object') return 0;
+    var content = String(mem.content || '').trim();
+    var cat = mem.category ? ('[' + String(mem.category) + '] ') : '';
+    var sceneTag = mem.scenarioLabel ? ('[' + String(mem.scenarioLabel) + '] ') : '';
+    var st = String(mem.status || 'active').toLowerCase();
+    var ts = String(mem.temporalState || 'current').toLowerCase();
+    var statusTag = '';
+    if (st === 'cancelled' || ts === 'cancelled') statusTag = '[已取消 · 非当前目标] ';
+    else if (st === 'paused' || ts === 'paused') statusTag = '[暂时搁置 · 非当前进行中] ';
+    else if (st === 'completed' || ts === 'completed') statusTag = '[已完成 · 已归档] ';
+    else if (st === 'historical' || ts === 'past') statusTag = '[历史记录 · 非当前偏好] ';
+    else if (mem.archived) statusTag = '[已归档 · 历史参考] ';
+    else if (ts === 'future_plan') statusTag = '[计划中] ';
+    var conflictTag = (mem.conflictState === 'pending_confirmation' || mem.conflictState === 'conflict_pending') ? '[存在待确认冲突] ' : '';
+    var formattedLineLen = ('- ' + statusTag + conflictTag + sceneTag + cat + content).length + 1;
+    var baseLen = String(mem.content || '').length + 12;
+    return Math.max(baseLen, formattedLineLen);
+  }
+
+  function isEligibleRelatedMemory(mem) {
+    if (!mem || typeof mem !== 'object' || !mem.id) return false;
+    var st = String(mem.status || 'active').toLowerCase();
+    if (st !== 'active') return false;
+    var ts = String(mem.temporalState || 'current').toLowerCase();
+    if (ts === 'cancelled' || ts === 'completed' || ts === 'paused' || ts === 'past' || ts === 'historical') {
+      return false;
+    }
+    if (mem.archived === true) return false;
+    if (String(mem.supersededById || '').trim()) return false;
+    var cState = String(mem.conflictState || 'none').toLowerCase();
+    if (cState === 'pending_confirmation' || cState === 'conflict_pending') return false;
+    return true;
+  }
+
+  var RELATED_ENTITY_GENERIC_STOPWORDS = new Set([
+    '用户', '本人', '自己', '喜欢', '偏爱', '偏好', '爱吃', '爱喝', '习惯',
+    '计划', '长期计划', '项目', '开发', '研发', '制作', '搭建', '推进',
+    '学习', '开始学习', '持续学习', '工作', '上班', '周末', '平时', '最近',
+    '现在', '目前', '以前', '之前', '以后', '未来', '准备', '打算', '决定',
+    '目标', '技术', '方案', '方法', '方式', '问题', '内容', '时间', '东西',
+    '事情', '一下', '一个', '一款', '一种', '回复', '回答', '输出', '风格',
+    '简洁', '详细', '系统', '软件', '应用', '工具', '平台', '功能', '服务',
+    '一直', '经常', '每天', '偶尔', '临时', '取消', '完成', '搁置', '暂停',
+    '历史', '记录', '记忆', '备忘', '身份信息', '这个', '那个', '已经',
+    '正在', '希望', '尽量', '不要', '可以', '需要', '进行', '完善',
+    '兴趣', '爱好', '日常', '生活', '通用', '其他', '相关', '主题', '任务',
+    '安排', '想法', 'ai', 'app', 'web'
+  ]);
+
+  function normalizeStrictRelatedEntity(raw) {
+    var clean = String(raw || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^[\s：:「《"'(（【\[]+|[\s：:」》"')）】\]]+$/g, '')
+      .replace(/\s+/g, '');
+    if (!clean || clean.length < 2 || clean.length > 24) return '';
+    if (clean.indexOf('proj:') === 0) {
+      var projRest = clean.slice(5).trim();
+      return projRest ? ('proj:' + projRest) : '';
+    }
+    if (RELATED_ENTITY_GENERIC_STOPWORDS.has(clean)) return '';
+    if (/^\d+$/.test(clean)) return '';
+    if (/^(?:一款|一个|这个|那个|我的|用户|目前|正在|已经|以后|最近)/.test(clean)) return '';
+    return clean;
+  }
+
+  function collectNormalizedStrictEntities(mem, mgr) {
+    var out = new Set();
+    if (!mem || typeof mem !== 'object') return out;
+    var rawList = (Array.isArray(mem.entities) && mem.entities.length > 0)
+      ? mem.entities
+      : ((mgr && typeof mgr.extractConcreteEntities === 'function') ? mgr.extractConcreteEntities(mem) : []);
+    if (!Array.isArray(rawList)) return out;
+    for (var i = 0; i < rawList.length; i++) {
+      var norm = normalizeStrictRelatedEntity(rawList[i]);
+      if (norm) out.add(norm);
+    }
+    return out;
+  }
+
+  function hasReliableRelatedEntityEvidence(seed, target, mgr, entityCache) {
+    if (!seed || !target) return false;
+
+    // 1) 明确属于同一非空 projectId
+    var seedProj = String(seed.projectId || '').trim();
+    var targetProj = String(target.projectId || '').trim();
+    if (seedProj && targetProj && seedProj === targetProj) {
+      return true;
+    }
+
+    // 2) 规范化后的完整具体实体精确匹配（禁止子串包含、禁止仅同分类/同对话/泛化词放行）
+    var getEntSet = function(mem) {
+      if (entityCache && mem.id && entityCache[mem.id]) return entityCache[mem.id];
+      var set = collectNormalizedStrictEntities(mem, mgr);
+      if (entityCache && mem.id) entityCache[mem.id] = set;
+      return set;
+    };
+    var seedEnts = getEntSet(seed);
+    if (!seedEnts.size) return false;
+    var targetEnts = getEntSet(target);
+    if (!targetEnts.size) return false;
+
+    var matched = false;
+    seedEnts.forEach(function(ent) {
+      if (!matched && targetEnts.has(ent)) matched = true;
+    });
+    return matched;
+  }
+
+  var MAX_RECALL_DIAGNOSTIC_SNAPSHOTS = 5;
+  var _recentRecallDiagnostics = [];
+
+  function resolveTrustedCurrentUserId() {
+    var store = S();
+    if (store && typeof store.getCurrentUserId === 'function') {
+      try {
+        var uid = String(store.getCurrentUserId() || '').trim();
+        return uid || '';
+      } catch (_) {
+        return '';
+      }
+    }
+    return 'local_user';
+  }
+
+  function clonePublicRecallItem(item) {
+    if (!item || typeof item !== 'object') return null;
+    var out = {
+      memoryId: String(item.memoryId || ''),
+      source: String(item.source || '')
+    };
+    if (out.source === 'related') {
+      out.seedMemoryId = String(item.seedMemoryId || '');
+      out.relationType = String(item.relationType || '');
+    }
+    return out;
+  }
+
+  function clonePublicRecallSnapshot(snap, overrideItems) {
+    if (!snap || typeof snap !== 'object') return null;
+    var srcItems = Array.isArray(overrideItems) ? overrideItems : (Array.isArray(snap.items) ? snap.items : []);
+    var clonedItems = [];
+    var directCount = 0;
+    var semanticFallbackCount = 0;
+    var relatedCount = 0;
+    for (var i = 0; i < srcItems.length; i++) {
+      var ci = clonePublicRecallItem(srcItems[i]);
+      if (!ci) continue;
+      clonedItems.push(ci);
+      if (ci.source === 'direct') directCount++;
+      else if (ci.source === 'semantic_fallback') semanticFallbackCount++;
+      else if (ci.source === 'related') relatedCount++;
+    }
+    return {
+      timestamp: Number(snap.timestamp) || 0,
+      userId: String(snap.userId || ''),
+      chatId: String(snap.chatId || ''),
+      projectId: String(snap.projectId || ''),
+      allowCrossChat: snap.allowCrossChat === true,
+      directCount: directCount,
+      semanticFallbackCount: semanticFallbackCount,
+      relatedCount: relatedCount,
+      items: clonedItems
+    };
+  }
+
+  function recordRecallDiagnosticSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    _recentRecallDiagnostics.unshift(snapshot);
+    if (_recentRecallDiagnostics.length > MAX_RECALL_DIAGNOSTIC_SNAPSHOTS) {
+      _recentRecallDiagnostics.length = MAX_RECALL_DIAGNOSTIC_SNAPSHOTS;
+    }
+  }
+
+  function isRecallDiagnosticItemAccessible(item, ctx) {
+    if (!item || !item.memoryId) return false;
+    if (ctx.validIdSet && !ctx.validIdSet.has(item.memoryId)) return false;
+
+    var scope = String(item.scope || 'user').toLowerCase();
+    var itemChatId = String(item.sourceChatId || '').trim();
+    var itemProjectId = String(item.projectId || '').trim();
+
+    if (scope === 'chat') {
+      return !!(ctx.chatId && itemChatId && itemChatId === ctx.chatId);
+    }
+    if (scope === 'project') {
+      if (!ctx.projectId || !itemProjectId || itemProjectId !== ctx.projectId) return false;
+      if (!ctx.allowCrossChat && itemChatId && itemChatId !== ctx.chatId) return false;
+      return true;
+    }
+    if (scope === 'user') {
+      if (!ctx.allowCrossChat && itemChatId && itemChatId !== ctx.chatId) return false;
+      return true;
+    }
+    return false;
+  }
+
+  function getRecentRecallDiagnostics(filter) {
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter)) return [];
+
+    // 必须显式提供完整权限上下文，否则保守返回空数组
+    if (typeof filter.userId !== 'string') return [];
+    var reqUserId = filter.userId.trim();
+    if (!reqUserId || reqUserId === '*' || reqUserId.toLowerCase() === 'all' || reqUserId.toLowerCase() === 'any') {
+      return [];
+    }
+
+    // 校验可信当前用户身份，禁止通过传入任意 userId 越权读取
+    var trustedUserId = resolveTrustedCurrentUserId();
+    if (!trustedUserId || reqUserId !== trustedUserId) return [];
+
+    if (typeof filter.allowCrossChat !== 'boolean') return [];
+    if (typeof filter.chatId !== 'string') return [];
+    if (typeof filter.projectId !== 'string') return [];
+
+    var chatId = filter.chatId.trim();
+    var projectId = filter.projectId.trim();
+    var allowCrossChat = filter.allowCrossChat;
+
+    // 关闭跨聊天记忆时必须具备明确的当前 chatId
+    if (!allowCrossChat && !chatId) return [];
+
+    var validIdSet = null;
+    if (Object.prototype.hasOwnProperty.call(filter, 'validMemoryIds') && filter.validMemoryIds !== undefined) {
+      var isSetLike = (typeof Set !== 'undefined' && filter.validMemoryIds instanceof Set) ||
+        Object.prototype.toString.call(filter.validMemoryIds) === '[object Set]';
+      if (isSetLike && typeof filter.validMemoryIds.forEach === 'function') {
+        validIdSet = new Set();
+        filter.validMemoryIds.forEach(function(id) {
+          var s = String(id || '').trim();
+          if (s) validIdSet.add(s);
+        });
+      } else if (Array.isArray(filter.validMemoryIds)) {
+        validIdSet = new Set();
+        for (var v = 0; v < filter.validMemoryIds.length; v++) {
+          var vs = String(filter.validMemoryIds[v] || '').trim();
+          if (vs) validIdSet.add(vs);
+        }
+      } else {
+        return [];
+      }
+    }
+
+    var ctx = {
+      userId: reqUserId,
+      chatId: chatId,
+      projectId: projectId,
+      allowCrossChat: allowCrossChat,
+      validIdSet: validIdSet
+    };
+
+    var results = [];
+    for (var i = 0; i < _recentRecallDiagnostics.length; i++) {
+      var snap = _recentRecallDiagnostics[i];
+      if (!snap || snap.userId !== reqUserId) continue;
+
+      // 关闭跨聊天时仅返回当前 chatId 产生的快照
+      if (!allowCrossChat && (!snap.chatId || snap.chatId !== chatId)) {
+        continue;
+      }
+
+      var rawItems = Array.isArray(snap.items) ? snap.items : [];
+      var accessibleItems = [];
+      var accessibleIds = new Set();
+      for (var j = 0; j < rawItems.length; j++) {
+        if (isRecallDiagnosticItemAccessible(rawItems[j], ctx)) {
+          accessibleItems.push(rawItems[j]);
+          accessibleIds.add(rawItems[j].memoryId);
+        }
+      }
+
+      // 若快照来自其他会话或其他项目且过滤后无可展示条目，不暴露该跨范围快照
+      var isSameChat = !!(chatId && snap.chatId === chatId);
+      var isSameProject = !snap.projectId || snap.projectId === projectId;
+      if (accessibleItems.length === 0 && (!isSameChat || !isSameProject)) {
+        continue;
+      }
+
+      var sanitizedItems = [];
+      for (var k = 0; k < accessibleItems.length; k++) {
+        var acc = accessibleItems[k];
+        if (acc.source === 'related' && acc.seedMemoryId && !accessibleIds.has(acc.seedMemoryId)) {
+          sanitizedItems.push({
+            memoryId: acc.memoryId,
+            source: acc.source,
+            seedMemoryId: '',
+            relationType: acc.relationType
+          });
+        } else {
+          sanitizedItems.push(acc);
+        }
+      }
+
+      var clonedSnap = clonePublicRecallSnapshot(snap, sanitizedItems);
+      if (clonedSnap) results.push(clonedSnap);
+    }
+
+    return results;
+  }
+
+  function expandRelatedMemories(primaryMemories, accessibleMemories, options) {
+    var primary = Array.isArray(primaryMemories) ? primaryMemories : [];
+    var accessible = Array.isArray(accessibleMemories) ? accessibleMemories : [];
+    if (primary.length === 0 || accessible.length === 0) return [];
+
+    var opts = options && typeof options === 'object' ? options : {};
+    var outMeta = Array.isArray(opts.outMeta) ? opts.outMeta : null;
+    var maxResults = Math.max(1, Number(opts.maxResults) || 5);
+    var maxRelated = Math.max(0, Math.min(2, opts.maxRelated != null ? Number(opts.maxRelated) : 2));
+    var remainingSlots = Math.min(maxRelated, maxResults - primary.length);
+    if (remainingSlots <= 0) return [];
+
+    var maxChars = Math.max(0, Number(opts.maxChars) || 0);
+    var usedChars = 0;
+    var chosenIds = new Set();
+    for (var p = 0; p < primary.length; p++) {
+      if (primary[p] && primary[p].id) chosenIds.add(primary[p].id);
+      usedChars += measureMemoryContextChars(primary[p]);
+    }
+    if (maxChars > 0 && usedChars >= maxChars) return [];
+
+    // 仅从已通过权限过滤的 accessibleMemories 建立索引，绝不访问原始全量库
+    var accessibleById = Object.create(null);
+    for (var a = 0; a < accessible.length; a++) {
+      if (accessible[a] && accessible[a].id) {
+        accessibleById[accessible[a].id] = accessible[a];
+      }
+    }
+
+    var mgr = opts.mgr || Mgr();
+    var recallNow = (opts.now != null && Number.isFinite(Number(opts.now)) && Number(opts.now) > 0) ? Number(opts.now) : Date.now();
+    var maxSeeds = Math.min(3, Math.max(1, Number(opts.maxSeeds) || 3), primary.length);
+    var candidateMap = Object.create(null);
+    var strictEntityCache = Object.create(null);
+
+    // 严格 1-hop 单跳扩展，仅取前 maxSeeds 条主要召回作为起点
+    for (var s = 0; s < maxSeeds; s++) {
+      var seed = primary[s];
+      var rels = seed && Array.isArray(seed.relations) ? seed.relations : [];
+      for (var r = 0; r < rels.length; r++) {
+        var rel = rels[r];
+        if (!rel || !rel.targetId || !rel.type) continue;
+        var relType = String(rel.type).trim();
+        var relWeight = ALLOWED_EXPAND_RELATION_WEIGHTS[relType];
+        if (!relWeight) continue;
+
+        var targetId = String(rel.targetId);
+        if (chosenIds.has(targetId)) continue;
+        var target = accessibleById[targetId];
+        if (!isEligibleRelatedMemory(target)) continue;
+
+        // 对 related_entity 弱关联增加严格完整实体 / 同非空项目 ID 证据校验
+        if (relType === 'related_entity' && !hasReliableRelatedEntityEvidence(seed, target, mgr, strictEntityCache)) {
+          continue;
+        }
+
+        var dynScore = (mgr && typeof mgr.computeDynamicScore === 'function')
+          ? mgr.computeDynamicScore(target, recallNow)
+          : (typeof target.dynamicScore === 'number' && Number.isFinite(target.dynamicScore)
+              ? target.dynamicScore
+              : (Number(target.importance) || 3) * 18);
+        var rankScore = relWeight * 40 + (Number.isFinite(dynScore) ? dynScore : 50) * 0.6 - s * 1.5;
+
+        var prev = candidateMap[targetId];
+        if (!prev || rankScore > prev.rankScore) {
+          candidateMap[targetId] = {
+            memory: target,
+            rankScore: rankScore,
+            dynScore: Number.isFinite(dynScore) ? dynScore : 50,
+            seedMemoryId: String((seed && seed.id) || ''),
+            relationType: relType
+          };
+        }
+      }
+    }
+
+    var candidates = Object.keys(candidateMap).map(function(id) { return candidateMap[id]; });
+    if (!candidates.length) return [];
+
+    candidates.sort(function(x, y) {
+      if (y.rankScore !== x.rankScore) return y.rankScore - x.rankScore;
+      if (y.dynScore !== x.dynScore) return y.dynScore - x.dynScore;
+      return (y.memory.updatedAt || y.memory.createdAt || 0) - (x.memory.updatedAt || x.memory.createdAt || 0);
+    });
+
+    var added = [];
+    for (var c = 0; c < candidates.length && added.length < remainingSlots; c++) {
+      var cand = candidates[c];
+      var candMem = cand.memory;
+      var candChars = measureMemoryContextChars(candMem);
+      if (maxChars > 0 && usedChars + candChars > maxChars) continue;
+      added.push(candMem);
+      if (outMeta) {
+        outMeta.push({
+          memoryId: String(candMem.id || ''),
+          source: 'related',
+          seedMemoryId: String(cand.seedMemoryId || ''),
+          relationType: String(cand.relationType || '')
+        });
+      }
+      usedChars += candChars;
+    }
+    return added;
+  }
+
   async function retrieveRelevantMemories(options) {
     var ctx = await retrieveWorkspaceContext(options);
     return ctx.memories;
@@ -774,22 +1239,48 @@
       });
     }
 
-    var asksHistoryOrCancelled = /(?:以前|曾经|原来|过去|历史|之前喜欢|取消|放弃|已取消|完成)/.test(rawQueryLower);
+    var asksHistoryOrCancelled = /(?:以前|曾经|原来|过去|历史|归档|之前喜欢|之前做过|以前做过|取消|放弃|已取消|完成|已完成|做完|搁置|暂停|暂缓|挂起|回忆|记录)/.test(rawQueryLower);
+    var recallNow = (opts.now != null && Number.isFinite(Number(opts.now)) && Number(opts.now) > 0) ? Number(opts.now) : Date.now();
+    var mgrForRecall = Mgr();
     var scoredMemories = [];
     for (var i = 0; i < accessibleMemories.length; i++) {
       var mem = accessibleMemories[i];
       var res = scoreTextRelevance(mem.content, mem.category, queryFeatures, metaRecall, rawQueryLower, mem.scope);
       if (res.score > 0) {
         res.score += ((Number(mem.importance) || 3) - 3) * 0.25;
+        var liveDynScore = (mgrForRecall && typeof mgrForRecall.computeDynamicScore === 'function')
+          ? mgrForRecall.computeDynamicScore(mem, recallNow)
+          : mem.dynamicScore;
+        if (typeof liveDynScore === 'number' && Number.isFinite(liveDynScore)) {
+          res.score += ((liveDynScore - 50) / 50) * 0.65;
+        }
         if (mem.scope === 'chat') res.score += 0.3;
         var memStatus = String(mem.status || 'active').toLowerCase();
         var memTemporal = String(mem.temporalState || 'current').toLowerCase();
+        var isArchived = mem.archived === true;
+        var strongEntityMatch = (res.specificBigramHits || 0) >= 2 || (res.enTermHits || 0) >= 1;
+
+        var memEntities = (Mgr() && typeof Mgr().extractConcreteEntities === 'function')
+          ? Mgr().extractConcreteEntities(mem)
+          : (Array.isArray(mem.entities) ? mem.entities : []);
+        var explicitEntityHit = memEntities.some(function(ent) {
+          return ent && rawQueryLower.indexOf(String(ent).toLowerCase()) !== -1;
+        });
+
         if (memStatus === 'cancelled' || memTemporal === 'cancelled') {
-          res.score += asksHistoryOrCancelled ? 0.5 : -2.2;
-        } else if (memStatus === 'historical' || memTemporal === 'past' || memStatus === 'completed' || memTemporal === 'completed') {
-          res.score += asksHistoryOrCancelled ? 0.5 : -1.4;
+          if (!asksHistoryOrCancelled && !explicitEntityHit) continue;
+          res.score += asksHistoryOrCancelled ? 0.6 : -1.2;
+        } else if (memStatus === 'paused' || memTemporal === 'paused') {
+          res.score += asksHistoryOrCancelled ? 0.6 : (explicitEntityHit ? -0.8 : -1.6);
+        } else if (memStatus === 'historical' || memTemporal === 'past') {
+          if (!asksHistoryOrCancelled && !explicitEntityHit) continue;
+          res.score += asksHistoryOrCancelled ? 0.6 : -1.2;
+        } else if (memStatus === 'completed' || memTemporal === 'completed') {
+          res.score += asksHistoryOrCancelled ? 0.6 : (strongEntityMatch ? -0.8 : -1.5);
+        } else if (isArchived) {
+          res.score += asksHistoryOrCancelled ? 0.7 : (strongEntityMatch ? -0.5 : -1.8);
         } else {
-          res.score += 1.2;
+          res.score += 1.25;
         }
       }
       if (res.score >= minScore && (metaRecall || res.hasLexicalOrConceptMatch)) {
@@ -803,6 +1294,27 @@
     });
 
     var chosenMemories = [];
+    var diagItems = [];
+    var diagRecordedIds = new Set();
+    var appendDiagItem = function(mem, source, extraMeta) {
+      if (!mem || !mem.id) return;
+      var memId = String(mem.id);
+      if (!memId || diagRecordedIds.has(memId)) return;
+      diagRecordedIds.add(memId);
+      var entry = {
+        memoryId: memId,
+        source: String(source || ''),
+        scope: String(mem.scope || 'user').toLowerCase(),
+        sourceChatId: String(mem.sourceChatId || '').trim(),
+        projectId: String(mem.projectId || '').trim()
+      };
+      if (entry.source === 'related') {
+        entry.seedMemoryId = String((extraMeta && extraMeta.seedMemoryId) || '');
+        entry.relationType = String((extraMeta && extraMeta.relationType) || '');
+      }
+      diagItems.push(entry);
+    };
+
     var usedMemChars = 0;
     var maxResults = Math.max(1, Math.min(12, Number(opts.maxResults != null ? opts.maxResults : params.maxMemoryRecallCount) || 5));
     var maxChars = Math.max(240, Number(opts.maxChars) || (maxResults * Math.max(140, params.maxSingleMemoryLength)));
@@ -811,6 +1323,7 @@
       var len = String(item.content || '').length + 12;
       if (chosenMemories.length > 0 && usedMemChars + len > maxChars) continue;
       chosenMemories.push(item);
+      appendDiagItem(item, 'direct');
       usedMemChars += len;
     }
 
@@ -859,7 +1372,10 @@
       if (semanticPicked.memIds.length) {
         semanticPicked.memIds.forEach(function(id) {
           var foundM = accessibleMemories.find(function(m) { return m.id === id; });
-          if (foundM && chosenMemories.length < maxResults) chosenMemories.push(foundM);
+          if (foundM && chosenMemories.length < maxResults) {
+            chosenMemories.push(foundM);
+            appendDiagItem(foundM, 'semantic_fallback');
+          }
         });
       }
       if (semanticPicked.crossIds.length && allowReferenceHistory) {
@@ -870,8 +1386,56 @@
       }
     }
 
+    if (chosenMemories.length > 0 && chosenMemories.length < maxResults && accessibleMemories.length > 0) {
+      var relatedMeta = [];
+      var relatedAddons = expandRelatedMemories(chosenMemories, accessibleMemories, {
+        maxResults: maxResults,
+        maxChars: maxChars,
+        maxSeeds: 3,
+        maxRelated: 2,
+        now: recallNow,
+        mgr: mgrForRecall,
+        outMeta: relatedMeta
+      });
+      for (var ra = 0; ra < relatedAddons.length; ra++) {
+        chosenMemories.push(relatedAddons[ra]);
+        appendDiagItem(relatedAddons[ra], 'related', relatedMeta[ra]);
+      }
+    }
+
+    if (chosenMemories.length > 0 && !opts.skipUsageTrack) {
+      var mgr = Mgr();
+      if (mgr && typeof mgr.recordMemoriesRecalled === 'function') {
+        try {
+          await mgr.recordMemoriesRecalled(chosenMemories);
+        } catch (_) {}
+      }
+    }
+
+    var directCount = 0;
+    var semanticFallbackCount = 0;
+    var relatedCount = 0;
+    for (var di = 0; di < diagItems.length; di++) {
+      if (diagItems[di].source === 'direct') directCount++;
+      else if (diagItems[di].source === 'semantic_fallback') semanticFallbackCount++;
+      else if (diagItems[di].source === 'related') relatedCount++;
+    }
+    var internalDiagSnapshot = {
+      timestamp: recallNow,
+      userId: userId,
+      chatId: chatId,
+      projectId: projectId,
+      allowCrossChat: allowCrossChat,
+      directCount: directCount,
+      semanticFallbackCount: semanticFallbackCount,
+      relatedCount: relatedCount,
+      items: diagItems
+    };
+    recordRecallDiagnosticSnapshot(internalDiagSnapshot);
+
     emptyResult.memories = chosenMemories;
     emptyResult.crossChatContexts = chosenCross;
+    emptyResult.recallDiagnostics = clonePublicRecallSnapshot(internalDiagSnapshot);
     return emptyResult;
   }
 
@@ -938,10 +1502,17 @@
     var text = String(userText || '').trim();
     if (!text || text.length < 4) return false;
     if (isPureGreetingOrFiller(text) || isPureQuestionWithoutFact(text)) return false;
-    return /(?:记忆|记住|记一下|记着|忘掉|忘记|算了.*不要|别再提|不要再提|不再喜欢|以后.*都按|以后就按|按这个来|以后我更|从今以后|往后都|刚才说的|前面说的|之前说的|这件事|那件事|留个底|持续关注|一直关注|帮我盯着|那个项目|这个项目|那个计划|这个计划)/.test(text);
+    if (hasVagueContextReference(text) && /(?:记住|记一下|记着|关注|跟进|按这个来|搁置|暂停|暂缓|放一放|取消|放弃|完成|做完|考过|删掉|忘掉)/.test(text)) {
+      return true;
+    }
+    return /(?:记忆|记住|记一下|记着|忘掉|忘记|算了.*不要|别再提|不要再提|不再喜欢|以后.*都按|以后就按|按这个来|以后我更|从今以后|往后都|刚才说的|前面说的|之前说的|这件事|那件事|留个底|持续关注|一直关注|帮我盯着|那个项目|这个项目|那个计划|这个计划|刚才那个)/.test(text);
   }
 
   function hasVagueContextReference(text) {
+    var sem = Sem();
+    if (sem && typeof sem.hasVagueReference === 'function') {
+      return sem.hasVagueReference(text);
+    }
     var s = String(text || '').trim();
     if (!s) return true;
     if (/^(?:这个|那个|上面|前面|刚才|刚刚|这件事|那件事|上述|以上|下面这些|这些|那些|它|这事|那事|刚才那个|刚才说的|刚刚说的|前面说的|上面说的|之前说的)(?:[，,。\s]*(?:计划|项目|方案|事|事情|东西|内容|决定|偏好))?$/.test(s)) {
@@ -985,35 +1556,74 @@
     return s;
   }
 
-  function parseDirectExplicitMemoryFact(userText, maxLen) {
+  function parseDirectExplicitMemoryFacts(userText, maxLen) {
     var raw = String(userText || '').trim();
-    if (!raw) return null;
+    if (!raw) return [];
 
     var stripped = raw
       .replace(SAVE_CMD_PREFIX_RE, '')
       .replace(SAVE_CMD_SUFFIX_RE, '')
       .trim();
 
-    if (!stripped || stripped.length < 2) return null;
-    if (hasVagueContextReference(stripped)) return null;
-    if (/[？?]$/.test(stripped) && !/[，。；！]/.test(stripped)) return null;
+    if (!stripped || stripped.length < 2) return [];
+    if (hasVagueContextReference(stripped)) return [];
+    if (/[？?]$/.test(stripped) && !/[，。；！]/.test(stripped)) return [];
+
+    var limit = Math.max(60, Number(maxLen) || DEFAULT_MAX_MEM_LENGTH);
+    var nowTs = Date.now();
+    var sem = Sem();
+
+    if (sem && typeof sem.extractAtomicFacts === 'function') {
+      var atomic = sem.extractAtomicFacts(stripped, {
+        maxLen: limit,
+        mentionedAt: nowTs,
+        userConfirmed: true
+      });
+      if (atomic.length >= 2) {
+        return atomic.map(function(it) {
+          return Object.assign({}, it, {
+            importance: it.status === 'active' ? Math.max(4, Number(it.importance) || 5) : (Number(it.importance) || 2),
+            userConfirmed: true
+          });
+        });
+      }
+      if (atomic.length === 1 && (atomic[0].status !== 'active' || atomic[0].temporalState !== 'current')) {
+        return atomic;
+      }
+    }
 
     var fact = convertFirstPersonToThirdPerson(stripped);
     fact = fact.replace(/[。！!]+$/, '').trim();
-    var limit = Math.max(60, Number(maxLen) || DEFAULT_MAX_MEM_LENGTH);
     if (fact.length > limit) fact = fact.slice(0, limit);
+    var cat = inferMemoryCategoryFromText(stripped);
+    var sig = (sem && typeof sem.extractSemanticSignature === 'function')
+      ? sem.extractSemanticSignature(fact, cat)
+      : { semanticKey: '', entity: '' };
 
-    return {
+    return [{
       intent: 'save',
       action: 'add',
       shouldSave: true,
       confidence: 0.95,
       targetId: '',
+      targetSubject: sig.entity || '',
       content: fact,
-      category: inferMemoryCategoryFromText(stripped),
+      category: cat,
+      factType: (sem && typeof sem.inferFactType === 'function') ? sem.inferFactType(cat, 'current', 'active') : 'direct_fact',
+      temporalState: 'current',
+      status: 'active',
+      rawExpression: raw.slice(0, 260),
+      mentionedAt: nowTs,
+      userConfirmed: true,
+      semanticKey: sig.semanticKey || '',
       importance: 5,
       scope: 'user'
-    };
+    }];
+  }
+
+  function parseDirectExplicitMemoryFact(userText, maxLen) {
+    var list = parseDirectExplicitMemoryFacts(userText, maxLen);
+    return list.length === 1 ? list[0] : null;
   }
 
   function stripDeleteCommandTarget(userText) {
@@ -1091,7 +1701,40 @@
     return false;
   }
 
+  function resolveCoreferenceDetailed(userText, historyMessages, maxLen, isExplicit) {
+    var sem = Sem();
+    if (sem && typeof sem.resolveCoreference === 'function') {
+      return sem.resolveCoreference(userText, historyMessages, {
+        maxLen: Math.max(60, Number(maxLen) || DEFAULT_MAX_MEM_LENGTH),
+        isExplicit: !!isExplicit
+      });
+    }
+    if (!hasVagueContextReference(userText)) {
+      return { status: 'not_applicable', hasReference: false, needsClarification: false };
+    }
+    if (!hasIdentifiableHistoryAntecedent(historyMessages)) {
+      return {
+        status: 'unresolved',
+        hasReference: true,
+        needsClarification: true,
+        clarificationQuestion: '当前对话里还没有可以指代的前文，你想让我记住或处理哪件事呢？'
+      };
+    }
+    return { status: 'unresolved', hasReference: true, needsClarification: true, clarificationQuestion: '请问具体是指哪一项内容呢？' };
+  }
+
   function resolveContextReferenceFromHistory(userText, historyMessages, maxLen) {
+    var sem = Sem();
+    if (sem && typeof sem.resolveCoreference === 'function') {
+      var detailed = sem.resolveCoreference(userText, historyMessages, {
+        maxLen: Math.max(60, Number(maxLen) || DEFAULT_MAX_MEM_LENGTH)
+      });
+      if (detailed && detailed.status === 'resolved' && detailed.item) {
+        return detailed.item;
+      }
+      return null;
+    }
+
     var src = String(userText || '').trim();
     var list = Array.isArray(historyMessages) ? historyMessages : [];
     if (!src || !list.length || !hasVagueContextReference(src)) return null;
@@ -1282,34 +1925,48 @@
     return Math.max(0, Math.min(1, n));
   }
 
-  function normalizeItemTemporalState(val, statusHint) {
+  function normalizeItemTemporalState(val, statusHint, contentHint) {
+    var sem = Sem();
+    if (sem && typeof sem.normalizeTemporalState === 'function') {
+      return sem.normalizeTemporalState(val, statusHint, contentHint);
+    }
     var v = String(val || '').trim().toLowerCase();
-    if (['current', 'past', 'future_plan', 'completed', 'cancelled'].indexOf(v) !== -1) return v;
+    if (['current', 'past', 'future_plan', 'completed', 'cancelled', 'paused'].indexOf(v) !== -1) return v;
     var st = String(statusHint || '').trim().toLowerCase();
     if (st === 'historical') return 'past';
     if (st === 'completed') return 'completed';
     if (st === 'cancelled') return 'cancelled';
+    if (st === 'paused') return 'paused';
     return 'current';
   }
 
   function deriveItemStatus(rawStatus, temporalState) {
+    var sem = Sem();
+    if (sem && typeof sem.normalizeMemoryStatus === 'function') {
+      return sem.normalizeMemoryStatus(rawStatus, temporalState);
+    }
     var v = String(rawStatus || '').trim().toLowerCase();
-    if (['active', 'historical', 'completed', 'cancelled'].indexOf(v) !== -1) return v;
+    if (['active', 'historical', 'completed', 'cancelled', 'paused'].indexOf(v) !== -1) return v;
     if (temporalState === 'past') return 'historical';
     if (temporalState === 'completed') return 'completed';
     if (temporalState === 'cancelled') return 'cancelled';
+    if (temporalState === 'paused') return 'paused';
     return 'active';
   }
 
-  function parseStructuredMemoryResponse(rawText) {
+  function parseStructuredMemoryResponse(rawText, fallbackRawText) {
+    var sem = Sem();
+    if (sem && typeof sem.parseSemanticResponse === 'function') {
+      return sem.parseSemanticResponse(rawText, fallbackRawText);
+    }
     var parsed = parseExtractorJsonObject(rawText);
-    if (!parsed) return { intent: 'none', items: [], clarificationQuestion: '' };
+    if (!parsed) return { intent: 'none', items: [], clarificationQuestion: '', parseError: true };
 
     if (Array.isArray(parsed)) {
-      return { intent: parsed.length ? 'save' : 'none', items: parsed, clarificationQuestion: '' };
+      return { intent: parsed.length ? 'save' : 'none', items: parsed, clarificationQuestion: '', parseError: false };
     }
     if (typeof parsed !== 'object') {
-      return { intent: 'none', items: [], clarificationQuestion: '' };
+      return { intent: 'none', items: [], clarificationQuestion: '', parseError: true };
     }
 
     if (!parsed.memories && parsed.result && typeof parsed.result === 'object') {
@@ -1355,7 +2012,8 @@
       shouldSave: parsed.shouldSave,
       aboutUser: topAboutUser,
       isDurable: topIsDurable,
-      factType: topFactType
+      factType: topFactType,
+      parseError: false
     };
   }
 
@@ -1383,7 +2041,9 @@
       };
     }
 
-    var REJECTED_FACT_TYPES = ['guess', 'hypothesis', 'joke', 'sarcasm', 'third_party', 'quote', 'speculation', 'temporary', 'greeting_or_temp'];
+    var REJECTED_FACT_TYPES = ['guess', 'hypothesis', 'conditional', 'joke', 'sarcasm', 'third_party', 'quote', 'speculation', 'model_speculation', 'temporary', 'greeting_or_temp'];
+    var sem = Sem();
+    minConf = isExplicit ? 0.55 : 0.65;
 
     if (!isExplicit && decision) {
       var topFactType = String(decision.factType || '').toLowerCase();
@@ -1398,11 +2058,11 @@
           blockedDeleted: 0,
           valueRejectReason: decision.aboutUser === false
             ? '非用户本人直接事实'
-            : (topFactType === 'guess' || topFactType === 'hypothesis' || topFactType === 'speculation'
-              ? '猜测或假设内容'
+            : (topFactType === 'guess' || topFactType === 'hypothesis' || topFactType === 'conditional' || topFactType === 'speculation' || topFactType === 'model_speculation'
+              ? '猜测、假设或模型推测内容'
               : (topFactType === 'joke' || topFactType === 'sarcasm'
                 ? '玩笑或反讽表达'
-                : (topFactType === 'quote' || topFactType === 'third_party' ? '引用他人内容' : '临时话题或不具持续性')))
+                : (topFactType === 'quote' || topFactType === 'third_party' ? '引用或他人经历内容' : '临时话题或不具持续性')))
         };
       }
     }
@@ -1442,24 +2102,34 @@
       }
 
       var itemFactType = String(item.factType || (decision && decision.factType) || '').toLowerCase();
-      if (!isExplicit) {
-        if (item.aboutUser === false || item.isDurable === false || REJECTED_FACT_TYPES.indexOf(itemFactType) !== -1) {
-          skipped++;
-          rejectedByValueGate++;
-          rejectReasons.push('未通过可信度/用户直接事实价值评估');
-          continue;
-        }
-      }
-
       var conf = normalizeParsedConfidence(
         item.confidence !== undefined ? item.confidence : (decision ? decision.confidence : null),
         0.85
       );
-      if (Number.isFinite(conf) && conf < minConf) {
-        skipped++;
-        rejectedByValueGate++;
-        rejectReasons.push('置信度低于阈值(' + conf + ' < ' + minConf + ')');
-        continue;
+      if (sem && typeof sem.evaluateCredibilityGate === 'function') {
+        var gate = sem.evaluateCredibilityGate(item, decision, { isExplicit: isExplicit });
+        if (!gate.passed) {
+          skipped++;
+          rejectedByValueGate++;
+          rejectReasons.push(gate.reason || '未通过可信度门槛');
+          continue;
+        }
+        if (Number.isFinite(gate.confidence)) conf = gate.confidence;
+      } else {
+        if (!isExplicit) {
+          if (item.aboutUser === false || item.isDurable === false || REJECTED_FACT_TYPES.indexOf(itemFactType) !== -1) {
+            skipped++;
+            rejectedByValueGate++;
+            rejectReasons.push('未通过可信度/用户直接事实价值评估');
+            continue;
+          }
+        }
+        if (Number.isFinite(conf) && conf < minConf) {
+          skipped++;
+          rejectedByValueGate++;
+          rejectReasons.push('置信度低于阈值(' + conf + ' < ' + minConf + ')');
+          continue;
+        }
       }
 
       if (itemIntent === 'delete') {
@@ -1498,13 +2168,18 @@
         continue;
       }
 
-      // 若模型仍输出未消解的模糊指代（如“刚才说的那个项目”），尝试结合上下文消解或要求澄清
+      // 若模型仍输出未消解的模糊指代（如“刚才说的那个项目”），结合上下文消解；歧义或缺失时绝不猜测
       if (hasVagueContextReference(content)) {
-        var resolved = resolveContextReferenceFromHistory(ctx.rawUserText || content, ctx.historyMessages || [], ctx.maxSingleMemoryLength);
-        if (resolved && resolved.content) {
+        var corefRes = resolveCoreferenceDetailed(ctx.rawUserText || content, ctx.historyMessages || [], ctx.maxSingleMemoryLength, isExplicit);
+        if (corefRes && corefRes.status === 'resolved' && corefRes.item && corefRes.item.content) {
+          var resolved = corefRes.item;
           content = resolved.content;
           if (!item.factSource) item.factSource = 'context_resolved';
           if (!item.category && resolved.category) item.category = resolved.category;
+          if (!item.temporalState && resolved.temporalState) item.temporalState = resolved.temporalState;
+          if (!item.status && resolved.status) item.status = resolved.status;
+          if (!item.targetSubject && resolved.targetSubject) item.targetSubject = resolved.targetSubject;
+          if (!item.semanticKey && resolved.semanticKey) item.semanticKey = resolved.semanticKey;
         } else if (isExplicit) {
           return {
             added: [],
@@ -1515,17 +2190,17 @@
             blockedSecrets: 0,
             blockedDeleted: 0,
             needsClarification: true,
-            clarificationMessage: '我还不太确定你具体指的是哪一项内容，可以再说一下名称或细节吗？'
+            clarificationMessage: (corefRes && corefRes.clarificationQuestion) || '我还不太确定你具体指的是哪一项内容，可以再说一下名称或细节吗？'
           };
         } else {
           skipped++;
           rejectedByValueGate++;
-          rejectReasons.push('指代对象未在上下文中明确，跳过保存');
+          rejectReasons.push('指代对象未在上下文中明确或存在歧义，跳过保存');
           continue;
         }
       }
 
-      var tState = normalizeItemTemporalState(item.temporalState, item.status);
+      var tState = normalizeItemTemporalState(item.temporalState, item.status, content);
       var mStatus = deriveItemStatus(item.status, tState);
       if (itemIntent === 'mark_historical' && mStatus === 'active') {
         mStatus = 'historical';
@@ -1534,19 +2209,28 @@
 
       var actionKind = (itemIntent === 'update' || itemIntent === 'mark_historical') ? 'update' : 'add';
       var relationVal = String(item.relation || (actionKind === 'update' ? (mStatus !== 'active' ? 'status_changed' : 'updated') : 'new')).trim();
+      var itemCat = item.category || inferMemoryCategoryFromText(content);
+      var itemSig = (sem && typeof sem.extractSemanticSignature === 'function')
+        ? sem.extractSemanticSignature(content, itemCat)
+        : { semanticKey: '', entity: '' };
 
       toUpsert.push({
         action: actionKind,
         targetId: String(item.targetId || ''),
-        targetSubject: String(item.targetSubject || '').trim(),
+        targetSubject: String(item.targetSubject || itemSig.entity || '').trim(),
         content: content,
-        category: item.category || inferMemoryCategoryFromText(content),
+        category: itemCat,
         importance: item.importance != null ? item.importance : (mStatus !== 'active' ? 2 : (isExplicit ? 5 : 4)),
         scope: item.scope || 'user',
         confidence: conf,
         temporalState: tState,
         status: mStatus,
         factSource: String(item.factSource || (itemFactType === 'context_resolved' ? 'context_resolved' : 'user_statement')).trim(),
+        factType: itemFactType || ((sem && typeof sem.inferFactType === 'function') ? sem.inferFactType(itemCat, tState, mStatus) : 'direct_fact'),
+        rawExpression: String(item.rawExpression || ctx.rawUserText || '').trim().slice(0, 260),
+        mentionedAt: Number(item.mentionedAt) || Number(ctx.taskCreatedAt) || Date.now(),
+        userConfirmed: item.userConfirmed === true || isExplicit,
+        semanticKey: String(item.semanticKey || itemSig.semanticKey || '').trim(),
         relation: relationVal,
         supersedesId: String(item.supersedesId || '').trim()
       });
@@ -1596,28 +2280,25 @@
       ? ('【规则初筛提示】用户本轮表达倾向于「' + opts.intentHint + '」记忆意图，请结合上下文准确判断目标内容或目标记忆 ID。\n')
       : '';
 
-    var prompt =
-      '你是知屿的智能语义记忆判断器。请理解用户的真实意图、指代关系、时间状态与事实变化。\n' +
-      '可选 intent：\n' +
-      '- "save": 新增值得跨对话长期保留的用户信息（偏好、习惯、长期计划、正在开发的项目、重要决定、身份背景，或用户要求记住/关注的内容）。\n' +
-      '- "update": 修改/修正/替代已有某条记忆，或把已取消/过去事项更新为历史/已取消状态（必须在 targetId 填入被更新的已有记忆 ID，或填写 targetSubject）。\n' +
-      '- "delete": 用户要求忘掉、忘记、删除某条记忆。\n' +
-      '- "clarify": 用户指代“这个/刚才说的”，但上下文找不到明确对象时，绝不凭空猜测，返回 intent="clarify"。\n' +
-      '- "none": 普通寒暄、一次性提问、假设/玩笑/他人事实且用户未要求保存。\n\n' +
-      '深度语义规范：\n' +
-      '1) 多事实拆解：一句话含多个独立信息（如正在开发某项目 + 开始学习某语言），必须拆成 memories 数组多条返回。\n' +
-      '2) 指代消解：若用户说“刚才说的那个项目/计划/按这个来”，必须从【近期聊天上下文】提取具体名称写入 content（并标记 factSource="context_resolved"），绝不可保留“刚才说的”这种模糊词。\n' +
-      '3) 时间状态：区分 temporalState（"current"当前 / "past"过去 / "future_plan"计划 / "completed"已完成 / "cancelled"已取消）与 status（"active" / "historical" / "completed" / "cancelled"）。\n' +
-      '4) 若某旧计划已取消或旧偏好已成过去，应同时更新旧记忆为 historical/cancelled，不要把已取消或过去偏好标成 active。\n' +
-      '5) 绝不保存密码、API Key、Token、验证码、私钥、银行卡/证件号。\n' +
-      '6) 诚实评估 confidence（0~1），不确定或猜测给低分。\n\n' +
-      intentHintLine +
-      '【已有记忆】\n' + existingListText + '\n' +
-      historyBlock + '\n' +
-      '【本轮用户输入】\n' + String(opts.userText || '').slice(0, 1200) + '\n\n' +
-      (opts.assistantText ? ('【本轮助手回复摘要】\n' + String(opts.assistantText).slice(0, 400) + '\n\n') : '') +
-      '请只输出合法 JSON 对象，不要有任何多余文字：\n' +
-      '{"intent":"save","shouldSave":true,"aboutUser":true,"factType":"direct_fact","confidence":0.92,"clarificationQuestion":"","memories":[{"intent":"save","shouldSave":true,"content":"用户正在推进项目「星澜」","category":"项目","temporalState":"current","status":"active","factSource":"context_resolved","relation":"new","targetId":"","targetSubject":"","confidence":0.92,"importance":4,"scope":"user"}]}';
+    var sem = Sem();
+    var prompt = (sem && typeof sem.buildSemanticAnalysisPrompt === 'function')
+      ? sem.buildSemanticAnalysisPrompt({
+          mode: 'explicit',
+          existingListText: existingListText,
+          historyBlock: historyBlock,
+          intentHintLine: intentHintLine,
+          userText: opts.userText,
+          assistantText: opts.assistantText
+        })
+      : (
+          '你是知屿的智能语义记忆判断器。请理解用户的真实意图、指代关系、时间状态与事实变化。\n' +
+          intentHintLine +
+          '【已有记忆】\n' + existingListText + '\n' +
+          historyBlock + '\n' +
+          '【本轮用户输入】\n' + String(opts.userText || '').slice(0, 1200) + '\n\n' +
+          (opts.assistantText ? ('【本轮助手回复摘要】\n' + String(opts.assistantText).slice(0, 400) + '\n\n') : '') +
+          '请只输出合法 JSON 对象，不要有任何多余文字。'
+        );
 
     var res = await ai.requestChatCompletion({
       apiConfig: opts.apiConfig,
@@ -1625,7 +2306,7 @@
       maxTokens: 1500,
       allowReasoningFallback: true,
       messages: [
-        { role: 'system', content: '你是只输出纯 JSON 的智能语义记忆判断器。支持多事实拆分、指代消解、temporalState/status 时间状态识别与事实变更关联。' },
+        { role: 'system', content: '你是只输出纯 JSON 的深度语义记忆判断器。支持多事实拆解、指代消解与歧义澄清、六态时间语义(含paused)与事实可信度评估。' },
         { role: 'user', content: prompt }
       ]
     });
@@ -1634,7 +2315,7 @@
     if (!rawContent) {
       throw new Error('模型未返回有效的语义判断结果');
     }
-    return parseStructuredMemoryResponse(rawContent);
+    return parseStructuredMemoryResponse(rawContent, opts.userText);
   }
 
   async function handleExplicitMemoryCommand(options) {
@@ -1721,22 +2402,46 @@
 
     var capCheck = detectUnsupportedMonitoringOrReminderRequest(userText);
 
-    // 3) 如果是软意图且无有效 API：若有上下文指代且能消解，按规则尝试兜底；若明显缺上下文则澄清；否则退回普通聊天流程
+    // 3) 如果是软意图且无有效 API：优先做指代消解与歧义澄清；歧义/缺上下文绝不猜测，直接追问
     if (isSoft && (!opts.apiConfig || !opts.apiConfig.url || !opts.apiConfig.key || !opts.apiConfig.model)) {
-      if (hasVagueContextReference(userText) && !hasIdentifiableHistoryAntecedent(historyMessages)) {
+      var offlineCoref = hasVagueContextReference(userText)
+        ? resolveCoreferenceDetailed(userText, historyMessages, params.maxSingleMemoryLength, true)
+        : null;
+      if (offlineCoref && offlineCoref.needsClarification) {
         return {
           isExplicit: true,
           intent: 'clarify',
           saved: false,
           needsClarification: true,
-          clarificationMessage: '当前对话里还没有可以指代的前文，你想让我记住或关注哪件事呢？',
+          clarificationMessage: offlineCoref.clarificationQuestion || '当前对话里还没有可以指代的前文，你想让我记住或关注哪件事呢？',
           capabilityNotice: capCheck.capabilityNotice,
           added: [],
           updated: [],
           deleted: []
         };
       }
-      var offlineResolved = resolveContextReferenceFromHistory(userText, historyMessages, params.maxSingleMemoryLength);
+      var offlineResolved = (offlineCoref && offlineCoref.status === 'resolved' && offlineCoref.item)
+        ? offlineCoref.item
+        : resolveContextReferenceFromHistory(userText, historyMessages, params.maxSingleMemoryLength);
+      if (offlineResolved && offlineResolved.action === 'delete') {
+        var offExistDel = await store.listMemories({ userId: userId });
+        var offDelTargets = findRuleBasedDeleteTargets(offlineResolved.targetSubject || offlineResolved.content, offExistDel);
+        var offDeleted = [];
+        for (var od = 0; od < offDelTargets.length; od++) {
+          if (await store.deleteMemory(offDelTargets[od].id)) offDeleted.push(offDelTargets[od]);
+        }
+        if (offDeleted.length > 0) await skipQueuedTasksMatchingDeleted(store, offDeleted);
+        return {
+          isExplicit: true,
+          intent: 'delete',
+          saved: false,
+          deletedCount: offDeleted.length,
+          capabilityNotice: capCheck.capabilityNotice,
+          added: [],
+          updated: [],
+          deleted: offDeleted
+        };
+      }
       if (offlineResolved && params.useMemory) {
         var offlineUpsert = await upsertExtractedMemories([offlineResolved], {
           userId: userId,
@@ -1752,7 +2457,7 @@
         var offIds = (offlineUpsert.added || []).concat(offlineUpsert.updated || []).map(function(m) { return m && m.id; }).filter(Boolean);
         return {
           isExplicit: true,
-          intent: 'save',
+          intent: offlineResolved.intent || 'save',
           saved: offIds.length > 0,
           alreadyExists: !offIds.length && !!offlineUpsert.skipped,
           capabilityNotice: capCheck.capabilityNotice,
@@ -1773,16 +2478,19 @@
       };
     }
 
-    // 4) 若属于软意图表达，先调用模型确认到底是不是记忆意图；若模型判定为 none，交回普通聊天
+    // 4) 若属于软意图表达，先检查指代歧义/缺失，再调用模型确认到底是不是记忆意图；若模型判定为 none，交回普通聊天
     if (isSoft) {
       try {
-        if (hasVagueContextReference(userText) && !hasIdentifiableHistoryAntecedent(historyMessages)) {
+        var softCoref = hasVagueContextReference(userText)
+          ? resolveCoreferenceDetailed(userText, historyMessages, params.maxSingleMemoryLength, true)
+          : null;
+        if (softCoref && softCoref.needsClarification) {
           return {
             isExplicit: true,
             intent: 'clarify',
             saved: false,
             needsClarification: true,
-            clarificationMessage: '当前对话里还没有可以指代的前文，你想让我记住或关注哪件事呢？',
+            clarificationMessage: softCoref.clarificationQuestion || '当前对话里还没有可以指代的前文，你想让我记住或关注哪件事呢？',
             capabilityNotice: capCheck.capabilityNotice,
             added: [],
             updated: [],
@@ -2014,6 +2722,31 @@
         var ruleTargets = findRuleBasedDeleteTargets(delPhrase, existingForDel);
         var deletedList = [];
 
+        if (ruleTargets.length === 0 && hasVagueContextReference(delPhrase || userText)) {
+          var delCoref = resolveCoreferenceDetailed(userText, historyMessages, params.maxSingleMemoryLength, true);
+          if (delCoref && delCoref.needsClarification) {
+            await store.updateMemoryTask(task.id, {
+              status: 'skipped',
+              attempts: 1,
+              memoryWritten: false,
+              resultSummary: '遗忘目标不明确或存在歧义，已提示用户确认'
+            });
+            return {
+              isExplicit: true,
+              intent: 'clarify',
+              saved: false,
+              needsClarification: true,
+              clarificationMessage: delCoref.clarificationQuestion || '请问你想让我忘掉或删除哪一条记忆呢？可以告诉我具体关键词。',
+              added: [],
+              updated: [],
+              deleted: []
+            };
+          }
+          if (delCoref && delCoref.status === 'resolved' && delCoref.entity) {
+            ruleTargets = findRuleBasedDeleteTargets(delCoref.entity.name, existingForDel);
+          }
+        }
+
         if (ruleTargets.length > 0) {
           for (var rt = 0; rt < ruleTargets.length; rt++) {
             var removedOk = await store.deleteMemory(ruleTargets[rt].id);
@@ -2023,24 +2756,6 @@
             await skipQueuedTasksMatchingDeleted(store, deletedList);
           }
         } else if (opts.apiConfig && opts.apiConfig.url && opts.apiConfig.key && opts.apiConfig.model) {
-          if (hasVagueContextReference(delPhrase) && !hasIdentifiableHistoryAntecedent(historyMessages)) {
-            await store.updateMemoryTask(task.id, {
-              status: 'skipped',
-              attempts: 1,
-              memoryWritten: false,
-              resultSummary: '遗忘目标不明确，已提示用户确认'
-            });
-            return {
-              isExplicit: true,
-              intent: 'clarify',
-              saved: false,
-              needsClarification: true,
-              clarificationMessage: '请问你想让我忘掉或删除哪一条记忆呢？可以告诉我具体关键词。',
-              added: [],
-              updated: [],
-              deleted: []
-            };
-          }
           var delDecision = await requestSemanticMemoryJudgment({
             userText: userText,
             historyMessages: historyMessages,
@@ -2120,14 +2835,14 @@
         };
       }
 
-      // 5b) 保存 / 修改分支：优先低成本规则直解析；若含模糊指代或复杂表达，结合聊天上下文调用模型语义识别
-      var directItem = fast.intent === 'save'
-        ? parseDirectExplicitMemoryFact(userText, params.maxSingleMemoryLength)
-        : null;
+      // 5b) 保存 / 修改分支：优先低成本多事实原子直解析；若含模糊指代或复杂表达，先做指代消解与歧义拦截，再结合上下文调用模型语义识别
+      var directItems = fast.intent === 'save'
+        ? parseDirectExplicitMemoryFacts(userText, params.maxSingleMemoryLength)
+        : [];
       var writeRes;
 
-      if (directItem) {
-        writeRes = await upsertExtractedMemories([directItem], {
+      if (directItems.length > 0) {
+        writeRes = await upsertExtractedMemories(directItems, {
           userId: userId,
           chatId: chatId,
           chatTitle: chatTitle,
@@ -2135,48 +2850,80 @@
           rawUserText: userText,
           maxSingleMemoryLength: params.maxSingleMemoryLength,
           taskCreatedAt: turnCreatedAt,
-          allowOverrideOlderTombstone: true
+          allowOverrideOlderTombstone: true,
+          isExplicit: true
         });
       } else {
         var strippedSave = userText.replace(SAVE_CMD_PREFIX_RE, '').replace(SAVE_CMD_SUFFIX_RE, '').trim();
-        if (hasVagueContextReference(strippedSave || userText) && !hasIdentifiableHistoryAntecedent(historyMessages)) {
+        var saveCoref = hasVagueContextReference(strippedSave || userText)
+          ? resolveCoreferenceDetailed(userText, historyMessages, params.maxSingleMemoryLength, true)
+          : null;
+        if (saveCoref && saveCoref.needsClarification) {
           await store.updateMemoryTask(task.id, {
             status: 'skipped',
             attempts: 1,
             memoryWritten: false,
-            resultSummary: '缺少明确上下文，已提示用户补充要记住的内容'
+            resultSummary: '指代缺失或存在歧义，已提示用户明确目标'
           });
           return {
             isExplicit: true,
             intent: 'clarify',
             saved: false,
             needsClarification: true,
-            clarificationMessage: '当前对话里还没有可以指代的前文，你想让我记住哪件事呢？',
+            clarificationMessage: saveCoref.clarificationQuestion || '当前对话里还没有可以指代的前文，你想让我记住哪件事呢？',
             added: [],
             updated: [],
             deleted: []
           };
         }
 
-        var semDecision = await requestSemanticMemoryJudgment({
-          userText: userText,
-          historyMessages: historyMessages,
-          userId: userId,
-          apiConfig: opts.apiConfig,
-          intentHint: fast.intent
-        });
-        writeRes = await applyStructuredSemanticDecision(semDecision, {
-          userId: userId,
-          chatId: chatId,
-          chatTitle: chatTitle,
-          projectId: projectId,
-          rawUserText: userText,
-          historyMessages: historyMessages,
-          maxSingleMemoryLength: params.maxSingleMemoryLength,
-          taskCreatedAt: turnCreatedAt,
-          allowOverrideOlderTombstone: true,
-          isExplicit: true
-        });
+        var hasSaveApi = !!(opts.apiConfig && opts.apiConfig.url && opts.apiConfig.key && opts.apiConfig.model);
+        if (!hasSaveApi && saveCoref && saveCoref.status === 'resolved' && saveCoref.item) {
+          writeRes = await upsertExtractedMemories([saveCoref.item], {
+            userId: userId,
+            chatId: chatId,
+            chatTitle: chatTitle,
+            projectId: projectId,
+            rawUserText: userText,
+            historyMessages: historyMessages,
+            maxSingleMemoryLength: params.maxSingleMemoryLength,
+            taskCreatedAt: turnCreatedAt,
+            allowOverrideOlderTombstone: true,
+            isExplicit: true
+          });
+        } else {
+          var semDecision = await requestSemanticMemoryJudgment({
+            userText: userText,
+            historyMessages: historyMessages,
+            userId: userId,
+            apiConfig: opts.apiConfig,
+            intentHint: fast.intent
+          });
+          if ((!semDecision || semDecision.parseError || !semDecision.items || !semDecision.items.length) &&
+              saveCoref && saveCoref.status === 'resolved' && saveCoref.item) {
+            semDecision = {
+              intent: saveCoref.item.intent || 'save',
+              shouldSave: true,
+              aboutUser: true,
+              isDurable: true,
+              factType: saveCoref.item.factType || 'direct_fact',
+              confidence: saveCoref.item.confidence || 0.88,
+              items: [saveCoref.item]
+            };
+          }
+          writeRes = await applyStructuredSemanticDecision(semDecision, {
+            userId: userId,
+            chatId: chatId,
+            chatTitle: chatTitle,
+            projectId: projectId,
+            rawUserText: userText,
+            historyMessages: historyMessages,
+            maxSingleMemoryLength: params.maxSingleMemoryLength,
+            taskCreatedAt: turnCreatedAt,
+            allowOverrideOlderTombstone: true,
+            isExplicit: true
+          });
+        }
         if (writeRes && writeRes.needsClarification) {
           await store.updateMemoryTask(task.id, {
             status: 'skipped',
@@ -2322,6 +3069,10 @@
   }
 
   function containsJokeOrSarcasm(text) {
+    var sem = Sem();
+    if (sem && typeof sem.isJokeOrSarcasm === 'function') {
+      return sem.isJokeOrSarcasm(text);
+    }
     var src = String(text || '').trim();
     if (!src) return false;
     return /(?:开玩笑|开个玩笑|逗你玩|逗你的|瞎说的|胡说的|吹牛|搞笑|狗头|\/s\b|骗你的|才怪|哪有那么多|哈哈哈哈)/.test(src);
@@ -2332,16 +3083,27 @@
     if (!src) return false;
     if (containsJokeOrSarcasm(src)) return true;
 
+    var hasSelfContrast = /(?:但我|不过我|可是我|而我|我也|其实我|我自己)(?:更|比较|最|偏爱|偏好|喜欢|习惯|正在|打算|计划|决定|开始|不吃|忌口)?/.test(src);
+    var sem = Sem();
+    if (sem) {
+      if (typeof sem.isConditionalOrHypothesis === 'function' && sem.isConditionalOrHypothesis(src) && !hasSelfContrast) {
+        return true;
+      }
+      if (typeof sem.isThirdPartyOrQuote === 'function' && sem.isThirdPartyOrQuote(src) && !hasSelfContrast) {
+        return true;
+      }
+    }
+
     // 明确假设/猜测语气
-    if (/^(?:如果|假如|假设|万一|要是我|设想|比方说|比如我|试想|要是有一天|大概|也许|可能只是|说不定|随便说说|开玩笑地说)/.test(src)) {
+    if (/^(?:如果|假如|假设|万一|要是我|设想|比方说|比如我|试想|要是有一天|大概|也许|可能只是|说不定|随便说说|开玩笑地说)/.test(src) && !hasSelfContrast) {
       return true;
     }
-    if (/(?:如果|假如|假设|万一).{0,30}(?:的话|怎么办|会怎样|岂不是|……|\.\.\.)/.test(src)) {
+    if (/(?:如果|假如|假设|万一).{0,30}(?:的话|怎么办|会怎样|岂不是|……|\.\.\.)/.test(src) && !hasSelfContrast) {
       return true;
     }
     // 明确引用他人/书本/网上内容，若不含本人转折对比则拦截
     if (/^(?:他|她|它|他们|她们|我朋友|朋友|我同事|同事|我同学|同学|我室友|室友|我闺蜜|闺蜜|我哥|我姐|我弟|我妹|我妈|我爸|我老公|我老婆|我对象|男朋友|女朋友|家人|老板|领导|客户|别人|大家|有人|网友|书里|小说里|文章里|老师|听说|据(?:说|了解|悉))/.test(src) &&
-        !/(?:但我|不过我|我也|而我|我自己)(?:更|比较|最)?(?:喜欢|偏好|习惯|正在|打算|计划|决定|开始)/.test(src)) {
+        !hasSelfContrast) {
       return true;
     }
     return false;
@@ -2360,6 +3122,15 @@
     if (containsSensitiveSecret(src) || containsHighRiskPrivacy(src)) return [];
     if (isPureGreetingOrFiller(src) || isPureQuestionWithoutFact(src)) return [];
     if (containsJokeOrSarcasm(src)) return [];
+
+    var sem = Sem();
+    if (sem && typeof sem.extractAtomicFacts === 'function') {
+      return sem.extractAtomicFacts(src, {
+        maxLen: Math.max(60, Number(maxLen) || DEFAULT_MAX_MEM_LENGTH),
+        mentionedAt: Date.now(),
+        userConfirmed: false
+      });
+    }
 
     // 整句纯假设且不包含实际转折事实时直接跳过
     if (/^(?:如果|假如|假设|万一|要是我|设想|比方说|比如我|试想|要是有一天)/.test(src)) return [];
@@ -2665,17 +3436,29 @@
     var incomingStatus = String(meta.status || 'active').toLowerCase();
     var incomingTemporal = String(meta.temporalState || 'current').toLowerCase();
     var targetSubject = String(meta.targetSubject || '').trim();
+    var incomingSemanticKey = String(meta.semanticKey || '').trim();
+    var sem = Sem();
+    var mgr = Mgr();
+    var incomingScenario = String(meta.scenario || '').trim() ||
+      ((mgr && typeof mgr.extractScenarioContext === 'function') ? mgr.extractScenarioContext(String(content || '') + ' ' + String(rawUserText || '')).code : '');
     var slot = detectMutualSlot(content, category);
-    var hasChangeCue = /(?:改成|改为|换成|换喝|改喝|改吃|不再|以前.*现在|转成|其实更喜欢|现在更喜欢|以后我更喜欢|平时更喜欢|更偏向|取消了?|放弃了?|不学了?|完成了?)/.test(String(content || '') + ' ' + String(rawUserText || ''));
+    var hasChangeCue = /(?:改成|改为|换成|换喝|改喝|改吃|不再|以前.*现在|转成|其实更喜欢|现在更喜欢|以后我更喜欢|平时更喜欢|更偏向|取消了?|放弃了?|不学了?|完成了?|搁置了?|暂停了?|暂缓了?|放一放)/.test(String(content || '') + ' ' + String(rawUserText || ''));
 
-    // 1) 若携带明确的变更主题（如“草莓”或“学习法语”）且意图为转历史/取消/完成，优先匹配尚未处于相同终态的同名记忆
+    function isSceneCompat(mem) {
+      if (!mgr || typeof mgr.areScenariosCompatible !== 'function') return true;
+      var memScene = String((mem && mem.scenario) || '').trim() ||
+        (typeof mgr.extractScenarioContext === 'function' ? mgr.extractScenarioContext((mem && mem.content) || '').code : '');
+      return mgr.areScenariosCompatible(incomingScenario, memScene);
+    }
+
+    // 1) 若携带明确的变更主题（如“草莓”、“学习法语”、“星澜”）且意图为转历史/取消/完成/搁置，优先匹配尚未处于相同终态的同名记忆
     if (targetSubject) {
       var subjNorm = normalizeMemoryText(targetSubject);
       var subjMatches = sameScopeMemories.filter(function(m) {
         var mNorm = normalizeMemoryText(m.content);
         if (!subjNorm || mNorm.indexOf(subjNorm) === -1) return false;
         if (incomingStatus !== 'active') return true;
-        return (m.status || 'active') === 'active';
+        return (m.status || 'active') === 'active' && !m.archived && isSceneCompat(m);
       });
       if (subjMatches.length > 0 && (incomingStatus !== 'active' || incomingTemporal !== 'current' || normalizeMemoryText(content).indexOf(subjNorm) !== -1)) {
         subjMatches.sort(function(a, b) {
@@ -2685,10 +3468,24 @@
       }
     }
 
-    // 2) 若当前新条目是 active，不主动覆盖已经标为 historical/cancelled/completed 的历史记录
+    // 2) 若当前新条目是 active，不主动覆盖已经标为 historical/cancelled/completed/paused 或已归档的记录，且必须场景兼容
     var candidatePool = incomingStatus === 'active'
-      ? sameScopeMemories.filter(function(m) { return !m.status || m.status === 'active'; })
+      ? sameScopeMemories.filter(function(m) { return (!m.status || m.status === 'active') && !m.archived && isSceneCompat(m); })
       : sameScopeMemories;
+
+    // 2.5) 同语义键优先匹配（支持同义表达合并/更新，如「希望AI回复简洁」vs「回答尽量精简不啰嗦」）
+    if (incomingSemanticKey) {
+      for (var sk = 0; sk < candidatePool.length; sk++) {
+        var candMem = candidatePool[sk];
+        var candKey = String(candMem.semanticKey || '').trim();
+        if (!candKey && sem && typeof sem.extractSemanticSignature === 'function') {
+          candKey = sem.extractSemanticSignature(candMem.content, candMem.category).semanticKey;
+        }
+        if (candKey && candKey === incomingSemanticKey) {
+          return candMem;
+        }
+      }
+    }
 
     if (slot) {
       var slotMatches = candidatePool.filter(function(m) {
@@ -2705,7 +3502,6 @@
           hasChangeCue ||
           slot.indexOf('pref_subject:') === 0 ||
           slot.indexOf('plan_slot:') === 0 ||
-          slot === 'coffee_drink' ||
           slot === 'reply_style' ||
           slot === 'user_location' ||
           slot === 'user_name'
@@ -2719,14 +3515,28 @@
     var bestTarget = null;
     for (var j = 0; j < candidatePool.length; j++) {
       var sim = computeTextSimilarity(content, candidatePool[j].content);
-      if (sim > bestSim) {
-        bestSim = sim;
-        if (sim >= 0.62) {
+      var eq = (sem && typeof sem.computeSemanticEquivalence === 'function')
+        ? sem.computeSemanticEquivalence(content, candidatePool[j].content, category, candidatePool[j].category)
+        : 0;
+      var combinedSim = Math.max(sim, eq);
+      if (combinedSim > bestSim) {
+        bestSim = combinedSim;
+        if (sim >= 0.62 || eq >= 0.78) {
           bestTarget = candidatePool[j];
         }
       }
     }
     return bestTarget;
+  }
+
+  function resolveInitialMemoryImportance(mgr, draft, evalCtx) {
+    if (draft && draft.manualImportance === true && draft.importance != null && Number.isFinite(Number(draft.importance))) {
+      return Math.max(1, Math.min(5, Math.round(Number(draft.importance))));
+    }
+    if (mgr && typeof mgr.evaluateInitialImportance === 'function') {
+      return mgr.evaluateInitialImportance(draft, evalCtx);
+    }
+    return 3;
   }
 
   async function upsertExtractedMemories(candidates, context) {
@@ -2743,6 +3553,7 @@
     var params = resolveMemoryParams(settings);
     var maxLen = Math.max(60, Number(ctx.maxSingleMemoryLength) || params.maxSingleMemoryLength);
     var taskCreatedAt = Number(ctx.taskCreatedAt) || Date.now();
+    var sem = Sem();
 
     var existingAll = await store.listMemories({ userId: userId });
     var deletedSigs = typeof store.listDeletedMemorySignatures === 'function'
@@ -2795,12 +3606,35 @@
       if (scope !== 'user' && scope !== 'chat' && scope !== 'project') scope = 'user';
       if (scope === 'project' && !projectId) scope = 'user';
 
-      var temporalState = normalizeItemTemporalState(rawItem.temporalState, rawItem.status);
+      var temporalState = normalizeItemTemporalState(rawItem.temporalState, rawItem.status, content);
       var memStatus = deriveItemStatus(rawItem.status, temporalState);
       var itemConf = normalizeParsedConfidence(rawItem.confidence, 0.85);
       var factSource = String(rawItem.factSource || 'user_statement').trim() || 'user_statement';
 
       var category = rawItem.category || inferMemoryCategoryFromText(content);
+      var sigInfo = (sem && typeof sem.extractSemanticSignature === 'function')
+        ? sem.extractSemanticSignature(content, category)
+        : { semanticKey: '', entity: '' };
+      var semanticKey = String(rawItem.semanticKey || sigInfo.semanticKey || '').trim();
+      var factType = String(rawItem.factType || ((sem && typeof sem.inferFactType === 'function') ? sem.inferFactType(category, temporalState, memStatus) : 'direct_fact')).trim();
+      var rawExpression = String(rawItem.rawExpression || rawUserText || '').trim().slice(0, 260);
+      var hasExplicitZeroTime = (
+        (Object.prototype.hasOwnProperty.call(rawItem, 'mentionedAt') && !(Number(rawItem.mentionedAt) > 0)) ||
+        (Object.prototype.hasOwnProperty.call(ctx, 'mentionedAt') && !(Number(ctx.mentionedAt) > 0))
+      );
+      var mentionedAt = hasExplicitZeroTime ? 0 : (Number(rawItem.mentionedAt) || Number(ctx.mentionedAt) || taskCreatedAt);
+      var userConfirmed = rawItem.userConfirmed === true || !!ctx.isExplicit;
+
+      var mgr = Mgr();
+      var detectedScene = rawItem.scenario
+        ? { code: String(rawItem.scenario), label: String(rawItem.scenarioLabel || '') }
+        : ((mgr && typeof mgr.extractScenarioContext === 'function')
+            ? mgr.extractScenarioContext(content + ' ' + rawExpression)
+            : { code: '', label: '' });
+      var detectedEntities = (mgr && typeof mgr.extractConcreteEntities === 'function')
+        ? mgr.extractConcreteEntities({ content: content, category: category, projectId: scope === 'project' ? projectId : '' })
+        : [];
+
       var sameScopeMemories = existingAll.filter(function(m) {
         return m.scope === scope && (scope !== 'project' || m.projectId === projectId);
       });
@@ -2810,15 +3644,371 @@
         matchedTarget = sameScopeMemories.find(function(m) { return m.id === rawItem.targetId; }) || null;
       }
 
+      var incomingForMgr = {
+        content: content,
+        category: category,
+        status: memStatus,
+        temporalState: temporalState,
+        targetSubject: rawItem.targetSubject || sigInfo.entity || '',
+        semanticKey: semanticKey,
+        scenario: detectedScene.code || '',
+        scenarioLabel: detectedScene.label || '',
+        rawExpression: rawExpression,
+        mentionedAt: mentionedAt,
+        userConfirmed: userConfirmed,
+        confidence: itemConf,
+        projectId: scope === 'project' ? projectId : '',
+        relation: rawItem.relation || 'new',
+        action: rawItem.action || 'add'
+      };
+
+      var lifecyclePlan = (!matchedTarget && mgr && typeof mgr.analyzeIncomingAgainstExisting === 'function')
+        ? mgr.analyzeIncomingAgainstExisting(incomingForMgr, sameScopeMemories, rawUserText)
+        : null;
+
+      // 5.2 生命周期分支 A：暂时性变化或模糊非排他性评价 -> 绝不覆盖长期有效记忆
+      if (lifecyclePlan && (lifecyclePlan.mode === 'temporary_only' || lifecyclePlan.mode === 'ambiguous_no_override')) {
+        skipped++;
+        continue;
+      }
+
+      // 5.2 生命周期分支 B：同义/重复记忆自动合并去重（保留原记忆 ID、原来源与更新时间戳，不新增重复记录）
+      if (lifecyclePlan && lifecyclePlan.mode === 'merge' && lifecyclePlan.target) {
+        var mergeTarget = lifecyclePlan.target;
+        var isExactDup = normalizeMemoryText(mergeTarget.content) === normalizeMemoryText(content);
+        var mergePatch = mgr.buildMergedMemoryPatch(mergeTarget, incomingForMgr, {
+          chatId: chatId,
+          chatTitle: chatTitle,
+          projectId: projectId,
+          rawUserText: rawUserText,
+          mentionedAt: mentionedAt,
+          maxSingleMemoryLength: maxLen,
+          isExplicit: !!ctx.isExplicit,
+          mergeReason: isExactDup ? '完全重复记忆自动去重' : lifecyclePlan.reason
+        });
+        // 显式保留原记忆来源字段（原有来源优先，原来源为空时再补入）
+        mergePatch.sourceChatId = mergeTarget.sourceChatId || chatId || '';
+        mergePatch.sourceChatTitle = mergeTarget.sourceChatTitle || chatTitle || '';
+        if (!mergeTarget.scenario && detectedScene.code) {
+          mergePatch.scenario = detectedScene.code;
+          mergePatch.scenarioLabel = detectedScene.label;
+        }
+        var mergedMem = await store.updateMemory(mergeTarget.id, mergePatch, {
+          skipHistoryPush: isExactDup,
+          historyReason: isExactDup ? '完全重复记忆去重确认' : '同义记忆自动合并'
+        });
+        if (mergedMem) {
+          updated.push(mergedMem);
+          for (var mu = 0; mu < existingAll.length; mu++) {
+            if (existingAll[mu].id === mergedMem.id) existingAll[mu] = mergedMem;
+          }
+          if (typeof mgr.syncRelationsForMemory === 'function') {
+            await mgr.syncRelationsForMemory(mergedMem.id, userId);
+          }
+        }
+        continue;
+      }
+
+      // 5.2 生命周期分支 C：同类偏好/事实真正更新 -> 旧记忆转入历史+归档，新记忆作为当前有效建立更新链，完整保留变化过程
+      if (lifecyclePlan && lifecyclePlan.mode === 'supersede' && lifecyclePlan.target && memStatus === 'active') {
+        var oldMem = lifecyclePlan.target;
+        var nowSup = Date.now();
+        var newDraftForScore = {
+          content: content,
+          category: category,
+          status: 'active',
+          temporalState: 'current',
+          userConfirmed: userConfirmed,
+          mentionCount: 1,
+          supersedesId: oldMem.id,
+          createdAt: nowSup
+        };
+        var newDynScore = typeof mgr.computeDynamicScore === 'function' ? mgr.computeDynamicScore(newDraftForScore, nowSup) : 72;
+        var newImp = resolveInitialMemoryImportance(mgr, {
+          category: category,
+          content: content,
+          rawExpression: rawExpression,
+          temporalState: temporalState,
+          status: 'active',
+          factType: factType,
+          userConfirmed: userConfirmed,
+          manualImportance: rawItem.manualImportance === true,
+          importance: rawItem.importance
+        }, { rawUserText: rawUserText, isExplicit: !!ctx.isExplicit });
+
+        var createdNew = await store.createMemory({
+          content: content,
+          category: category,
+          importance: newImp,
+          manualImportance: rawItem.manualImportance === true,
+          dynamicScore: newDynScore,
+          scope: scope,
+          sourceChatId: chatId,
+          sourceChatTitle: chatTitle,
+          userId: userId,
+          projectId: scope === 'project' ? projectId : '',
+          confidence: itemConf,
+          temporalState: temporalState,
+          status: 'active',
+          archived: false,
+          scenario: detectedScene.code || oldMem.scenario || '',
+          scenarioLabel: detectedScene.label || oldMem.scenarioLabel || '',
+          factSource: factSource,
+          factType: factType,
+          rawExpression: rawExpression,
+          mentionedAt: mentionedAt,
+          userConfirmed: userConfirmed,
+          semanticKey: semanticKey,
+          relation: 'updated',
+          supersedesId: oldMem.id,
+          previousContent: oldMem.content,
+          independentMentionCount: 1,
+          entities: detectedEntities
+        });
+
+        if (createdNew) {
+          var oldDemoteDraft = Object.assign({}, oldMem, {
+            status: 'historical',
+            temporalState: 'past',
+            archived: true,
+            archivedAt: nowSup,
+            archiveReason: '已被新记忆替代：' + createdNew.content.slice(0, 60),
+            conflictState: 'superseded',
+            supersededById: createdNew.id
+          });
+          var oldDynScore = typeof mgr.computeDynamicScore === 'function' ? mgr.computeDynamicScore(oldDemoteDraft, nowSup) : 32;
+          var oldDemoted = await store.updateMemory(oldMem.id, {
+            status: 'historical',
+            temporalState: 'past',
+            archived: true,
+            archivedAt: nowSup,
+            archiveReason: oldDemoteDraft.archiveReason,
+            conflictState: 'superseded',
+            supersededById: createdNew.id,
+            dynamicScore: oldDynScore,
+            importance: oldMem.manualImportance ? oldMem.importance : mgr.scoreToImportance(oldDynScore),
+            relation: 'status_changed'
+          }, { historyReason: '偏好变更转为历史状态' });
+
+          added.push(createdNew);
+          existingAll.unshift(createdNew);
+          if (oldDemoted) {
+            updated.push(oldDemoted);
+            for (var su = 0; su < existingAll.length; su++) {
+              if (existingAll[su].id === oldDemoted.id) existingAll[su] = oldDemoted;
+            }
+          }
+          if (typeof mgr.syncRelationsForMemory === 'function') {
+            await mgr.syncRelationsForMemory(createdNew.id, userId);
+            await mgr.syncRelationsForMemory(oldMem.id, userId);
+          }
+        }
+        continue;
+      }
+
+      // 5.2 生命周期分支 D：互相矛盾但尚未确认 -> 保留双方并标记待确认冲突，绝不默默覆盖
+      if (lifecyclePlan && lifecyclePlan.mode === 'conflict_pending' && lifecyclePlan.target && memStatus === 'active') {
+        var peerMem = lifecyclePlan.target;
+        var nowConf = Date.now();
+        var confDraft = {
+          content: content,
+          category: category,
+          status: 'active',
+          temporalState: temporalState,
+          userConfirmed: userConfirmed,
+          mentionCount: 1,
+          createdAt: nowConf
+        };
+        var confScore = typeof mgr.computeDynamicScore === 'function' ? mgr.computeDynamicScore(confDraft, nowConf) : 50;
+        var confImp = resolveInitialMemoryImportance(mgr, {
+          category: category,
+          content: content,
+          rawExpression: rawExpression,
+          temporalState: temporalState,
+          status: 'active',
+          factType: factType,
+          userConfirmed: userConfirmed,
+          manualImportance: rawItem.manualImportance === true,
+          importance: rawItem.importance
+        }, { rawUserText: rawUserText, isExplicit: !!ctx.isExplicit });
+        var createdConf = await store.createMemory({
+          content: content,
+          category: category,
+          importance: confImp,
+          manualImportance: rawItem.manualImportance === true,
+          dynamicScore: confScore,
+          scope: scope,
+          sourceChatId: chatId,
+          sourceChatTitle: chatTitle,
+          userId: userId,
+          projectId: scope === 'project' ? projectId : '',
+          confidence: itemConf,
+          temporalState: temporalState,
+          status: 'active',
+          scenario: detectedScene.code || '',
+          scenarioLabel: detectedScene.label || '',
+          conflictState: 'pending_confirmation',
+          conflictWithIds: [peerMem.id],
+          factSource: factSource,
+          factType: factType,
+          rawExpression: rawExpression,
+          mentionedAt: mentionedAt,
+          userConfirmed: userConfirmed,
+          semanticKey: semanticKey,
+          relation: 'conflict',
+          independentMentionCount: 1,
+          entities: detectedEntities
+        });
+        if (createdConf) {
+          var nextPeerConflicts = (Array.isArray(peerMem.conflictWithIds) ? peerMem.conflictWithIds : []).concat([createdConf.id]);
+          var peerUpd = await store.updateMemory(peerMem.id, {
+            conflictState: 'pending_confirmation',
+            conflictWithIds: nextPeerConflicts
+          }, { preserveUpdatedAt: true, skipHistoryPush: true });
+          added.push(createdConf);
+          existingAll.unshift(createdConf);
+          if (peerUpd) {
+            for (var pu = 0; pu < existingAll.length; pu++) {
+              if (existingAll[pu].id === peerUpd.id) existingAll[pu] = peerUpd;
+            }
+          }
+          if (typeof mgr.syncRelationsForMemory === 'function') {
+            await mgr.syncRelationsForMemory(createdConf.id, userId);
+          }
+        }
+        continue;
+      }
+
+      // 5.2 生命周期分支 E：不同场景偏好共存 -> 直接作为独立活跃记忆保存，不与其它场景合并或覆盖
+      if (lifecyclePlan && lifecyclePlan.mode === 'coexist_scenario' && memStatus === 'active') {
+        var nowSc = Date.now();
+        var scDraft = {
+          content: content,
+          category: category,
+          status: 'active',
+          temporalState: temporalState,
+          userConfirmed: userConfirmed,
+          mentionCount: 1,
+          createdAt: nowSc
+        };
+        var scScore = typeof mgr.computeDynamicScore === 'function' ? mgr.computeDynamicScore(scDraft, nowSc) : 60;
+        var scImp = resolveInitialMemoryImportance(mgr, {
+          category: category,
+          content: content,
+          rawExpression: rawExpression,
+          temporalState: temporalState,
+          status: 'active',
+          factType: factType,
+          userConfirmed: userConfirmed,
+          manualImportance: rawItem.manualImportance === true,
+          importance: rawItem.importance
+        }, { rawUserText: rawUserText, isExplicit: !!ctx.isExplicit });
+        var createdSc = await store.createMemory({
+          content: content,
+          category: category,
+          importance: scImp,
+          manualImportance: rawItem.manualImportance === true,
+          dynamicScore: scScore,
+          scope: scope,
+          sourceChatId: chatId,
+          sourceChatTitle: chatTitle,
+          userId: userId,
+          projectId: scope === 'project' ? projectId : '',
+          confidence: itemConf,
+          temporalState: temporalState,
+          status: 'active',
+          scenario: detectedScene.code || '',
+          scenarioLabel: detectedScene.label || '',
+          factSource: factSource,
+          factType: factType,
+          rawExpression: rawExpression,
+          mentionedAt: mentionedAt,
+          userConfirmed: userConfirmed,
+          semanticKey: semanticKey,
+          relation: 'new',
+          independentMentionCount: 1,
+          entities: detectedEntities
+        });
+        if (createdSc) {
+          added.push(createdSc);
+          existingAll.unshift(createdSc);
+          if (typeof mgr.syncRelationsForMemory === 'function') {
+            await mgr.syncRelationsForMemory(createdSc.id, userId);
+          }
+        }
+        continue;
+      }
+
+      if (!matchedTarget && lifecyclePlan && lifecyclePlan.mode === 'status_transition' && lifecyclePlan.target) {
+        matchedTarget = lifecyclePlan.target;
+      }
+
       var normNew = normalizeMemoryText(content);
       var exactMatch = sameScopeMemories.find(function(m) {
-        return normalizeMemoryText(m.content) === normNew &&
-          (m.status || 'active') === memStatus &&
-          (m.temporalState || 'current') === temporalState;
+        if ((m.status || 'active') !== memStatus || (m.temporalState || 'current') !== temporalState) {
+          return false;
+        }
+        if (mgr && typeof mgr.areScenariosCompatible === 'function') {
+          var mScene = m.scenario || mgr.extractScenarioContext(m.content).code;
+          if (!mgr.areScenariosCompatible(detectedScene.code, mScene)) return false;
+        }
+        if (normalizeMemoryText(m.content) === normNew) return true;
+        if (semanticKey) {
+          var mKey = String(m.semanticKey || '').trim();
+          if (!mKey && sem && typeof sem.extractSemanticSignature === 'function') {
+            mKey = sem.extractSemanticSignature(m.content, m.category).semanticKey;
+          }
+          if (mKey && mKey === semanticKey) return true;
+        }
+        if (sem && typeof sem.computeSemanticEquivalence === 'function') {
+          if (sem.computeSemanticEquivalence(content, m.content, category, m.category) >= 0.85) {
+            return true;
+          }
+        }
+        return false;
       });
       if (exactMatch) {
         if (memStatus !== 'active') lastSupersededId = exactMatch.id;
-        skipped++;
+        if (mgr && typeof mgr.buildMergedMemoryPatch === 'function') {
+          var exactPatch = mgr.buildMergedMemoryPatch(exactMatch, incomingForMgr, {
+            chatId: chatId,
+            chatTitle: chatTitle,
+            projectId: projectId,
+            rawUserText: rawUserText,
+            mentionedAt: mentionedAt,
+            maxSingleMemoryLength: maxLen,
+            isExplicit: !!ctx.isExplicit,
+            mergeReason: '同义重复表达合并并刷新提及次数'
+          });
+          var exactUpd = await store.updateMemory(exactMatch.id, exactPatch, { skipHistoryPush: exactPatch.content === exactMatch.content });
+          if (exactUpd) {
+            var indepIncreased = (Number(exactPatch.independentMentionCount) || 1) > (Number(exactMatch.independentMentionCount) || 1);
+            if (exactPatch.content !== exactMatch.content || (userConfirmed && !exactMatch.userConfirmed) || indepIncreased) {
+              updated.push(exactUpd);
+            } else {
+              skipped++;
+            }
+            for (var cu = 0; cu < existingAll.length; cu++) {
+              if (existingAll[cu].id === exactUpd.id) existingAll[cu] = exactUpd;
+            }
+          } else {
+            skipped++;
+          }
+        } else if (userConfirmed && !exactMatch.userConfirmed) {
+          var confirmedUpd = await store.updateMemory(exactMatch.id, {
+            userConfirmed: true,
+            confidence: Math.max(Number(exactMatch.confidence) || 0, itemConf),
+            semanticKey: semanticKey || exactMatch.semanticKey || ''
+          });
+          if (confirmedUpd) {
+            updated.push(confirmedUpd);
+            for (var cu2 = 0; cu2 < existingAll.length; cu2++) {
+              if (existingAll[cu2].id === confirmedUpd.id) existingAll[cu2] = confirmedUpd;
+            }
+          }
+        } else {
+          skipped++;
+        }
         continue;
       }
 
@@ -2826,38 +4016,134 @@
         matchedTarget = findContradictionOrMergeTarget(content, category, sameScopeMemories, rawUserText, {
           status: memStatus,
           temporalState: temporalState,
-          targetSubject: rawItem.targetSubject || ''
+          targetSubject: rawItem.targetSubject || sigInfo.entity || '',
+          semanticKey: semanticKey,
+          scenario: detectedScene.code || ''
         });
       }
 
       if (matchedTarget) {
+        var nowUpd = Date.now();
         var updRelation = rawItem.relation || (memStatus !== 'active' ? 'status_changed' : 'updated');
-        var upd = await store.updateMemory(matchedTarget.id, {
+        var archEvalUpd = (mgr && typeof mgr.evaluateArchiveEligibility === 'function')
+          ? mgr.evaluateArchiveEligibility({ status: memStatus, temporalState: temporalState, archived: false, userConfirmed: userConfirmed || matchedTarget.userConfirmed }, nowUpd)
+          : { shouldArchive: false, reason: '' };
+        var nextArchived = archEvalUpd.shouldArchive ? true : (memStatus === 'active' ? false : !!matchedTarget.archived);
+        var nextArchiveReason = archEvalUpd.shouldArchive ? archEvalUpd.reason : (nextArchived ? (matchedTarget.archiveReason || '') : '');
+        var isManualLocked = matchedTarget.manualImportance === true;
+        var updDraft = Object.assign({}, matchedTarget, {
           content: content,
           category: category || matchedTarget.category,
-          importance: rawItem.importance != null ? rawItem.importance : (memStatus !== 'active' ? 2 : matchedTarget.importance),
-          sourceChatId: chatId || matchedTarget.sourceChatId,
-          sourceChatTitle: chatTitle || matchedTarget.sourceChatTitle,
+          temporalState: temporalState,
+          status: memStatus,
+          archived: nextArchived,
+          userConfirmed: userConfirmed || !!matchedTarget.userConfirmed,
+          mentionCount: (Number(matchedTarget.mentionCount) || 1) + 1
+        });
+        var updScore = (mgr && typeof mgr.computeDynamicScore === 'function')
+          ? mgr.computeDynamicScore(updDraft, nowUpd)
+          : (matchedTarget.dynamicScore || 54);
+        var updImp = isManualLocked
+          ? matchedTarget.importance
+          : (rawItem.importance != null
+            ? rawItem.importance
+            : (mgr ? mgr.scoreToImportance(updScore) : (memStatus !== 'active' ? 2 : matchedTarget.importance)));
+
+        var fallbackSourceChats = Array.isArray(matchedTarget.sourceChats) ? matchedTarget.sourceChats.slice() : [];
+        if (chatId || chatTitle) {
+          var hasChatRef = fallbackSourceChats.some(function(sc) {
+            if (!sc) return false;
+            return chatId && sc.chatId ? sc.chatId === chatId : (chatTitle && sc.chatTitle === chatTitle);
+          });
+          if (!hasChatRef) {
+            fallbackSourceChats.push({ chatId: chatId || '', chatTitle: chatTitle || '', mentionedAt: mentionedAt || nowUpd });
+          }
+        }
+
+        // 旧记忆转为 historical / cancelled 等非活跃状态时，完整保留原有内容、原始来源与原始提及时间
+        var isStatusArchiveTransition = memStatus === 'historical' || memStatus === 'cancelled';
+        var preservedContent = (isStatusArchiveTransition && matchedTarget.content) ? matchedTarget.content : content;
+        var preservedSourceChatId = matchedTarget.sourceChatId || chatId || '';
+        var preservedSourceChatTitle = matchedTarget.sourceChatTitle || chatTitle || '';
+        var preservedMentionedAt = matchedTarget.mentionedAt || mentionedAt || taskCreatedAt;
+        var preservedRawExpr = (isStatusArchiveTransition && matchedTarget.rawExpression) ? matchedTarget.rawExpression : (rawExpression || matchedTarget.rawExpression || '');
+
+        var upd = await store.updateMemory(matchedTarget.id, {
+          content: preservedContent,
+          category: category || matchedTarget.category,
+          importance: updImp,
+          manualImportance: isManualLocked,
+          dynamicScore: updScore,
+          sourceChatId: preservedSourceChatId,
+          sourceChatTitle: preservedSourceChatTitle,
+          sourceChats: fallbackSourceChats.slice(0, 8),
           confidence: itemConf,
           temporalState: temporalState,
           status: memStatus,
+          archived: nextArchived,
+          archivedAt: nextArchived ? (matchedTarget.archivedAt || nowUpd) : 0,
+          archiveReason: nextArchiveReason,
+          scenario: detectedScene.code || matchedTarget.scenario || '',
+          scenarioLabel: detectedScene.label || matchedTarget.scenarioLabel || '',
           factSource: factSource,
+          factType: factType || matchedTarget.factType || 'direct_fact',
+          rawExpression: preservedRawExpr,
+          mentionedAt: preservedMentionedAt,
+          userConfirmed: userConfirmed || !!matchedTarget.userConfirmed,
+          semanticKey: semanticKey || matchedTarget.semanticKey || '',
           relation: updRelation,
-          supersedesId: rawItem.supersedesId || matchedTarget.supersedesId || ''
-        });
+          supersedesId: rawItem.supersedesId || matchedTarget.supersedesId || '',
+          mentionCount: (Number(matchedTarget.mentionCount) || 1) + 1,
+          entities: detectedEntities.length ? detectedEntities : (matchedTarget.entities || [])
+        }, { historyReason: memStatus !== 'active' ? ('状态变更为 ' + memStatus) : '内容更新' });
         if (upd) {
           updated.push(upd);
           if (memStatus !== 'active') lastSupersededId = upd.id;
           for (var u = 0; u < existingAll.length; u++) {
             if (existingAll[u].id === upd.id) existingAll[u] = upd;
           }
+          if (mgr && typeof mgr.syncRelationsForMemory === 'function') {
+            await mgr.syncRelationsForMemory(upd.id, userId);
+          }
         }
       } else {
+        var nowCreate = Date.now();
         var linkedSupersedes = rawItem.supersedesId || (rawItem.relation === 'updated' && lastSupersededId ? lastSupersededId : '');
+        var archEvalNew = (mgr && typeof mgr.evaluateArchiveEligibility === 'function')
+          ? mgr.evaluateArchiveEligibility({ status: memStatus, temporalState: temporalState, archived: false, userConfirmed: userConfirmed }, nowCreate)
+          : { shouldArchive: false, reason: '' };
+        var createDraft = {
+          content: content,
+          category: category,
+          status: memStatus,
+          temporalState: temporalState,
+          archived: archEvalNew.shouldArchive,
+          userConfirmed: userConfirmed,
+          supersedesId: linkedSupersedes,
+          mentionCount: 1,
+          createdAt: nowCreate
+        };
+        var createScore = (mgr && typeof mgr.computeDynamicScore === 'function')
+          ? mgr.computeDynamicScore(createDraft, nowCreate)
+          : 54;
+        var createImp = resolveInitialMemoryImportance(mgr, {
+          category: category,
+          content: content,
+          rawExpression: rawExpression,
+          temporalState: temporalState,
+          status: memStatus,
+          factType: factType,
+          userConfirmed: userConfirmed,
+          manualImportance: rawItem.manualImportance === true,
+          importance: rawItem.importance
+        }, { rawUserText: rawUserText, isExplicit: !!ctx.isExplicit });
+
         var created = await store.createMemory({
           content: content,
           category: category,
-          importance: rawItem.importance != null ? rawItem.importance : (memStatus !== 'active' ? 2 : 3),
+          importance: createImp,
+          manualImportance: rawItem.manualImportance === true,
+          dynamicScore: createScore,
           scope: scope,
           sourceChatId: chatId,
           sourceChatTitle: chatTitle,
@@ -2866,14 +4152,38 @@
           confidence: itemConf,
           temporalState: temporalState,
           status: memStatus,
+          archived: archEvalNew.shouldArchive,
+          archivedAt: archEvalNew.shouldArchive ? nowCreate : 0,
+          archiveReason: archEvalNew.shouldArchive ? archEvalNew.reason : '',
+          scenario: detectedScene.code || '',
+          scenarioLabel: detectedScene.label || '',
           factSource: factSource,
+          factType: factType,
+          rawExpression: rawExpression,
+          mentionedAt: mentionedAt,
+          userConfirmed: userConfirmed,
+          semanticKey: semanticKey,
           relation: rawItem.relation || 'new',
-          supersedesId: linkedSupersedes
+          supersedesId: linkedSupersedes,
+          independentMentionCount: 1,
+          entities: detectedEntities
         });
         if (created) {
           added.push(created);
           existingAll.unshift(created);
           if (memStatus !== 'active') lastSupersededId = created.id;
+          if (linkedSupersedes) {
+            var supTarget = existingAll.find(function(em) { return em && em.id === linkedSupersedes; });
+            if (supTarget && !supTarget.supersededById) {
+              await store.updateMemory(supTarget.id, {
+                supersededById: created.id,
+                conflictState: 'superseded'
+              }, { preserveUpdatedAt: true, skipHistoryPush: true });
+            }
+          }
+          if (mgr && typeof mgr.syncRelationsForMemory === 'function') {
+            await mgr.syncRelationsForMemory(created.id, userId);
+          }
         }
       }
     }
@@ -2968,6 +4278,10 @@
   }
 
   function parseExtractorJsonObject(rawText) {
+    var sem = Sem();
+    if (sem && typeof sem.parseSemanticJsonObject === 'function') {
+      return sem.parseSemanticJsonObject(rawText);
+    }
     var slice = extractBalancedJsonSlice(rawText);
     var obj = safeJsonParseWithRepair(slice);
     if (obj) return obj;
@@ -3009,28 +4323,22 @@
       ? ('\n【近期聊天上下文（用于理解“刚才说的/之前说的/按这个来”等指代）】\n' + historyContextText + '\n')
       : '';
 
-    var prompt =
-      '你是知屿的「主动长期记忆深度语义评估器」。在普通聊天中，请理解用户话语中的多事实、指代关系、时间语义、事实变化与事实可信度。\n\n' +
-      '【应该自动保存的高价值信息（务必独立拆解）】\n' +
-      '1. 多事实提取：如果一句话包含多个信息（例如「我正在开发知屿，最近还开始学习日语」），必须在 memories 数组中分别输出多条，绝不遗漏或合并成一条。\n' +
-      '2. 长期偏好与习惯（回答风格、饮食口味偏好、常用工具、作息习惯）。\n' +
-      '3. 正在进行的项目（如正在开发知屿）、持续学习的内容（如开始学习日语）、重要长期计划与决定。\n' +
-      '4. 上下文指代消解：如用户说「刚才说的那个项目/之前说的计划」，需从【近期聊天上下文】还原具体项目或计划名称写入 content（并标记 factSource="context_resolved"）。\n' +
-      '5. 时间与状态变化识别：\n' +
-      '   - 区分 temporalState("current"|"past"|"future_plan"|"completed"|"cancelled") 与 status("active"|"historical"|"completed"|"cancelled")。\n' +
-      '   - 例如「我以前喜欢草莓，现在更喜欢芒果」应分别记录过去偏好（status="historical", temporalState="past"）和当前偏好（status="active", temporalState="current", relation="updated"）。\n' +
-      '   - 例如「原来准备学习法语，但现在取消了」应更新原计划为 status="cancelled", temporalState="cancelled"（填入 targetId 或 targetSubject），不要保留为当前目标。\n\n' +
-      '【绝不保存的内容（可信度与价值把关）】\n' +
-      '1. 普通寒暄、一次性通用提问。\n' +
-      '2. 假设、猜测（如「假如我明年搬去东京……」）、玩笑反讽、他人事实（如「我朋友喜欢喝冰美式」）、未经确认的推测（factType 标记为 hypothesis/guess/joke/third_party/quote/speculation，aboutUser 设为 false，shouldSave 设为 false）。\n' +
-      '3. 密码、API Key、验证码、身份证/银行卡、病历隐私等敏感信息。\n' +
-      '4. 与【已有记忆】完全重复且状态未变的内容。\n\n' +
-      '【已有记忆】\n' + existingListText + '\n' +
-      historyBlock + '\n' +
-      '【本轮用户输入】\n' + String(opts.userText || '').slice(0, 1200) + '\n\n' +
-      (opts.assistantText ? ('【本轮助手回复摘要】\n' + String(opts.assistantText).slice(0, 320) + '\n\n') : '') +
-      '请只输出合法 JSON（不要多余解释）：\n' +
-      '{"shouldSave":true,"intent":"save","factType":"direct_fact","aboutUser":true,"isDurable":true,"confidence":0.92,"memories":[{"intent":"save","targetId":"","targetSubject":"","content":"用户正在开发知屿","category":"项目","temporalState":"current","status":"active","factSource":"user_statement","relation":"new","importance":4,"confidence":0.92,"scope":"user"}]}';
+    var sem = Sem();
+    var prompt = (sem && typeof sem.buildSemanticAnalysisPrompt === 'function')
+      ? sem.buildSemanticAnalysisPrompt({
+          mode: 'proactive',
+          existingListText: existingListText,
+          historyBlock: historyBlock,
+          userText: opts.userText,
+          assistantText: opts.assistantText
+        })
+      : (
+          '你是知屿的「主动长期记忆深度语义评估器」。\n' +
+          '【已有记忆】\n' + existingListText + '\n' +
+          historyBlock + '\n' +
+          '【本轮用户输入】\n' + String(opts.userText || '').slice(0, 1200) + '\n\n' +
+          '请只输出合法 JSON。'
+        );
 
     var res = await ai.requestChatCompletion({
       apiConfig: opts.apiConfig,
@@ -3038,7 +4346,7 @@
       maxTokens: 2048,
       allowReasoningFallback: false,
       messages: [
-        { role: 'system', content: '你是只输出合法 JSON 的深度语义记忆评估器。支持多事实拆解、时间状态(temporalState/status)、变更更新与严格过滤假设/玩笑/他人事实。' },
+        { role: 'system', content: '你是只输出合法 JSON 的深度语义记忆评估器。支持多事实拆解、六态时间语义(含paused)、上下文指代消解与严格过滤假设/玩笑/他人事实/低置信度推测。' },
         { role: 'user', content: prompt }
       ]
     });
@@ -3047,7 +4355,7 @@
     if (!rawContent) {
       return { intent: 'none', shouldSave: false, items: [], rawEmpty: true };
     }
-    var parsed = parseStructuredMemoryResponse(rawContent);
+    var parsed = parseStructuredMemoryResponse(rawContent, opts.userText);
     return parsed;
   }
 
@@ -3109,9 +4417,24 @@
       : [];
 
     if (!opts.forceExtract && highCertaintyItems.length === 0 && hasVagueContextReference(userText)) {
-      var resolvedCtxItem = resolveContextReferenceFromHistory(userText, historyMsgs, params.maxSingleMemoryLength);
-      if (resolvedCtxItem) {
-        highCertaintyItems.push(resolvedCtxItem);
+      var proactiveCoref = resolveCoreferenceDetailed(userText, historyMsgs, params.maxSingleMemoryLength, false);
+      if (proactiveCoref && proactiveCoref.status === 'resolved' && proactiveCoref.item) {
+        highCertaintyItems.push(proactiveCoref.item);
+      } else if (proactiveCoref && proactiveCoref.needsClarification) {
+        diag.skipStage = 'coreference_ambiguous';
+        diag.skipReason = proactiveCoref.clarificationQuestion || '指代对象存在歧义或缺少前文，主动记忆不猜测写入';
+        return {
+          added: [],
+          updated: [],
+          deleted: [],
+          skipped: 1,
+          blockedSecrets: 0,
+          blockedDeleted: 0,
+          needsClarification: true,
+          clarificationMessage: proactiveCoref.clarificationQuestion,
+          capabilityNotice: capCheck.capabilityNotice,
+          diagnostics: diag
+        };
       }
     }
 
@@ -3147,6 +4470,18 @@
         userId: userId,
         apiConfig: opts.apiConfig
       });
+      if (decision && decision.parseError && highCertaintyItems.length > 0) {
+        decision = {
+          intent: 'save',
+          shouldSave: true,
+          aboutUser: true,
+          isDurable: true,
+          factType: 'direct_fact',
+          confidence: 0.9,
+          items: highCertaintyItems
+        };
+        diag.candidateSource = 'high_certainty_rule';
+      }
     } else if (highCertaintyItems.length > 0) {
       decision = {
         intent: 'save',
@@ -3158,6 +4493,20 @@
         items: highCertaintyItems
       };
       diag.candidateSource = 'high_certainty_rule';
+    } else if (
+      Mgr() &&
+      ((typeof Mgr().isTemporaryChangeExpression === 'function' && Mgr().isTemporaryChangeExpression(userText)) ||
+       (typeof Mgr().isAmbiguousPreferenceExpression === 'function' && Mgr().isAmbiguousPreferenceExpression(userText)))
+    ) {
+      return {
+        skipped: true,
+        reason: '属于暂时性变化或非排他性模糊表达，不写入且不覆盖长期记忆',
+        added: [],
+        updated: [],
+        blockedSecrets: 0,
+        blockedDeleted: 0,
+        diagnostics: diag
+      };
     } else {
       throw new Error('API 未完整配置');
     }
@@ -3192,8 +4541,8 @@
       (applyRes && applyRes.rejectedByValueGate > 0) ||
       (decision && (
         decision.aboutUser === false ||
-        (decision.confidence != null && decision.confidence < 0.60) ||
-        ['guess', 'hypothesis', 'joke', 'sarcasm', 'third_party', 'quote', 'speculation'].indexOf(String(decision.factType || '').toLowerCase()) !== -1
+        (decision.confidence != null && decision.confidence < 0.65) ||
+        ['guess', 'hypothesis', 'conditional', 'joke', 'sarcasm', 'third_party', 'quote', 'speculation', 'model_speculation'].indexOf(String(decision.factType || '').toLowerCase()) !== -1
       ))
     );
     if (!opts.forceExtract && !applyRes.blockedSecrets && !applyRes.blockedDeleted && highCertaintyItems.length > 0 && !decisionRejectedCredibility) {
@@ -3711,6 +5060,8 @@
     normalizeMemoryText: normalizeMemoryText,
     computeTextSimilarity: computeTextSimilarity,
     filterAccessibleMemories: filterAccessibleMemories,
+    expandRelatedMemories: expandRelatedMemories,
+    getRecentRecallDiagnostics: getRecentRecallDiagnostics,
     retrieveRelevantMemories: retrieveRelevantMemories,
     retrieveWorkspaceContext: retrieveWorkspaceContext,
     needsShortTermSummary: needsShortTermSummary,
@@ -3720,7 +5071,9 @@
     detectUnsupportedMonitoringOrReminderRequest: detectUnsupportedMonitoringOrReminderRequest,
     looksLikeSoftMemoryIntent: looksLikeSoftMemoryIntent,
     hasVagueContextReference: hasVagueContextReference,
+    resolveCoreferenceDetailed: resolveCoreferenceDetailed,
     resolveContextReferenceFromHistory: resolveContextReferenceFromHistory,
+    parseDirectExplicitMemoryFacts: parseDirectExplicitMemoryFacts,
     parseDirectExplicitMemoryFact: parseDirectExplicitMemoryFact,
     stripDeleteCommandTarget: stripDeleteCommandTarget,
     handleExplicitMemoryCommand: handleExplicitMemoryCommand,

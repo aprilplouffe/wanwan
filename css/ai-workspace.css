@@ -2591,6 +2591,8 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .aiw-mem-badge {
@@ -2601,6 +2603,8 @@
   background: var(--aiw-surface-2);
   color: var(--aiw-sub);
   border: 1px solid var(--aiw-border);
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 .aiw-mem-badge.is-cat {
@@ -2608,6 +2612,18 @@
   border-color: var(--aiw-pink-border);
   color: var(--aiw-pink-deep);
   font-weight: 600;
+}
+
+.aiw-mem-badge.is-imp-manual {
+  color: #059669;
+  background: rgba(5, 150, 105, 0.1);
+  border-color: rgba(5, 150, 105, 0.22);
+}
+
+.aiw-mem-badge.is-imp-auto {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.2);
 }
 
 .aiw-mem-content {
@@ -3106,5 +3122,552 @@
   color: #059669;
   font-weight: 500;
 }
+
+/* ===== 第五阶段 5.2：智能记忆管理（状态分页、关联网络、合并历史、归档标识） ===== */
+.aiw-mem-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.aiw-mem-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px 6px;
+  border-radius: 12px;
+  border: 1px solid var(--aiw-border);
+  background: var(--aiw-card);
+  color: var(--aiw-sub);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.aiw-mem-tab-btn.active {
+  background: var(--aiw-pink-soft);
+  border-color: var(--aiw-pink-deep);
+  color: var(--aiw-pink-deep);
+  font-weight: 650;
+}
+
+.aiw-mem-tab-num {
+  font-size: 10.5px;
+  opacity: 0.8;
+}
+
+.aiw-mem-bar-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aiw-mem-card.is-archived {
+  background: var(--aiw-surface);
+  border-style: dashed;
+}
+
+.aiw-mem-card.is-conflict {
+  border-color: rgba(217, 119, 6, 0.45);
+}
+
+.aiw-mem-badge.is-archived-tag {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.12);
+  border-color: rgba(107, 114, 128, 0.24);
+}
+
+.aiw-mem-badge.is-scene {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.22);
+}
+
+.aiw-mem-badge.is-conflict-tag {
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.3);
+  font-weight: 600;
+}
+
+.aiw-mem-rel-box {
+  margin-top: 9px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+}
+
+.aiw-mem-sub-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--aiw-sub);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.aiw-mem-rel-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.aiw-mem-rel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: var(--aiw-card);
+  border: 1px solid var(--aiw-border);
+  font-size: 11px;
+  color: var(--aiw-text);
+}
+
+.aiw-mem-rel-type {
+  color: var(--aiw-pink-deep);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.aiw-mem-rel-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiw-mem-audit-box {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aiw-mem-audit-line {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--aiw-sub);
+  word-break: break-word;
+}
+
+.aiw-mem-audit-line i {
+  margin-right: 4px;
+  opacity: 0.78;
+}
+
+.aiw-mem-audit-line.is-archive {
+  color: #6b7280;
+}
+
+.aiw-mem-decay-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aiw-mem-decay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aiw-mem-decay-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--aiw-sub);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.aiw-mem-decay-status {
+  font-size: 10.5px;
+  line-height: 1.3;
+  padding: 2px 7px;
+  border-radius: 8px;
+  font-weight: 500;
+  background: var(--aiw-card);
+  color: var(--aiw-sub);
+  border: 1px solid var(--aiw-border);
+}
+
+.aiw-mem-decay-status.is-protected {
+  color: #059669;
+  background: rgba(5, 150, 105, 0.1);
+  border-color: rgba(5, 150, 105, 0.22);
+}
+
+.aiw-mem-decay-status.is-safe {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.09);
+  border-color: rgba(37, 99, 235, 0.2);
+}
+
+.aiw-mem-decay-status.is-decaying {
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.11);
+  border-color: rgba(245, 158, 11, 0.24);
+}
+
+.aiw-mem-decay-status.is-muted {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.1);
+  border-color: rgba(107, 114, 128, 0.2);
+}
+
+.aiw-mem-decay-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.aiw-mem-decay-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  background: var(--aiw-card);
+  border: 1px solid var(--aiw-border);
+  min-width: 0;
+}
+
+.aiw-mem-decay-cell.is-full {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aiw-mem-decay-label {
+  font-size: 10.5px;
+  color: var(--aiw-sub);
+  flex-shrink: 0;
+}
+
+.aiw-mem-decay-val {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--aiw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiw-mem-decay-val.is-decayed {
+  color: #d97706;
+}
+
+.aiw-mem-imp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.aiw-mem-imp-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aiw-mem-imp-mode {
+  font-size: 10.5px;
+  line-height: 1.3;
+  padding: 2px 7px;
+  border-radius: 8px;
+  font-weight: 500;
+  border: 1px solid var(--aiw-border);
+  white-space: nowrap;
+}
+
+.aiw-mem-imp-mode.is-manual {
+  color: #059669;
+  background: rgba(5, 150, 105, 0.1);
+  border-color: rgba(5, 150, 105, 0.22);
+}
+
+.aiw-mem-imp-mode.is-auto {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.09);
+  border-color: rgba(37, 99, 235, 0.2);
+}
+
+.aiw-mem-imp-restore-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--aiw-pink-deep);
+  background: var(--aiw-pink-soft);
+  border: 1px solid var(--aiw-pink-border);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease;
+}
+
+.aiw-mem-imp-restore-btn:active {
+  opacity: 0.8;
+}
+
+.aiw-mem-imp-restore-btn[hidden] {
+  display: none;
+}
+
+.aiw-mem-imp-hint {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--aiw-hint);
+}
+
+/* 5.2.4-C 最近召回诊断（手机端紧凑只读卡片） */
+.aiw-recall-diag-card {
+  margin-bottom: 12px;
+}
+
+.aiw-recall-diag-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.aiw-recall-diag-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aiw-recall-diag-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--aiw-text);
+}
+
+.aiw-recall-diag-title i {
+  color: var(--aiw-pink-deep);
+  font-size: 13px;
+}
+
+.aiw-recall-diag-note {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--aiw-hint);
+}
+
+.aiw-recall-diag-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--aiw-sub);
+}
+
+.aiw-recall-diag-state.is-unavailable {
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.aiw-recall-snap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aiw-recall-snap-item {
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+  min-width: 0;
+}
+
+.aiw-recall-snap-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.aiw-recall-snap-idx {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--aiw-pink-deep);
+  background: var(--aiw-pink-soft);
+  padding: 1px 6px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.aiw-recall-snap-time {
+  font-size: 11.5px;
+  color: var(--aiw-hint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiw-recall-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.aiw-recall-count-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 4px;
+  border-radius: 8px;
+  background: var(--aiw-card);
+  border: 1px solid var(--aiw-border);
+  min-width: 0;
+}
+
+.aiw-recall-count-lbl {
+  font-size: 10.5px;
+  color: var(--aiw-hint);
+  white-space: nowrap;
+}
+
+.aiw-recall-count-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--aiw-text);
+}
+
+.aiw-recall-count-cell.is-direct .aiw-recall-count-val {
+  color: #059669;
+}
+
+.aiw-recall-count-cell.is-semantic .aiw-recall-count-val {
+  color: #2563eb;
+}
+
+.aiw-recall-count-cell.is-related .aiw-recall-count-val {
+  color: var(--aiw-pink-deep);
+}
+
+.aiw-recall-items {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.aiw-recall-item {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--aiw-card);
+  border: 1px solid var(--aiw-border);
+  min-width: 0;
+}
+
+.aiw-recall-item-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aiw-recall-item-id {
+  font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--aiw-text);
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.aiw-recall-source-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.aiw-recall-source-badge.is-direct {
+  color: #059669;
+  background: rgba(16, 185, 129, 0.14);
+}
+
+.aiw-recall-source-badge.is-semantic {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.aiw-recall-source-badge.is-related {
+  color: var(--aiw-pink-deep);
+  background: var(--aiw-pink-soft);
+}
+
+.aiw-recall-source-badge.is-unknown {
+  color: var(--aiw-sub);
+  background: var(--aiw-surface-2);
+}
+
+.aiw-recall-item-rel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--aiw-sub);
+}
+
+.aiw-recall-rel-type,
+.aiw-recall-rel-seed {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.aiw-recall-item-none {
+  font-size: 11.5px;
+  color: var(--aiw-hint);
+  text-align: center;
+  padding: 6px 4px;
+}
+
 
 
