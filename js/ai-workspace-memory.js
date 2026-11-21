@@ -423,7 +423,7 @@
   function looksPersonalOrContextualQuery(query) {
     var q = String(query || '').toLowerCase();
     if (isMetaMemoryQuery(q)) return true;
-    return /(?:我|我的|帮我推荐|给我推荐|适合|之前|最近|上次|偏好|习惯|计划|项目|决定|记得)/.test(q);
+    return /(?:我|我的|帮我推荐|给我推荐|适合|之前|最近|上次|偏好|习惯|计划|项目|决定|记得|已?归档|(?:那个|以前|曾经|过去|已经|已)(?:完成|取消|归档|搁置|暂停)的?(?:任务|计划|事项|记忆|项目))/.test(q);
   }
 
   function scoreTextRelevance(text, category, queryFeatures, metaRecall, rawQueryLower, extraScope) {
@@ -569,16 +569,36 @@
     return candidates;
   }
 
-  async function trySemanticRecallWithModel(query, memoryPool, crossPool, apiConfig, maxPick) {
+  function filterSemanticRecallCandidates(accessibleMemories, options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var includeArchived = opts.includeArchived === true;
+    return (Array.isArray(accessibleMemories) ? accessibleMemories : []).filter(function(mem) {
+      if (!mem || typeof mem !== 'object' || !mem.id || !mem.content) return false;
+      if (!includeArchived && mem.archived === true) return false;
+      return true;
+    });
+  }
+
+  async function trySemanticRecallWithModel(query, memoryPool, crossPool, apiConfig, maxPick, options) {
     var ai = AI();
     if (!ai || typeof ai.requestChatCompletion !== 'function') return { memIds: [], crossIds: [] };
     if (!apiConfig || !apiConfig.url || !apiConfig.key || !apiConfig.model) return { memIds: [], crossIds: [] };
 
+    var opts = options && typeof options === 'object' ? options : {};
+    var includeArchived = opts.includeArchived === true;
+    var safeMemoryPool = filterSemanticRecallCandidates(memoryPool, { includeArchived: includeArchived });
+    var safeCrossPool = Array.isArray(crossPool)
+      ? crossPool.filter(function(c) { return c && c.id && c.content; })
+      : [];
+
+    var presentedMemPool = safeMemoryPool.slice(0, 14);
+    var presentedCrossPool = safeCrossPool.slice(0, 8);
     var items = [];
-    memoryPool.slice(0, 14).forEach(function(m) {
-      items.push({ id: m.id, type: 'mem', text: '[' + (m.category || '记忆') + '] ' + m.content.slice(0, 140) });
+    presentedMemPool.forEach(function(m) {
+      var archivedTag = m.archived === true ? '[已归档]' : '';
+      items.push({ id: m.id, type: 'mem', text: archivedTag + '[' + (m.category || '记忆') + '] ' + m.content.slice(0, 140) });
     });
-    crossPool.slice(0, 8).forEach(function(c) {
+    presentedCrossPool.forEach(function(c) {
       items.push({ id: c.id, type: 'cross', text: '[对话:' + c.chatTitle + '] ' + c.content.slice(0, 140) });
     });
     if (!items.length) return { memIds: [], crossIds: [] };
@@ -603,11 +623,26 @@
       });
       var parsed = parseExtractorJsonObject(res && res.content);
       var ids = (parsed && Array.isArray(parsed.ids)) ? parsed.ids.map(String) : [];
-      var memSet = new Set(memoryPool.map(function(m) { return m.id; }));
-      var crossSet = new Set(crossPool.map(function(c) { return c.id; }));
+      var memSet = new Set(presentedMemPool.map(function(m) { return String(m.id); }));
+      var crossSet = new Set(presentedCrossPool.map(function(c) { return String(c.id); }));
+      var seenMem = new Set();
+      var seenCross = new Set();
+      var pickedMemIds = [];
+      var pickedCrossIds = [];
+      for (var i = 0; i < ids.length; i++) {
+        var rawId = String(ids[i] || '').trim();
+        if (!rawId) continue;
+        if (memSet.has(rawId) && !seenMem.has(rawId)) {
+          seenMem.add(rawId);
+          pickedMemIds.push(rawId);
+        } else if (crossSet.has(rawId) && !seenCross.has(rawId)) {
+          seenCross.add(rawId);
+          pickedCrossIds.push(rawId);
+        }
+      }
       return {
-        memIds: ids.filter(function(id) { return memSet.has(id); }),
-        crossIds: ids.filter(function(id) { return crossSet.has(id); })
+        memIds: pickedMemIds,
+        crossIds: pickedCrossIds
       };
     } catch (_) {
       return { memIds: [], crossIds: [] };
@@ -1361,27 +1396,58 @@
       }
     }
 
+    var semanticMemoryCandidates = filterSemanticRecallCandidates(accessibleMemories, {
+      includeArchived: asksHistoryOrCancelled
+    });
+
     if (
       chosenMemories.length === 0 &&
       chosenCross.length === 0 &&
       looksPersonalOrContextualQuery(query) &&
-      (accessibleMemories.length > 0 || crossCandidates.length > 0) &&
+      (semanticMemoryCandidates.length > 0 || crossCandidates.length > 0) &&
       opts.apiConfig
     ) {
-      var semanticPicked = await trySemanticRecallWithModel(query, accessibleMemories, crossCandidates, opts.apiConfig, maxResults);
+      var semanticPicked = await trySemanticRecallWithModel(
+        query,
+        semanticMemoryCandidates,
+        crossCandidates,
+        opts.apiConfig,
+        maxResults,
+        { includeArchived: asksHistoryOrCancelled }
+      );
       if (semanticPicked.memIds.length) {
+        var semanticCandidateById = new Map();
+        for (var sm = 0; sm < semanticMemoryCandidates.length; sm++) {
+          semanticCandidateById.set(String(semanticMemoryCandidates[sm].id), semanticMemoryCandidates[sm]);
+        }
+        var pickedMemIdSet = new Set();
         semanticPicked.memIds.forEach(function(id) {
-          var foundM = accessibleMemories.find(function(m) { return m.id === id; });
-          if (foundM && chosenMemories.length < maxResults) {
+          var key = String(id || '').trim();
+          if (!key || pickedMemIdSet.has(key)) return;
+          var foundM = semanticCandidateById.get(key);
+          if (!foundM) return;
+          if (!asksHistoryOrCancelled && foundM.archived === true) return;
+          if (chosenMemories.length < maxResults) {
+            pickedMemIdSet.add(key);
             chosenMemories.push(foundM);
             appendDiagItem(foundM, 'semantic_fallback');
           }
         });
       }
       if (semanticPicked.crossIds.length && allowReferenceHistory) {
+        var crossCandidateById = new Map();
+        for (var sc = 0; sc < crossCandidates.length; sc++) {
+          crossCandidateById.set(String(crossCandidates[sc].id), crossCandidates[sc]);
+        }
+        var pickedCrossIdSet = new Set();
         semanticPicked.crossIds.forEach(function(id) {
-          var foundC = crossCandidates.find(function(c) { return c.id === id; });
-          if (foundC && chosenCross.length < 3) chosenCross.push(foundC);
+          var cKey = String(id || '').trim();
+          if (!cKey || pickedCrossIdSet.has(cKey)) return;
+          var foundC = crossCandidateById.get(cKey);
+          if (foundC && chosenCross.length < 3) {
+            pickedCrossIdSet.add(cKey);
+            chosenCross.push(foundC);
+          }
         });
       }
     }

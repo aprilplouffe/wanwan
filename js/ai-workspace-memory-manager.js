@@ -4,12 +4,12 @@
 // 2) 新旧记忆冲突检测与分类处置（真正更新保留历史 / 暂时性变化不覆盖 / 不同场景共存 / 未确认冲突标记）
 // 3) 记忆重要程度动态评分（多因子动态计算，降权绝不自动删除）
 // 4) 记忆关联关系网络（实体/项目/技术/目标/计划/更新链双向关联，严格防通用词误关联，删除自动清理断链）
-// 5) 过时记忆识别与归档（已完成/已取消/历史替代/长期低价值备忘自动归档，绝不自动删除，支持按需召回）
+// 5) 过时记忆识别与归档（仅对明确已完成/已取消/历史替代记忆自动归档，不因闲置或低分自动归档，绝不自动删除，支持按需召回）
 (function(global) {
   'use strict';
 
   var DAY_MS = 24 * 60 * 60 * 1000;
-  var STALE_ARCHIVE_DAYS = 30;
+  var STALE_ARCHIVE_DAYS = 30; // 兼容保留导出常量，不再用于触发自动归档
 
   var SCENARIO_RULES = [
     { code: 'work', label: '工作时', re: /(?:工作时|上班时|办公时|开会时|工作日|白天工作|处理工作时|在公司时|职场中)/ },
@@ -1525,33 +1525,370 @@
   }
 
   // ===== 6. 过时记忆识别与归档（绝不自动删除，完整保留历史并支持恢复与召回） =====
+  var KNOWN_ARCHIVE_STATUSES = ['active', 'historical', 'completed', 'cancelled', 'paused'];
+  var KNOWN_ARCHIVE_TEMPORALS = ['current', 'past', 'future_plan', 'completed', 'cancelled', 'paused'];
+
+  function isPendingConflictMemory(mem) {
+    if (!mem || typeof mem !== 'object') return false;
+    var conflictState = String(mem.conflictState || 'none').trim().toLowerCase();
+    return conflictState === 'pending_confirmation' || conflictState === 'conflict_pending';
+  }
+
+  function isManuallyRestoredActiveMemory(mem) {
+    if (!mem || typeof mem !== 'object') return false;
+    if (mem.archived === true) return false;
+    var st = String(mem.status || '').trim().toLowerCase();
+    if (st !== 'active') return false;
+    var restoredAt = Number(mem.manualRestoredAt);
+    return Number.isFinite(restoredAt) && restoredAt > 0;
+  }
+
   function evaluateArchiveEligibility(mem, nowTs) {
     if (!mem || typeof mem !== 'object') return { shouldArchive: false, reason: '' };
     if (mem.archived === true) return { shouldArchive: false, reason: mem.archiveReason || '' };
 
-    var now = Number(nowTs) || Date.now();
-    var st = String(mem.status || 'active').toLowerCase();
-    var ts = String(mem.temporalState || 'current').toLowerCase();
+    // 1) 待确认冲突记忆受保护，不允许因维护操作自动归档
+    if (isPendingConflictMemory(mem)) {
+      return { shouldArchive: false, reason: '' };
+    }
 
-    if (st === 'completed' || ts === 'completed') {
+    var rawStatus = String(mem.status || '').trim().toLowerCase();
+    var rawTemporal = String(mem.temporalState || '').trim().toLowerCase();
+    var st = KNOWN_ARCHIVE_STATUSES.indexOf(rawStatus) !== -1 ? rawStatus : '';
+    var ts = KNOWN_ARCHIVE_TEMPORALS.indexOf(rawTemporal) !== -1 ? rawTemporal : '';
+
+    // 2) paused 状态表示暂时搁置，不能视为 completed / cancelled / historical
+    if (st === 'paused' || ts === 'paused') {
+      return { shouldArchive: false, reason: '' };
+    }
+
+    // 3) 明确处于 active 状态的记忆（含用户手动恢复保护状态）不受闲置、低分、旧日期或旧替代状态残留影响，不自动归档
+    if (isManuallyRestoredActiveMemory(mem) || st === 'active') {
+      return { shouldArchive: false, reason: '' };
+    }
+
+    // 4) 仅对已明确写入的结束/历史替代生命周期状态保留自动归档能力
+    if (st === 'completed' || (!st && ts === 'completed')) {
       return { shouldArchive: true, reason: '项目或计划已完成，已自动归档留存' };
     }
-    if (st === 'cancelled' || ts === 'cancelled') {
+    if (st === 'cancelled' || (!st && ts === 'cancelled')) {
       return { shouldArchive: true, reason: '任务或计划已取消，已自动归档留存' };
     }
-    if (st === 'historical' || ts === 'past') {
+    if (st === 'historical' || (!st && ts === 'past')) {
       return { shouldArchive: true, reason: '偏好或事实已被更新替代，已自动归档留存' };
     }
 
-    var refActivity = Math.max(Number(mem.lastUsedAt) || 0, Number(mem.updatedAt) || 0, Number(mem.createdAt) || now);
-    var idleDays = Math.max(0, (now - refActivity) / DAY_MS);
-    var dynScore = computeDynamicScore(mem, now);
-    var usage = Math.max(0, Number(mem.usageCount) || 0);
-    if (st === 'active' && !mem.userConfirmed && usage === 0 && idleDays >= STALE_ARCHIVE_DAYS && (mem.category === '备忘' || dynScore < 34)) {
-      return { shouldArchive: true, reason: '超过 30 天未使用且重要度较低，已自动归档' };
+    var conflictState = String(mem.conflictState || 'none').trim().toLowerCase();
+    var supersededById = String(mem.supersededById || '').trim();
+    if (!st && conflictState === 'superseded' && supersededById && ts !== 'current' && ts !== 'future_plan') {
+      return { shouldArchive: true, reason: '偏好或事实已被更新替代，已自动归档留存' };
     }
 
     return { shouldArchive: false, reason: '' };
+  }
+
+  var EXPLICIT_EXPIRATION_GRACE_DAYS = 3;
+  var PROTECTED_EXPIRATION_CATEGORIES = {
+    '身份信息': true,
+    '身份': true,
+    '偏好': true,
+    '习惯': true,
+    '项目': true,
+    '长期计划': true,
+    '长期目标': true,
+    '目标': true,
+    '决定': true
+  };
+  var PROTECTED_EXPIRATION_FACT_TYPES = {
+    identity: true,
+    preference: true,
+    habit: true,
+    project: true,
+    decision: true
+  };
+  var RECURRING_SCHEDULE_RE = /(?:每(?:天|日|周|星期|礼拜|月|年|季度|隔|逢)|每周[一二三四五六日天]|每月\d{1,2}[日号]?|每年\d{1,2}月|固定(?:每周|每月|每年|每天|安排|开会|例会)|定期|例行|周例会|月例会|月度|年度|常规|循环|重复|平时都|总是|习惯性)/;
+  var LONG_TERM_GOAL_RE = /(?:长期|持续|一直|坚持|养成|终身|年度目标|阶段目标|人生目标|职业规划|长期计划|长期目标|长远|永久|持续学习|系统学习|从.{0,14}(?:开始|起)(?:坚持|长期|持续|每天|每周|学习|锻炼|健身|记账|早睡)|(?:开始|开启)(?:长期|持续)|目标(?:是|为)|规划|考公|考研|考博|备考|留学|移民|买房|存钱计划)/;
+  var STABLE_INFO_CONTENT_RE = /(?:生日(?:是|为|在|:|：)|(?:是|为).{0,6}生日|出生(?:于|日期)?|毕业于|入职(?:于|时间)?|结婚(?:纪念日)?|纪念日|成立于|创办于|籍贯|职业是|工作是|居住在|住在|定居|身份证|护照号|手机号|邮箱是|叫我|名字是|喜欢|偏爱|偏好|爱吃|爱喝|讨厌|不喜欢|习惯|作息|口味|风格|过敏|忌口|正在开发|核心项目|负责.{0,8}项目|架构设计|长期维护|产品路线图|技术栈)/;
+  var DURATION_BOUNDARY_RE = /(?:为期\s*(?:\d+|[一二两三四五六七八九十半]+)?\s*(?:天|日|周|星期|礼拜|个月|月|季度|年)?|连续(?:学习|训练|培训|上课|治疗|康复|打卡|推进|开展|进行|出差|工作|\s*(?:\d+|[一二两三四五六七八九十]+)\s*(?:天|日|周|星期|礼拜|个月|月|次|节|课))|历时\s*(?:\d+|[一二两三四五六七八九十半]+)|耗时\s*(?:\d+|[一二两三四五六七八九十半]+)|(?:进行|开展|持续)\s*(?:\d+|[一二两三四五六七八九十半]+)\s*(?:天|日|周|星期|礼拜|个月|月|季度|年)|(?:\d+|[一二两三四五六七八九十半]+)\s*(?:天|日|周|星期|礼拜|个月|月|季度|年)的?(?:培训|训练|课程|学习|疗程|治疗|实习|出差|项目|活动|集训|闭关|封闭|康复|辅导|服务|试用|体验|考察|旅行|旅游|计划|任务|周期)|(?:多天|数天|数日|数周|数月|几天|几周|几个月|半个月|半年|一整周|一整月))/;
+  var START_DATE_ONLY_RE = /(?:开始(?:准备|学习|训练|培训|实施|推进|执行|开展|进行|治疗|康复|上课|第一|筹备|活动|工作|任务)|(?:项目|任务|活动|计划|课程|培训|工程|工作).{0,6}(?:启动|立项|开启|开工|开班|开课|开始)|(?:启动|开启|开展|立项)(?:新|长期|阶段|项目|任务|活动|计划|课程|培训|工作|方案)|(?:启动|立项|开班|开课|开营)(?:日期|时间|仪式)?)/;
+  var MULTI_PHASE_RE = /(?:第[一二三四五六七八九十1-9]\s*(?:阶段|期|步|轮|批|环节|部分|疗程|模块|次课)|分阶段|多阶段|阶段性|后续(?:继续|还(?:要|有|需)|推进|跟进|安排|计划|阶段|课程|治疗|复诊|服务)|接下来(?:继续|还(?:要|有|需)|推进)|继续推进|分步实施|分批进行|首期|初期|前期准备)/;
+  var REGISTRATION_DEADLINE_RE = /(?:报名(?:截止|结束|到期|最后|通道关闭)|截止报名|结束报名|(?:报名|参赛).{0,8}(?:截止|到期)|(?:抢票|预售|申请|注册|缴费报名).{0,6}(?:截止|结束)|报名日期|报名时间|报名.{0,10}(?:参加|活动|比赛|考试|培训|课程|会议|大会))/;
+  var ONGOING_PROCESS_APPOINTMENT_RE = /(?:疗程|长期治疗|持续治疗|系统治疗|正畸|矫正|康复(?:治疗|训练|周期)|连续课程|系列课程|系统课程|培训班|辅导班|集训营|私教课|网课|训练营|持续服务|长期服务|包月|包年|季卡|年卡|会员服务|托管服务|顾问服务|装修(?:施工|工程|服务)|(?:预约|约了|约好).{0,12}(?:治疗|疗程|康复|课程|上课|培训|教学|辅导|咨询服务|长期服务|持续服务|装修|服务(?:项目|周期|流程)?)|(?:治疗|课程|服务)(?:过程|周期|阶段|流程|计划|项目))/;
+  var PROJECT_KICKOFF_RE = /(?:项目(?:启动|立项|开工|开启|开始|开题|启动会|排期|推进|实施|研发|开发|上线筹备)|(?:启动|立项|开工|开题)(?:一个|新)?(?:项目|课题|工程|研发|计划)|kick[\s-]?off)/i;
+  var DEFERRED_OR_ONGOING_RE = /(?:延期|改期|推迟|延后|顺延|改时间|调整时间|重新安排|另行通知|尚未结束|还没结束|还未结束|未结束|尚未完成|还没完成|仍在进行|还在进行|正在进行|进行中|仍在推进|还在推进|继续进行|持续中)/;
+  var AMBIGUOUS_SCHEDULE_RE = /(?:左右|前后|大概|大约|也许|可能|不确定|待定|暂定|再看|看情况|有空再|说不定|或者|还是|改到|推迟到|延期到|具体(?:时间|日期)(?:未定|待定|不定|再定|另定)|(?:时间|日期)(?:未定|待定|不明确|不清楚|另定)|(?:并非|不是)(?:当天|那天)|择日|改日|另约|待通知)/;
+  var PAST_NARRATIVE_RE = /(?:参加了|去了|完成了|已于|当时|那天|纪要|总结|回顾|记录了)/;
+  var UNFINISHED_TASK_RE = /(?:(?:还|仍)?没(?:有)?(?:弄完|办完|处理完|做完|写完|搞完|搞定|完事|结束|完成|去(?:成|办|取|领|买)?|取(?:走|回|到)?|拿(?:到|回)?|交(?:完|上|齐)?|提交|递交|办(?:好|理)?|领(?:取|到)?|买(?:到|好)?|寄(?:出|走)?|还(?:清|掉)?|发(?:出|送)?|回复|确认|付(?:款)?|缴(?:费)?|签(?:约|字)?)|尚未(?:办理|领取|处理|提交|完成|结束|缴费|确认|归还|寄出|发出|拿到|解决|开展)|(?:仍|还)?未(?:办结|办完|处理完|办理|领取|处理|提交|完成|结束|搞定)|(?:回头|之后|后面|改天|过两天|过几天|下回|有空)(?:再|去)(?:办|处理|去|弄|取|交|领|买|说|看|做)|(?:还要|还得|需要|继续|持续)(?:继续|跟进|处理|推进|办理|完善)|(?:仍需|还需|尚需)(?:处理|办理|跟进|推进|等待)|(?:等|等待)(?:结果|通知|回复|反馈|审核|审批|消息|出结果|下发|批复|安排)|待(?:跟进|审核|审批|回复|通知|反馈|确认))/;
+  var MULTI_DAY_ACTIVITY_RE = /(?:出差|差旅|旅行|旅游|度假|自驾游|自由行|跟团游|游学|入住(?:酒店|民宿|宾馆|旅馆|公寓|客房)?|住酒店|住院|入院|留院观察|陪护|疗养|休养|静养|培训营|集训|研修|进修|夏令营|冬令营|特训营|训练营|脱产培训|封闭培训|研讨班|装修|装潢|翻新|搬迁|施工|实习|借调|驻场|外派|派驻|挂职|闭关|军训|支教|休假|年假|产假|陪产假|病假)/;
+  var COMPOUND_MULTI_STEP_RE = /(?:(?:结果|报告|成绩|体检报告|化验单|检测结果|审核|审批|批复|评估|反馈|通知|回执)(?:出来|下来|通过|批准|完成|收到|拿到|公布|下发)?(?:后|之后|以后)(?:再|去|继续|办理|决定|安排|看|联系|确认|提交|推进|签约|打款)|(?:通过|批准|获批|审核后|审批后|复查后|体检后|面试后|提交后|看完后|签完后)(?:再|去|继续|办理|决定|安排|看|确认|签约|推进|打款)|先[^，,。；;]{1,18}[，,、；;\s]+(?:再|然后|接着|随后|之后|以后)[^，,。；;]{1,18}|[，,;；]\s*(?:然后|接着|随后|之后|以后|完事后|完成后|结束后|下一步|紧接着)\s*(?:再|去|等待|等|办理|决定|确认|看|继续|推进|安排|提交|签约|联系|跟进|审核|审批)|再(?:决定|确定|考虑|看是否|安排|办理|签约|提交|复诊|去看)|(?:等待|进入|走)(?:审核|审批|复审|二面|终面|流程|公示|核验|评估|排期))/;
+  var START_DATE_ANCHORED_RE = /(?:(?:从|自)\s*__ABS_DATE__\s*(?:起|开始|启动|开启|开展|实施|生效|施行|进入)|__ABS_DATE__\s*(?:起|开始|启动|开启|开班|开课|开营|开训|开展|开工|立项|动工|试运行|试运营|进入|正式开始|正式启动|正式开启))/;
+  var UNCLEAR_DATE_BINDING_RE = /(?:__ABS_DATE__\s*(?:提到|提及|说起|聊到|说到|记录|记下|备注|收到(?:通知|消息|邮件|短信)|看到(?:通知|消息)|听说|得知|通知说|发布的|写下|以后|之后|后再|后找时间|后抽空|后看情况)|(?:参考|依据|按照|根据|截至|截止到?)\s*__ABS_DATE__\s*的?(?:数据|报价|标准|版本|文件|报告|记录|消息|通知)|__ABS_DATE__\s*(?:版本|版|发布|出台|生效|更新)的)/;
+  var ONE_OFF_ARRANGEMENT_RE = /(?:待办|备忘|提醒|记得|别忘|务必|截止|到期|临时|一次性|安排|日程|预约|约了|约好|计划|打算|准备|要去|去参加|参加|出席|开会|会议|面试|复查|复诊|体检|看牙|看病|挂号|打疫苗|航班|飞往|火车|高铁|车票|机票|退房|演出|演唱会|展览|聚餐|饭局|赴约|婚礼|答辩|缴费|交房租|交水电|续费|报销|寄快递|取快递|拿快递|取件|取货|拿报告|还书|办理|年检|续签|签证|提交|递交|汇报|评审|发版|上线|去买|购买|采买|采购|买.{0,8}(?:礼物|东西|机票|车票|票|药|菜|花|蛋糕|日用品)|领取|领证件|取证件|领证)/;
+
+  function isValidGregorianDate(year, month, day) {
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+    if (year < 1970 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+    var dt = new Date(Date.UTC(year, month - 1, day));
+    return dt.getUTCFullYear() === year && dt.getUTCMonth() === (month - 1) && dt.getUTCDate() === day;
+  }
+
+  function extractExplicitAbsoluteDate(texts) {
+    var uniqueMap = {};
+    var uniqueList = [];
+    var maskedTexts = [];
+    var hasInvalidDate = false;
+    var hasMultiOrRangeAmbiguity = false;
+
+    function addCandidate(y, m, d) {
+      if (!isValidGregorianDate(y, m, d)) {
+        hasInvalidDate = true;
+        return;
+      }
+      var key = String(y) + '-' + (m < 10 ? '0' + m : String(m)) + '-' + (d < 10 ? '0' + d : String(d));
+      if (!uniqueMap[key]) {
+        uniqueMap[key] = { year: y, month: m, day: d, key: key };
+        uniqueList.push(uniqueMap[key]);
+      }
+    }
+
+    for (var i = 0; i < texts.length; i++) {
+      var text = String(texts[i] || '').trim();
+      if (!text) continue;
+      var matchedSpans = [];
+
+      // 1) YYYY-MM-DD / YYYY/MM/DD（要求分隔符一致且前后无紧邻数字或日期分隔符）
+      var sepRe = /(\d{4})([-/])(\d{1,2})\2(\d{1,2})/g;
+      var m1;
+      while ((m1 = sepRe.exec(text)) !== null) {
+        var start1 = m1.index;
+        var end1 = start1 + m1[0].length;
+        var prev1 = start1 > 0 ? text.charAt(start1 - 1) : '';
+        var next1 = end1 < text.length ? text.charAt(end1) : '';
+        if (/[0-9\-/]/.test(prev1) || /[0-9\-/]/.test(next1)) continue;
+        matchedSpans.push([start1, end1]);
+        addCandidate(parseInt(m1[1], 10), parseInt(m1[3], 10), parseInt(m1[4], 10));
+      }
+
+      // 2) YYYY年M月D日（要求前后无紧邻数字）
+      var cnRe = /(\d{4})年(\d{1,2})月(\d{1,2})日/g;
+      var m2;
+      while ((m2 = cnRe.exec(text)) !== null) {
+        var start2 = m2.index;
+        var end2 = start2 + m2[0].length;
+        var prev2 = start2 > 0 ? text.charAt(start2 - 1) : '';
+        var next2 = end2 < text.length ? text.charAt(end2) : '';
+        if (/[0-9]/.test(prev2) || /[0-9]/.test(next2)) continue;
+        matchedSpans.push([start2, end2]);
+        addCandidate(parseInt(m2[1], 10), parseInt(m2[2], 10), parseInt(m2[3], 10));
+      }
+
+      // 3) 剥离已匹配的完整绝对日期后，检查是否存在日期范围或额外缺年日期导致歧义
+      if (matchedSpans.length > 0) {
+        matchedSpans.sort(function(a, b) { return a[0] - b[0]; });
+        var masked = '';
+        var cursor = 0;
+        for (var s = 0; s < matchedSpans.length; s++) {
+          var sp = matchedSpans[s];
+          if (sp[0] < cursor) continue;
+          masked += text.slice(cursor, sp[0]) + ' __ABS_DATE__ ';
+          cursor = sp[1];
+        }
+        masked += text.slice(cursor);
+        maskedTexts.push(masked);
+
+        if (/__ABS_DATE__\s*(?:至|到|~|～|-|—)\s*\d{1,2}\s*(?:月|日|号)/.test(masked) ||
+            /\d{1,2}\s*月\s*\d{1,2}\s*[日号]/.test(masked)) {
+          hasMultiOrRangeAmbiguity = true;
+        }
+      }
+    }
+
+    if (hasInvalidDate) {
+      return { status: 'invalid', date: null, maskedTexts: [], reason: '包含无效公历日期' };
+    }
+    if (uniqueList.length === 0) {
+      return { status: 'none', date: null, maskedTexts: [], reason: '未检测到明确包含年份的公历日期' };
+    }
+    if (uniqueList.length > 1 || hasMultiOrRangeAmbiguity) {
+      return { status: 'ambiguous', date: null, maskedTexts: [], reason: '存在多个日期或日期范围，无法唯一确定截止日期' };
+    }
+    return { status: 'ok', date: uniqueList[0], maskedTexts: maskedTexts, reason: '' };
+  }
+
+  function detectNonTerminalDateBoundary(combinedText, maskedTexts) {
+    if (UNFINISHED_TASK_RE.test(combinedText)) {
+      return '内容明确表示事项尚未完成或仍需后续处理，不判定为过期';
+    }
+    if (MULTI_DAY_ACTIVITY_RE.test(combinedText)) {
+      return '属于天然持续多天的活动或过程，不能仅凭单一日期判定已结束';
+    }
+    if (COMPOUND_MULTI_STEP_RE.test(combinedText)) {
+      return '包含前后衔接的复合多步骤事项，不能将首步日期视为整体结束';
+    }
+    if (DURATION_BOUNDARY_RE.test(combinedText)) {
+      return '包含持续时间表达，不能将开始日期直接视为活动结束时间';
+    }
+    if (MULTI_PHASE_RE.test(combinedText)) {
+      return '包含分阶段或后续推进表达，不能将当前日期视为整体结束';
+    }
+    if (REGISTRATION_DEADLINE_RE.test(combinedText)) {
+      return '报名截止日期不等同于活动结束日期，保守跳过';
+    }
+    if (ONGOING_PROCESS_APPOINTMENT_RE.test(combinedText)) {
+      return '预约或单次节点不等同于整体治疗、课程或持续服务结束，保守跳过';
+    }
+    if (PROJECT_KICKOFF_RE.test(combinedText)) {
+      return '项目启动或立项日期不等同于项目完成日期，保守跳过';
+    }
+    if (DEFERRED_OR_ONGOING_RE.test(combinedText)) {
+      return '内容包含延期、改期、推迟或仍在进行表达，不判定为过期';
+    }
+    if (START_DATE_ONLY_RE.test(combinedText)) {
+      return '日期仅表示开始或启动时间，不能视为活动已结束';
+    }
+    if (Array.isArray(maskedTexts)) {
+      for (var i = 0; i < maskedTexts.length; i++) {
+        var mt = maskedTexts[i];
+        if (START_DATE_ANCHORED_RE.test(mt)) {
+          return '日期仅作为活动开始节点，不能视为整体已结束';
+        }
+        if (UNCLEAR_DATE_BINDING_RE.test(mt)) {
+          return '日期与事件截止时间的对应关系不明确，保守跳过';
+        }
+      }
+    }
+    return '';
+  }
+
+  function inferExplicitExpirationInfo(mem, nowTs) {
+    function makeResult(eligible, expired, expirationAt, reason) {
+      return {
+        eligible: !!eligible,
+        expired: !!expired,
+        expirationAt: typeof expirationAt === 'number' && Number.isFinite(expirationAt) ? expirationAt : null,
+        reason: String(reason || '')
+      };
+    }
+
+    if (!mem || typeof mem !== 'object') {
+      return makeResult(false, false, null, '无效记忆记录');
+    }
+    if (mem.archived === true) {
+      return makeResult(false, false, null, '记忆已归档，不进入过期候选');
+    }
+
+    // 1) 冲突与替代状态保护
+    if (isPendingConflictMemory(mem)) {
+      return makeResult(false, false, null, '待确认冲突记忆受保护');
+    }
+    var conflictState = String(mem.conflictState || 'none').trim().toLowerCase();
+    var supersededById = String(mem.supersededById || '').trim();
+    if (conflictState === 'superseded' || supersededById) {
+      return makeResult(false, false, null, '存在未清理的替代状态，受保护');
+    }
+
+    // 2) 生命周期状态校验（仅限 active，排除 paused / completed / cancelled / historical）
+    var rawStatus = String(mem.status || '').trim().toLowerCase();
+    var rawTemporal = String(mem.temporalState || '').trim().toLowerCase();
+    var st = KNOWN_ARCHIVE_STATUSES.indexOf(rawStatus) !== -1 ? rawStatus : '';
+    var ts = KNOWN_ARCHIVE_TEMPORALS.indexOf(rawTemporal) !== -1 ? rawTemporal : '';
+
+    if (st === 'paused' || ts === 'paused') {
+      return makeResult(false, false, null, '暂停状态记忆不判定为过期');
+    }
+    if (st !== 'active') {
+      return makeResult(false, false, null, '仅对当前有效(active)记忆进行过期判定');
+    }
+
+    // 3) 高价值与人工确认保护
+    if (mem.manualImportance === true) {
+      return makeResult(false, false, null, '手动锁定重要度的记忆受保护');
+    }
+    if (mem.userConfirmed === true) {
+      return makeResult(false, false, null, '用户已确认的记忆受保护');
+    }
+    if (Number(mem.importance) >= 4) {
+      return makeResult(false, false, null, '高重要度记忆受保护');
+    }
+    if (Number(mem.independentMentionCount) >= 2) {
+      return makeResult(false, false, null, '多次独立提及的记忆受保护');
+    }
+
+    // 4) 稳定类别与事实类型保护
+    var category = String(mem.category || '').trim();
+    var factType = String(mem.factType || '').trim().toLowerCase();
+    if (PROTECTED_EXPIRATION_CATEGORIES[category]) {
+      return makeResult(false, false, null, '稳定类别记忆受保护');
+    }
+    if (PROTECTED_EXPIRATION_FACT_TYPES[factType]) {
+      return makeResult(false, false, null, '稳定事实类型记忆受保护');
+    }
+
+    // 5) temporalState 必须为 future_plan，或属于明确备忘类别的当前有效待办
+    var isAllowedTemporal = ts === 'future_plan' || ((ts === 'current' || !ts) && category === '备忘');
+    if (!isAllowedTemporal) {
+      return makeResult(false, false, null, '时间状态不符合一次性临时计划候选条件');
+    }
+
+    // 6) 内容保护与一次性临时安排语义校验
+    var content = String(mem.content || '').trim();
+    var rawExpression = String(mem.rawExpression || '').trim();
+    var combinedText = (content + ' ' + rawExpression).trim();
+    if (!combinedText) {
+      return makeResult(false, false, null, '记忆内容为空，无法判定');
+    }
+    if (RECURRING_SCHEDULE_RE.test(combinedText)) {
+      return makeResult(false, false, null, '周期性安排不判定为过期');
+    }
+    if (LONG_TERM_GOAL_RE.test(combinedText)) {
+      return makeResult(false, false, null, '长期计划或持续性目标受保护');
+    }
+    if (STABLE_INFO_CONTENT_RE.test(combinedText)) {
+      return makeResult(false, false, null, '身份、偏好、习惯或项目等稳定信息受保护');
+    }
+    if (AMBIGUOUS_SCHEDULE_RE.test(combinedText)) {
+      return makeResult(false, false, null, '时间表达存在不确定性，保守跳过');
+    }
+    if (PAST_NARRATIVE_RE.test(combinedText)) {
+      return makeResult(false, false, null, '历史陈述或纪要不判定为一次性待办');
+    }
+
+    // 7) 持续时间、开始日期、多阶段、报名截止、持续服务/课程/治疗、项目启动与延期/进行中保护
+    var nonTerminalReason = detectNonTerminalDateBoundary(combinedText, null);
+    if (nonTerminalReason) {
+      return makeResult(false, false, null, nonTerminalReason);
+    }
+
+    if (!ONE_OFF_ARRANGEMENT_RE.test(combinedText)) {
+      return makeResult(false, false, null, '无法确认是一次性临时安排、短期备忘或待办事项');
+    }
+
+    // 8) 仅解析文本中明确包含年份的完整公历日期（绝不使用 createdAt / mentionedAt / updatedAt 推算）
+    var parsed = extractExplicitAbsoluteDate([content, rawExpression]);
+    if (parsed.status !== 'ok' || !parsed.date) {
+      return makeResult(false, false, null, parsed.reason || '缺少唯一有效的公历日期');
+    }
+
+    // 9) 基于已定位的绝对日期检查“仅开始节点”或“日期与事件对应关系不明确”
+    var anchoredBoundaryReason = detectNonTerminalDateBoundary(combinedText, parsed.maskedTexts);
+    if (anchoredBoundaryReason) {
+      return makeResult(false, false, null, anchoredBoundaryReason);
+    }
+
+    var d = parsed.date;
+    var expirationAt = Date.UTC(d.year, d.month - 1, d.day, 23, 59, 59, 999);
+    var graceEndAt = expirationAt + EXPLICIT_EXPIRATION_GRACE_DAYS * DAY_MS;
+    var now = (typeof nowTs === 'number' && Number.isFinite(nowTs))
+      ? nowTs
+      : (nowTs != null && String(nowTs).trim() !== '' && Number.isFinite(Number(nowTs)) ? Number(nowTs) : Date.now());
+
+    if (now <= expirationAt) {
+      return makeResult(true, false, expirationAt, '目标日期尚未到期');
+    }
+    if (now <= graceEndAt) {
+      return makeResult(true, false, expirationAt, '目标日期已过，但仍在 3 个完整自然日宽限期内');
+    }
+    return makeResult(true, true, expirationAt, '一次性临时安排已超过目标日期及 3 天宽限期');
   }
 
   async function archiveMemory(id, reason) {
@@ -1563,34 +1900,66 @@
     var nextDraft = Object.assign({}, existing, {
       archived: true,
       archivedAt: now,
-      archiveReason: String(reason || '手动归档留存').slice(0, 140)
+      archiveReason: String(reason || '手动归档留存').slice(0, 140),
+      manualRestoredAt: 0
     });
     var nextScore = computeDynamicScore(nextDraft, now);
     return await store.updateMemory(id, {
       archived: true,
       archivedAt: now,
       archiveReason: nextDraft.archiveReason,
+      manualRestoredAt: 0,
       dynamicScore: nextScore,
       importance: existing.manualImportance ? existing.importance : scoreToImportance(nextScore)
     }, { skipHistoryPush: true });
   }
 
-  async function unarchiveMemory(id) {
+  async function unarchiveMemory(id, options) {
     var store = S();
     if (!store || !id) return null;
     var existing = await store.getMemory(id);
     if (!existing) return null;
-    var now = Date.now();
+    var opts = options && typeof options === 'object' ? options : {};
+    var isManualRestore = opts.manual !== false;
+    var now = (opts.now != null && Number.isFinite(Number(opts.now)) && Number(opts.now) > 0)
+      ? Math.floor(Number(opts.now))
+      : Date.now();
     var nextStatus = existing.status;
     var nextTemporal = existing.temporalState;
     if (nextStatus === 'historical' || nextStatus === 'completed' || nextStatus === 'cancelled') {
       nextStatus = 'active';
       nextTemporal = 'current';
     }
+
+    // 对原本未归档的记忆保持幂等，不凭空创建用户手动恢复标记
+    if (existing.archived !== true) {
+      if (nextStatus === existing.status && nextTemporal === existing.temporalState) {
+        return existing;
+      }
+      var nonArchDraft = Object.assign({}, existing, {
+        archived: false,
+        archivedAt: 0,
+        archiveReason: '',
+        status: nextStatus,
+        temporalState: nextTemporal
+      });
+      var nonArchScore = computeDynamicScore(nonArchDraft, now);
+      return await store.updateMemory(id, {
+        archived: false,
+        archivedAt: 0,
+        archiveReason: '',
+        status: nextStatus,
+        temporalState: nextTemporal,
+        dynamicScore: nonArchScore
+      }, { historyReason: '从归档恢复为当前有效' });
+    }
+
+    var nextManualRestoredAt = isManualRestore ? now : 0;
     var nextDraft = Object.assign({}, existing, {
       archived: false,
       archivedAt: 0,
       archiveReason: '',
+      manualRestoredAt: nextManualRestoredAt,
       status: nextStatus,
       temporalState: nextTemporal
     });
@@ -1599,10 +1968,10 @@
       archived: false,
       archivedAt: 0,
       archiveReason: '',
+      manualRestoredAt: nextManualRestoredAt,
       status: nextStatus,
       temporalState: nextTemporal,
-      dynamicScore: nextScore,
-      importance: existing.manualImportance ? existing.importance : scoreToImportance(nextScore)
+      dynamicScore: nextScore
     }, { historyReason: '从归档恢复为当前有效' });
   }
 
@@ -1720,6 +2089,7 @@
         patch.archived = true;
         patch.archivedAt = now;
         patch.archiveReason = archEval.reason;
+        patch.manualRestoredAt = 0;
         changed = true;
         archivedCount++;
       }
@@ -1778,7 +2148,9 @@
     syncRelationsForMemory: syncRelationsForMemory,
     rebuildRelationGraph: rebuildRelationGraph,
     cleanupRelationsAfterDelete: cleanupRelationsAfterDelete,
+    isManuallyRestoredActiveMemory: isManuallyRestoredActiveMemory,
     evaluateArchiveEligibility: evaluateArchiveEligibility,
+    inferExplicitExpirationInfo: inferExplicitExpirationInfo,
     archiveMemory: archiveMemory,
     unarchiveMemory: unarchiveMemory,
     recordMemoriesRecalled: recordMemoriesRecalled,

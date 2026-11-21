@@ -1079,6 +1079,7 @@
       archived: archived,
       archivedAt: archived ? (Number(src.archivedAt) || Number(src.updatedAt) || now) : 0,
       archiveReason: archived ? String(src.archiveReason || '').trim().slice(0, 140) : '',
+      manualRestoredAt: archived ? 0 : (Number.isFinite(Number(src.manualRestoredAt)) ? Math.max(0, Math.floor(Number(src.manualRestoredAt))) : 0),
       scenario: String(src.scenario || '').trim().slice(0, 60),
       scenarioLabel: String(src.scenarioLabel || '').trim().slice(0, 40),
       conflictState: normalizeConflictState(src.conflictState),
