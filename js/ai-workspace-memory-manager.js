@@ -1998,6 +1998,208 @@
     };
   }
 
+  var EXPIRED_ARCHIVE_USER_CONFIRM_REASON = '一次性计划日期已过，用户确认归档';
+  var _inflightExpiredArchiveIds = new Set();
+
+  function resolveExecuteArchivePermissionContext(options, store) {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) {
+      return { ok: false };
+    }
+    var memMod = global.AiWorkspaceMemory;
+    if (!memMod || typeof memMod.filterAccessibleMemories !== 'function') {
+      return { ok: false };
+    }
+
+    if (typeof options.userId !== 'string') return { ok: false };
+    var userId = options.userId.trim();
+    if (!userId || userId === '*' || userId.toLowerCase() === 'all' || userId.toLowerCase() === 'any') {
+      return { ok: false };
+    }
+    if (store && typeof store.getCurrentUserId === 'function') {
+      var trustedUserId = '';
+      try {
+        trustedUserId = String(store.getCurrentUserId() || '').trim();
+      } catch (_) {
+        return { ok: false };
+      }
+      if (!trustedUserId || trustedUserId !== userId) {
+        return { ok: false };
+      }
+    }
+
+    if (typeof options.allowCrossChat !== 'boolean') return { ok: false };
+    if (typeof options.chatId !== 'string') return { ok: false };
+    if (typeof options.projectId !== 'string') return { ok: false };
+
+    var chatId = options.chatId.trim();
+    var projectId = options.projectId.trim();
+    var allowCrossChat = options.allowCrossChat;
+
+    // 关闭跨聊天记忆时必须具备明确的当前 chatId，不能凭空猜测会话边界
+    if (!allowCrossChat && !chatId) {
+      return { ok: false };
+    }
+
+    var parsedNow = (options.nowTs != null && String(options.nowTs).trim() !== '') ? Number(options.nowTs) : NaN;
+    var now = (Number.isFinite(parsedNow) && parsedNow > 0) ? Math.floor(parsedNow) : Date.now();
+
+    return {
+      ok: true,
+      userId: userId,
+      chatId: chatId,
+      projectId: projectId,
+      allowCrossChat: allowCrossChat,
+      now: now,
+      filterAccessibleMemories: memMod.filterAccessibleMemories
+    };
+  }
+
+  async function executeExpiredMemoryArchive(candidateIds, options) {
+    var archivedIds = [];
+    var skippedIds = [];
+    var failedIds = [];
+
+    if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
+      return {
+        archivedIds: archivedIds,
+        skippedIds: skippedIds,
+        failedIds: failedIds
+      };
+    }
+
+    // 先去重并清洗候选 ID，确保每个 ID 最多处理一次且仅归入一个结果数组
+    var uniqueIds = [];
+    var seenIds = new Set();
+    for (var i = 0; i < candidateIds.length; i++) {
+      if (typeof candidateIds[i] !== 'string' && typeof candidateIds[i] !== 'number') continue;
+      var cleanId = String(candidateIds[i]).trim();
+      if (!cleanId || seenIds.has(cleanId)) continue;
+      seenIds.add(cleanId);
+      uniqueIds.push(cleanId);
+    }
+
+    if (!uniqueIds.length) {
+      return {
+        archivedIds: archivedIds,
+        skippedIds: skippedIds,
+        failedIds: failedIds
+      };
+    }
+
+    var store = S();
+    if (!store || typeof store.getMemory !== 'function' || typeof store.updateMemory !== 'function') {
+      return {
+        archivedIds: archivedIds,
+        skippedIds: uniqueIds.slice(),
+        failedIds: failedIds
+      };
+    }
+
+    var perm = resolveExecuteArchivePermissionContext(options, store);
+    if (!perm.ok) {
+      return {
+        archivedIds: archivedIds,
+        skippedIds: uniqueIds.slice(),
+        failedIds: failedIds
+      };
+    }
+
+    for (var j = 0; j < uniqueIds.length; j++) {
+      var memId = uniqueIds[j];
+
+      // 同进程防重入/防重复点击：同一记忆正在归档执行中时直接跳过，避免重复写入
+      if (_inflightExpiredArchiveIds.has(memId)) {
+        skippedIds.push(memId);
+        continue;
+      }
+
+      _inflightExpiredArchiveIds.add(memId);
+      try {
+        // 1) 从存储读取最新记录，不允许凭旧预演快照直接写入
+        var latest = await store.getMemory(memId);
+        if (!latest || typeof latest !== 'object') {
+          skippedIds.push(memId);
+          continue;
+        }
+
+        // 2) 复用现有 filterAccessibleMemories 严格校验用户/项目/聊天权限边界
+        var accessible = perm.filterAccessibleMemories([latest], {
+          userId: perm.userId,
+          chatId: perm.chatId,
+          projectId: perm.projectId,
+          allowCrossChat: perm.allowCrossChat
+        });
+        if (!Array.isArray(accessible) || accessible.length !== 1) {
+          skippedIds.push(memId);
+          continue;
+        }
+
+        // 3) 校验仍未归档、状态仍为 active、无手动恢复保护、无待确认冲突与替代关系残留
+        if (latest.archived === true) {
+          skippedIds.push(memId);
+          continue;
+        }
+        var status = String(latest.status || '').trim().toLowerCase();
+        if (status !== 'active') {
+          skippedIds.push(memId);
+          continue;
+        }
+        var restoredAt = Number(latest.manualRestoredAt);
+        if (isManuallyRestoredActiveMemory(latest) || (Number.isFinite(restoredAt) && restoredAt > 0)) {
+          skippedIds.push(memId);
+          continue;
+        }
+        if (isPendingConflictMemory(latest)) {
+          skippedIds.push(memId);
+          continue;
+        }
+        var conflictState = String(latest.conflictState || 'none').trim().toLowerCase();
+        var supersededById = String(latest.supersededById || '').trim();
+        if (conflictState === 'superseded' || supersededById || hasSupersededByRelation(latest)) {
+          skippedIds.push(memId);
+          continue;
+        }
+
+        // 4) 重新调用 inferExplicitExpirationInfo 校验仍符合一次性计划且已过宽限期
+        var expInfo = inferExplicitExpirationInfo(latest, perm.now);
+        if (
+          !expInfo ||
+          expInfo.eligible !== true ||
+          expInfo.expired !== true ||
+          typeof expInfo.expirationAt !== 'number' ||
+          !Number.isFinite(expInfo.expirationAt)
+        ) {
+          skippedIds.push(memId);
+          continue;
+        }
+
+        // 5) 仅写入归档必需字段，不修改 status / temporalState / content / importance / manualImportance / userConfirmed / relations
+        var updated = await store.updateMemory(memId, {
+          archived: true,
+          archivedAt: perm.now,
+          archiveReason: EXPIRED_ARCHIVE_USER_CONFIRM_REASON,
+          manualRestoredAt: 0
+        }, { skipHistoryPush: true });
+
+        if (updated && updated.archived === true) {
+          archivedIds.push(memId);
+        } else {
+          failedIds.push(memId);
+        }
+      } catch (_) {
+        failedIds.push(memId);
+      } finally {
+        _inflightExpiredArchiveIds.delete(memId);
+      }
+    }
+
+    return {
+      archivedIds: archivedIds,
+      skippedIds: skippedIds,
+      failedIds: failedIds
+    };
+  }
+
   async function archiveMemory(id, reason) {
     var store = S();
     if (!store || !id) return null;
@@ -2259,6 +2461,7 @@
     evaluateArchiveEligibility: evaluateArchiveEligibility,
     inferExplicitExpirationInfo: inferExplicitExpirationInfo,
     previewExpiredMemoryArchive: previewExpiredMemoryArchive,
+    executeExpiredMemoryArchive: executeExpiredMemoryArchive,
     archiveMemory: archiveMemory,
     unarchiveMemory: unarchiveMemory,
     recordMemoriesRecalled: recordMemoriesRecalled,

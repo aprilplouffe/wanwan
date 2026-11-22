@@ -3828,5 +3828,69 @@
   text-align: center;
 }
 
+.aiw-expired-preview-actions {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--aiw-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aiw-expired-preview-action-note {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--aiw-hint);
+}
+
+.aiw-expired-confirm-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aiw-expired-confirm-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.aiw-expired-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aiw-expired-confirm-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--aiw-sub);
+}
+
+.aiw-expired-result-card .aiw-expired-preview-title-row {
+  margin-bottom: 8px;
+}
+
+.aiw-expired-preview-state.is-ok {
+  color: #15803d;
+  border-color: rgba(22, 163, 74, 0.25);
+  background: rgba(22, 163, 74, 0.07);
+}
+
+.aiw-expired-preview-state.is-warn {
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.aiw-expired-preview-state.is-neutral {
+  color: var(--aiw-sub);
+}
+
 
 

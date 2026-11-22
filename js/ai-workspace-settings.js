@@ -65,7 +65,10 @@
     advancedMemoryOpen: false,
     memorySearchQuery: '',
     memoryLifecycleTab: 'active',
-    expiredPreview: null
+    expiredPreview: null,
+    expiredArchiveRunning: false,
+    expiredArchiveResult: null,
+    expiredPreviewEpoch: 0
   };
 
   function S() {
@@ -2624,7 +2627,31 @@
   var EXPIRED_PREVIEW_DEFAULT_REASON = '一次性计划日期已过，建议归档';
 
   function clearExpiredArchivePreviewState() {
+    _ctx.expiredPreviewEpoch = (Number(_ctx.expiredPreviewEpoch) || 0) + 1;
     _ctx.expiredPreview = null;
+    _ctx.expiredArchiveResult = null;
+  }
+
+  function isLongMemoryContextStillActive(expectedEpoch, expectedScopeKey) {
+    if ((Number(_ctx.expiredPreviewEpoch) || 0) !== expectedEpoch) return false;
+    var layer = getLayer();
+    if (!layer || layer.hidden || !layer.classList.contains('open')) return false;
+    var topView = _ctx.viewStack[_ctx.viewStack.length - 1] || '';
+    if (topView !== 'long-memory') return false;
+    var liveAccess = resolveTrustedMemoryAccessContext();
+    if (!liveAccess.ok || liveAccess.scopeKey !== expectedScopeKey) return false;
+    return true;
+  }
+
+  function formatExpiredArchiveResultMessage(archivedCount, skippedCount, failedCount) {
+    var base = '成功归档 ' + archivedCount + ' 条、跳过 ' + skippedCount + ' 条、失败 ' + failedCount + ' 条';
+    if (archivedCount === 0 && failedCount === 0 && skippedCount > 0) {
+      return base + '。这些记忆可能已发生变化，请重新预览。';
+    }
+    if (failedCount > 0) {
+      return base + '，可稍后重新预览重试。';
+    }
+    return base + '。';
   }
 
   function formatExpiredPlanDate(expirationAt) {
@@ -2712,11 +2739,35 @@
   }
 
   function renderExpiredArchivePreviewHtml() {
+    var liveAccess = resolveTrustedMemoryAccessContext();
+
+    // 若刚完成一次确认归档且仍处于同一权限范围，展示简洁结果提示
+    var resState = _ctx.expiredArchiveResult;
+    if (resState && typeof resState === 'object') {
+      if (!liveAccess.ok || liveAccess.scopeKey !== resState.scopeKey) {
+        _ctx.expiredArchiveResult = null;
+      } else if (!_ctx.expiredPreview) {
+        var toneCls = resState.failedCount > 0 ? 'is-warn' : (resState.archivedCount > 0 ? 'is-ok' : 'is-neutral');
+        return (
+          '<div class="aiw-st-card aiw-st-pad aiw-expired-preview-card aiw-expired-result-card" id="aiw-expired-archive-result">' +
+            '<div class="aiw-expired-preview-title-row">' +
+              '<span class="aiw-expired-preview-title">' +
+                '<i class="fa-solid fa-box-archive"></i> 归档执行结果' +
+              '</span>' +
+              '<button type="button" class="aiw-expired-preview-close" id="aiw-mem-expired-result-close" aria-label="关闭结果提示">收起</button>' +
+            '</div>' +
+            '<div class="aiw-expired-preview-state ' + toneCls + '" id="aiw-expired-archive-result-text">' +
+              '<span>' + escapeHtml(resState.message || '') + '</span>' +
+            '</div>' +
+          '</div>'
+        );
+      }
+    }
+
     var state = _ctx.expiredPreview;
     if (!state || typeof state !== 'object') return '';
 
     // 校验当前权限范围未发生变化，防止跨聊天/跨项目/切换用户后复用旧预演结果
-    var liveAccess = resolveTrustedMemoryAccessContext();
     if (state.status === 'ready') {
       if (!liveAccess.ok || liveAccess.scopeKey !== state.scopeKey) {
         _ctx.expiredPreview = null;
@@ -2786,14 +2837,207 @@
       ? '<div class="aiw-expired-preview-more" id="aiw-expired-preview-more">当前仅展示前 ' + displayed.length + ' 条，还有 ' + remaining + ' 条未展示。</div>'
       : '';
 
+    var canExecute = !!(displayed.length > 0 && Mgr() && typeof Mgr().executeExpiredMemoryArchive === 'function');
+    var batchCount = displayed.length;
+    var confirmBtnLabel = _ctx.expiredArchiveRunning
+      ? '正在归档...'
+      : (remaining > 0 ? ('确认归档这 ' + batchCount + ' 条') : ('确认归档 ' + batchCount + ' 条'));
+    var actionHtml = canExecute
+      ? (
+        '<div class="aiw-expired-preview-actions">' +
+          '<div class="aiw-expired-preview-action-note">归档后记忆仍会保留，可在『已归档』中恢复。日期已过不代表任务已完成。</div>' +
+          '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm aiw-expired-confirm-btn" id="aiw-mem-expired-confirm-btn"' + (_ctx.expiredArchiveRunning ? ' disabled' : '') + '>' +
+            '<i class="fa-solid fa-box-archive"></i> ' + escapeHtml(confirmBtnLabel) +
+          '</button>' +
+        '</div>'
+      )
+      : '';
+
     return (
       '<div class="aiw-st-card aiw-st-pad aiw-expired-preview-card" id="aiw-expired-preview-card">' +
         headerHtml +
         '<div class="aiw-expired-preview-count" id="aiw-expired-preview-count">共找到 <strong>' + totalCount + '</strong> 条建议归档的过期一次性计划</div>' +
         '<div class="aiw-expired-preview-list" id="aiw-expired-preview-list">' + itemsHtml + '</div>' +
         moreHtml +
+        actionHtml +
       '</div>'
     );
+  }
+
+  async function runConfirmedExpiredArchive(layer, expectedScopeKey, candidateIds, expectedEpoch) {
+    if (_ctx.expiredArchiveRunning) return;
+
+    var mgrMod = Mgr();
+    if (!mgrMod || typeof mgrMod.executeExpiredMemoryArchive !== 'function') {
+      notifyToast('当前无法执行归档，请稍后重试');
+      return;
+    }
+
+    // 执行前重新获取当前可信权限上下文并比对 scopeKey，绝不直接信任旧预演上下文
+    var liveAccess = resolveTrustedMemoryAccessContext();
+    if (!liveAccess.ok) {
+      clearExpiredArchivePreviewState();
+      var slotUnavail = layer && layer.querySelector('#aiw-expired-preview-slot');
+      if (slotUnavail) slotUnavail.innerHTML = '';
+      notifyToast('当前无法安全预览记忆，请重新进入知屿后重试。');
+      return;
+    }
+    if ((Number(_ctx.expiredPreviewEpoch) || 0) !== expectedEpoch || liveAccess.scopeKey !== expectedScopeKey) {
+      clearExpiredArchivePreviewState();
+      var slotChanged = layer && layer.querySelector('#aiw-expired-preview-slot');
+      if (slotChanged) slotChanged.innerHTML = '';
+      notifyToast('当前聊天或项目范围已变化，请重新预览后再试。');
+      return;
+    }
+
+    // 仅允许提交当前展示批次（最多 10 条）的非空去重 ID
+    var batchIds = [];
+    var seenBatch = new Set();
+    for (var i = 0; i < (Array.isArray(candidateIds) ? candidateIds.length : 0) && batchIds.length < EXPIRED_PREVIEW_MAX_DISPLAY; i++) {
+      var idStr = String(candidateIds[i] || '').trim();
+      if (!idStr || seenBatch.has(idStr)) continue;
+      seenBatch.add(idStr);
+      batchIds.push(idStr);
+    }
+    if (!batchIds.length) {
+      clearExpiredArchivePreviewState();
+      var slotEmpty = layer && layer.querySelector('#aiw-expired-preview-slot');
+      if (slotEmpty) slotEmpty.innerHTML = '';
+      notifyToast('没有可归档的候选记忆，请重新预览。');
+      return;
+    }
+
+    _ctx.expiredArchiveRunning = true;
+    var confirmBtn = layer && layer.querySelector('#aiw-mem-expired-confirm-btn');
+    if (confirmBtn) {
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = '正在归档...';
+    }
+
+    var runEpoch = expectedEpoch;
+    var runScopeKey = liveAccess.scopeKey;
+    var execRes = null;
+    var execFailed = false;
+    try {
+      execRes = await mgrMod.executeExpiredMemoryArchive(batchIds, {
+        userId: liveAccess.userId,
+        chatId: liveAccess.chatId,
+        projectId: liveAccess.projectId,
+        allowCrossChat: liveAccess.allowCrossChat,
+        nowTs: Date.now()
+      });
+    } catch (_) {
+      execFailed = true;
+    }
+
+    try {
+      // 若执行期间用户关闭设置、切换页面或切换聊天/项目，绝不将旧异步结果渲染到新页面或覆盖新状态
+      if (!isLongMemoryContextStillActive(runEpoch, runScopeKey)) {
+        return;
+      }
+
+      var archivedCount = (!execFailed && execRes && Array.isArray(execRes.archivedIds)) ? execRes.archivedIds.length : 0;
+      var skippedCount = (!execFailed && execRes && Array.isArray(execRes.skippedIds)) ? execRes.skippedIds.length : 0;
+      var failedCount = execFailed
+        ? batchIds.length
+        : ((execRes && Array.isArray(execRes.failedIds)) ? execRes.failedIds.length : 0);
+
+      var freshMemories = (S() && typeof S().listMemories === 'function')
+        ? await S().listMemories()
+        : (_ctx.memories || []);
+
+      if (!isLongMemoryContextStillActive(runEpoch, runScopeKey)) {
+        return;
+      }
+
+      _ctx.memories = Array.isArray(freshMemories) ? freshMemories : [];
+      _ctx.expiredPreview = null;
+      var summaryMsg = formatExpiredArchiveResultMessage(archivedCount, skippedCount, failedCount);
+      _ctx.expiredArchiveResult = {
+        scopeKey: runScopeKey,
+        archivedCount: archivedCount,
+        skippedCount: skippedCount,
+        failedCount: failedCount,
+        message: summaryMsg
+      };
+      notifyWorkspaceStateChanged();
+      renderCurrentView();
+      notifyToast(summaryMsg);
+    } finally {
+      _ctx.expiredArchiveRunning = false;
+    }
+  }
+
+  function openExpiredArchiveConfirmModal(layer) {
+    if (_ctx.expiredArchiveRunning) return;
+
+    var state = _ctx.expiredPreview;
+    if (!state || state.status !== 'ready' || !Array.isArray(state.displayedItems) || !state.displayedItems.length) {
+      return;
+    }
+
+    var liveAccess = resolveTrustedMemoryAccessContext();
+    if (!liveAccess.ok) {
+      clearExpiredArchivePreviewState();
+      var slotUnavail = layer && layer.querySelector('#aiw-expired-preview-slot');
+      if (slotUnavail) slotUnavail.innerHTML = '';
+      notifyToast('当前无法安全预览记忆，请重新进入知屿后重试。');
+      return;
+    }
+    if (liveAccess.scopeKey !== state.scopeKey) {
+      clearExpiredArchivePreviewState();
+      var slotChanged = layer && layer.querySelector('#aiw-expired-preview-slot');
+      if (slotChanged) slotChanged.innerHTML = '';
+      notifyToast('当前聊天或项目范围已变化，请重新预览后再试。');
+      return;
+    }
+
+    // 仅提取当前展示的前 N 条（最多 10 条）候选 ID
+    var visibleItems = state.displayedItems.slice(0, EXPIRED_PREVIEW_MAX_DISPLAY);
+    var batchIds = visibleItems.map(function(it) { return it.memoryId; }).filter(Boolean);
+    if (!batchIds.length) return;
+
+    var batchCount = batchIds.length;
+    var remaining = Math.max(0, Number(state.remainingCount) || 0);
+    var expectedScopeKey = state.scopeKey;
+    var expectedEpoch = Number(_ctx.expiredPreviewEpoch) || 0;
+
+    var batchNote = remaining > 0
+      ? ('本次最多尝试归档当前展示的 ' + batchCount + ' 条记忆（其余 ' + remaining + ' 条本次不会归档，可稍后重新预览分批处理）。')
+      : ('本次最多尝试归档 ' + batchCount + ' 条记忆。');
+
+    var bodyHtml =
+      '<div class="aiw-expired-confirm-body">' +
+        '<p class="aiw-st-modal-msg">' + escapeHtml(batchNote) + '</p>' +
+        '<ul class="aiw-expired-confirm-list">' +
+          '<li>执行前会逐条重新校验，仅归档仍符合条件的记忆。</li>' +
+          '<li>不会删除记忆，也不会将其标记为已完成。</li>' +
+          '<li>归档后可随时在「已归档」中查看和恢复。</li>' +
+        '</ul>' +
+      '</div>';
+
+    var modal = showCustomModal(
+      '确认归档过期记忆',
+      bodyHtml,
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-expired-confirm-cancel">取消</button>' +
+      '<button type="button" class="aiw-st-btn-primary" id="aiw-expired-confirm-ok">确认归档</button>'
+    );
+    if (!modal) return;
+
+    var handled = false;
+    var cancelBtn = modal.querySelector('#aiw-expired-confirm-cancel');
+    var okBtn = modal.querySelector('#aiw-expired-confirm-ok');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', closeModalOverlay);
+    }
+    if (okBtn) {
+      okBtn.addEventListener('click', async function() {
+        if (handled || _ctx.expiredArchiveRunning) return;
+        handled = true;
+        closeModalOverlay();
+        await runConfirmedExpiredArchive(layer, expectedScopeKey, batchIds, expectedEpoch);
+      });
+    }
   }
 
   function bindExpiredPreviewEvents(layer) {
@@ -2804,6 +3048,20 @@
         clearExpiredArchivePreviewState();
         var slotEl = layer.querySelector('#aiw-expired-preview-slot');
         if (slotEl) slotEl.innerHTML = '';
+      });
+    }
+    var closeResultBtn = layer.querySelector('#aiw-mem-expired-result-close');
+    if (closeResultBtn) {
+      closeResultBtn.addEventListener('click', function() {
+        _ctx.expiredArchiveResult = null;
+        var slotEl = layer.querySelector('#aiw-expired-preview-slot');
+        if (slotEl) slotEl.innerHTML = '';
+      });
+    }
+    var confirmBtn = layer.querySelector('#aiw-mem-expired-confirm-btn');
+    if (confirmBtn) {
+      confirmBtn.addEventListener('click', function() {
+        openExpiredArchiveConfirmModal(layer);
       });
     }
   }
@@ -2907,6 +3165,7 @@
 
     if (previewExpiredBtn) {
       previewExpiredBtn.addEventListener('click', function() {
+        _ctx.expiredArchiveResult = null;
         _ctx.expiredPreview = buildExpiredArchivePreviewState(Date.now());
         var slotEl = layer.querySelector('#aiw-expired-preview-slot');
         if (slotEl) {
