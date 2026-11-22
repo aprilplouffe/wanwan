@@ -64,7 +64,8 @@
     summarySelectedChatId: '',
     advancedMemoryOpen: false,
     memorySearchQuery: '',
-    memoryLifecycleTab: 'active'
+    memoryLifecycleTab: 'active',
+    expiredPreview: null
   };
 
   function S() {
@@ -242,6 +243,7 @@
       }
     }, 260);
     _ctx.viewStack = [];
+    clearExpiredArchivePreviewState();
     notifyWorkspaceStateChanged();
   }
 
@@ -2618,6 +2620,194 @@
   }
 
   // ===== 视图 7C：长期记忆独立页面 =====
+  var EXPIRED_PREVIEW_MAX_DISPLAY = 10;
+  var EXPIRED_PREVIEW_DEFAULT_REASON = '一次性计划日期已过，建议归档';
+
+  function clearExpiredArchivePreviewState() {
+    _ctx.expiredPreview = null;
+  }
+
+  function formatExpiredPlanDate(expirationAt) {
+    var num = Number(expirationAt);
+    if (!Number.isFinite(num) || num <= 0) return '未知日期';
+    var d = new Date(num);
+    if (isNaN(d.getTime())) return '未知日期';
+    var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+    return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
+  }
+
+  function formatExpiredPreviewSummary(content) {
+    var clean = String(content || '')
+      .replace(/\bsk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{8,}\b/gi, '[已脱敏]')
+      .replace(/\bBearer\s+[A-Za-z0-9._-]{8,}\b/gi, '[已脱敏]')
+      .replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, '[已脱敏]')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!clean) return '（无内容摘要）';
+    return clean.length > 72 ? (clean.slice(0, 72) + '…') : clean;
+  }
+
+  function buildExpiredArchivePreviewState(nowTs) {
+    var mgrMod = Mgr();
+    var access = resolveTrustedMemoryAccessContext();
+    if (!access.ok || !mgrMod || typeof mgrMod.previewExpiredMemoryArchive !== 'function') {
+      return {
+        status: 'unavailable',
+        scopeKey: access.scopeKey || '',
+        totalCandidateCount: 0,
+        displayedItems: [],
+        remainingCount: 0
+      };
+    }
+
+    var accessibleMemories = access.accessibleMemories;
+    var effectiveNow = (typeof nowTs === 'number' && Number.isFinite(nowTs)) ? nowTs : Date.now();
+    var previewRes = null;
+    try {
+      previewRes = mgrMod.previewExpiredMemoryArchive(accessibleMemories, effectiveNow);
+    } catch (_) {
+      return {
+        status: 'unavailable',
+        scopeKey: access.scopeKey,
+        totalCandidateCount: 0,
+        displayedItems: [],
+        remainingCount: 0
+      };
+    }
+
+    var rawCandidates = previewRes && Array.isArray(previewRes.candidates) ? previewRes.candidates : [];
+    var accessibleById = new Map();
+    for (var i = 0; i < accessibleMemories.length; i++) {
+      var m = accessibleMemories[i];
+      if (m && m.id) {
+        accessibleById.set(String(m.id).trim(), m);
+      }
+    }
+
+    var matchedItems = [];
+    for (var j = 0; j < rawCandidates.length; j++) {
+      var cand = rawCandidates[j];
+      if (!cand || typeof cand !== 'object') continue;
+      var memId = String(cand.memoryId || '').trim();
+      if (!memId) continue;
+      var mem = accessibleById.get(memId);
+      if (!mem) continue;
+      matchedItems.push({
+        memoryId: memId,
+        summary: formatExpiredPreviewSummary(mem.content),
+        dateLabel: formatExpiredPlanDate(cand.expirationAt),
+        reason: String(cand.reason || EXPIRED_PREVIEW_DEFAULT_REASON)
+      });
+    }
+
+    var displayedItems = matchedItems.slice(0, EXPIRED_PREVIEW_MAX_DISPLAY);
+    var remainingCount = Math.max(0, matchedItems.length - displayedItems.length);
+    return {
+      status: 'ready',
+      scopeKey: access.scopeKey,
+      totalCandidateCount: matchedItems.length,
+      displayedItems: displayedItems,
+      remainingCount: remainingCount
+    };
+  }
+
+  function renderExpiredArchivePreviewHtml() {
+    var state = _ctx.expiredPreview;
+    if (!state || typeof state !== 'object') return '';
+
+    // 校验当前权限范围未发生变化，防止跨聊天/跨项目/切换用户后复用旧预演结果
+    var liveAccess = resolveTrustedMemoryAccessContext();
+    if (state.status === 'ready') {
+      if (!liveAccess.ok || liveAccess.scopeKey !== state.scopeKey) {
+        _ctx.expiredPreview = null;
+        return '';
+      }
+    } else if (state.status === 'unavailable') {
+      if (liveAccess.ok && state.scopeKey && liveAccess.scopeKey !== state.scopeKey) {
+        _ctx.expiredPreview = null;
+        return '';
+      }
+    }
+
+    var headerHtml =
+      '<div class="aiw-expired-preview-head">' +
+        '<div class="aiw-expired-preview-title-row">' +
+          '<span class="aiw-expired-preview-title">' +
+            '<i class="fa-regular fa-clock"></i> 过期记忆预演' +
+          '</span>' +
+          '<button type="button" class="aiw-expired-preview-close" id="aiw-mem-expired-preview-close" aria-label="收起预演结果">收起</button>' +
+        '</div>' +
+        '<div class="aiw-expired-preview-note">仅只读预演，不会自动归档或修改任何记忆。</div>' +
+      '</div>';
+
+    if (state.status === 'unavailable') {
+      return (
+        '<div class="aiw-st-card aiw-st-pad aiw-expired-preview-card" id="aiw-expired-preview-card">' +
+          headerHtml +
+          '<div class="aiw-expired-preview-state is-unavailable" id="aiw-expired-preview-unavailable">' +
+            '<i class="fa-solid fa-shield-halved"></i>' +
+            '<span>当前无法安全预览记忆，请重新进入知屿后重试。</span>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    var totalCount = Math.max(0, Number(state.totalCandidateCount) || 0);
+    if (totalCount === 0) {
+      return (
+        '<div class="aiw-st-card aiw-st-pad aiw-expired-preview-card" id="aiw-expired-preview-card">' +
+          headerHtml +
+          '<div class="aiw-expired-preview-state is-empty" id="aiw-expired-preview-empty">' +
+            '<i class="fa-regular fa-circle-check"></i>' +
+            '<span>目前没有需要建议归档的一次性计划。</span>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    var displayed = Array.isArray(state.displayedItems) ? state.displayedItems : [];
+    var remaining = Math.max(0, Number(state.remainingCount) || 0);
+    var itemsHtml = displayed.map(function(item, idx) {
+      return (
+        '<div class="aiw-expired-preview-item" data-preview-mem-id="' + escapeHtml(item.memoryId) + '">' +
+          '<div class="aiw-expired-preview-item-top">' +
+            '<span class="aiw-expired-preview-idx">#' + (idx + 1) + '</span>' +
+            '<span class="aiw-expired-preview-date">' +
+              '<i class="fa-regular fa-calendar"></i> 计划日期：' + escapeHtml(item.dateLabel) +
+            '</span>' +
+          '</div>' +
+          '<div class="aiw-expired-preview-summary">' + escapeHtml(item.summary) + '</div>' +
+          '<div class="aiw-expired-preview-reason">' + escapeHtml(item.reason) + '</div>' +
+        '</div>'
+      );
+    }).join('');
+
+    var moreHtml = remaining > 0
+      ? '<div class="aiw-expired-preview-more" id="aiw-expired-preview-more">当前仅展示前 ' + displayed.length + ' 条，还有 ' + remaining + ' 条未展示。</div>'
+      : '';
+
+    return (
+      '<div class="aiw-st-card aiw-st-pad aiw-expired-preview-card" id="aiw-expired-preview-card">' +
+        headerHtml +
+        '<div class="aiw-expired-preview-count" id="aiw-expired-preview-count">共找到 <strong>' + totalCount + '</strong> 条建议归档的过期一次性计划</div>' +
+        '<div class="aiw-expired-preview-list" id="aiw-expired-preview-list">' + itemsHtml + '</div>' +
+        moreHtml +
+      '</div>'
+    );
+  }
+
+  function bindExpiredPreviewEvents(layer) {
+    if (!layer) return;
+    var closeBtn = layer.querySelector('#aiw-mem-expired-preview-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', function() {
+        clearExpiredArchivePreviewState();
+        var slotEl = layer.querySelector('#aiw-expired-preview-slot');
+        if (slotEl) slotEl.innerHTML = '';
+      });
+    }
+  }
+
   function renderLongMemoryHtml() {
     var allList = _ctx.memories || [];
     var counts = getMemoryLifecycleCounts(allList);
@@ -2662,6 +2852,9 @@
         '<div class="aiw-mem-count-bar">' +
           '<span class="aiw-pr-count" id="aiw-mem-count-text">当前视图 ' + filtered.length + ' 条 / 共 ' + allList.length + ' 条</span>' +
           '<div class="aiw-mem-bar-btns">' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-mem-expired-preview-btn">' +
+              '<i class="fa-regular fa-clock"></i> 预览过期记忆' +
+            '</button>' +
             '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-mem-organize-btn"' + (allList.length ? '' : ' disabled') + '>' +
               '<i class="fa-solid fa-wand-magic-sparkles"></i> 智能整理' +
             '</button>' +
@@ -2671,6 +2864,8 @@
           '</div>' +
         '</div>' +
 
+        '<div class="aiw-expired-preview-slot" id="aiw-expired-preview-slot">' + renderExpiredArchivePreviewHtml() + '</div>' +
+
         '<div class="aiw-mem-list" id="aiw-mem-list">' + renderMemoryCardsHtml(filtered) + '</div>' +
       '</div>'
     );
@@ -2679,6 +2874,7 @@
   function bindLongMemoryEvents(layer) {
     var searchInput = layer.querySelector('#aiw-mem-search');
     var addBtn = layer.querySelector('#aiw-mem-add-btn');
+    var previewExpiredBtn = layer.querySelector('#aiw-mem-expired-preview-btn');
     var organizeBtn = layer.querySelector('#aiw-mem-organize-btn');
     var clearAllBtn = layer.querySelector('#aiw-mem-clear-all');
 
@@ -2709,6 +2905,17 @@
       });
     }
 
+    if (previewExpiredBtn) {
+      previewExpiredBtn.addEventListener('click', function() {
+        _ctx.expiredPreview = buildExpiredArchivePreviewState(Date.now());
+        var slotEl = layer.querySelector('#aiw-expired-preview-slot');
+        if (slotEl) {
+          slotEl.innerHTML = renderExpiredArchivePreviewHtml();
+          bindExpiredPreviewEvents(layer);
+        }
+      });
+    }
+
     if (organizeBtn) {
       organizeBtn.addEventListener('click', async function() {
         if (!Mgr() || typeof Mgr().runLifecycleMaintenance !== 'function') return;
@@ -2716,6 +2923,7 @@
         try {
           var res = await Mgr().runLifecycleMaintenance({ userId: 'local_user' });
           _ctx.memories = await S().listMemories();
+          clearExpiredArchivePreviewState();
           notifyWorkspaceStateChanged();
           renderCurrentView();
           var parts = [];
@@ -2743,6 +2951,7 @@
             await S().clearAllMemories();
             _ctx.memories = [];
             _ctx.memorySearchQuery = '';
+            clearExpiredArchivePreviewState();
             notifyWorkspaceStateChanged();
             renderCurrentView();
             notifyToast('已清空全部长期记忆');
@@ -2751,6 +2960,7 @@
       });
     }
 
+    bindExpiredPreviewEvents(layer);
     bindMemoryListItemEvents(layer);
   }
 
@@ -2807,21 +3017,21 @@
     return 'local_user';
   }
 
-  function buildRecallDiagnosticsFilter() {
+  function resolveTrustedMemoryAccessContext() {
     var store = S();
     var memMod = M();
-    if (!store || !memMod || typeof memMod.getRecentRecallDiagnostics !== 'function' || typeof memMod.filterAccessibleMemories !== 'function') {
-      return { ok: false, filter: null };
+    if (!store || !memMod || typeof memMod.filterAccessibleMemories !== 'function') {
+      return { ok: false, scopeKey: '', userId: '', chatId: '', projectId: '', allowCrossChat: false, accessibleMemories: [] };
     }
 
     var userId = resolveSettingsTrustedUserId();
-    if (!userId) {
-      return { ok: false, filter: null };
+    if (!userId || userId === '*' || userId.toLowerCase() === 'all' || userId.toLowerCase() === 'any') {
+      return { ok: false, scopeKey: '', userId: '', chatId: '', projectId: '', allowCrossChat: false, accessibleMemories: [] };
     }
 
     var ms = _ctx.memorySettings;
     if (!ms || typeof ms !== 'object' || typeof ms.crossChatMemory !== 'boolean') {
-      return { ok: false, filter: null };
+      return { ok: false, scopeKey: '', userId: '', chatId: '', projectId: '', allowCrossChat: false, accessibleMemories: [] };
     }
     var allowCrossChat = ms.crossChatMemory;
 
@@ -2833,12 +3043,15 @@
     if (rawActiveChatId) {
       var activeChat = chats.find(function(c) { return c && String(c.id || '').trim() === rawActiveChatId; });
       if (!activeChat) {
-        return { ok: false, filter: null };
+        return { ok: false, scopeKey: '', userId: '', chatId: '', projectId: '', allowCrossChat: false, accessibleMemories: [] };
+      }
+      if (activeChat.userId && String(activeChat.userId).trim() !== userId) {
+        return { ok: false, scopeKey: '', userId: '', chatId: '', projectId: '', allowCrossChat: false, accessibleMemories: [] };
       }
       chatId = String(activeChat.id || '').trim();
       projectId = String(activeChat.projectId || '').trim();
     } else if (!allowCrossChat) {
-      return { ok: false, filter: null };
+      return { ok: false, scopeKey: '', userId: '', chatId: '', projectId: '', allowCrossChat: false, accessibleMemories: [] };
     }
 
     var allMemories = Array.isArray(_ctx.memories) ? _ctx.memories : [];
@@ -2848,20 +3061,42 @@
       projectId: projectId,
       allowCrossChat: allowCrossChat
     });
+
+    return {
+      ok: true,
+      scopeKey: [userId, chatId, projectId, allowCrossChat ? '1' : '0'].join('|'),
+      userId: userId,
+      chatId: chatId,
+      projectId: projectId,
+      allowCrossChat: allowCrossChat,
+      accessibleMemories: Array.isArray(accessibleMemories) ? accessibleMemories : []
+    };
+  }
+
+  function buildRecallDiagnosticsFilter() {
+    var memMod = M();
+    if (!memMod || typeof memMod.getRecentRecallDiagnostics !== 'function') {
+      return { ok: false, filter: null };
+    }
+    var access = resolveTrustedMemoryAccessContext();
+    if (!access.ok) {
+      return { ok: false, filter: null };
+    }
+
     var validMemoryIds = [];
-    for (var i = 0; i < accessibleMemories.length; i++) {
-      if (accessibleMemories[i] && accessibleMemories[i].id) {
-        validMemoryIds.push(String(accessibleMemories[i].id));
+    for (var i = 0; i < access.accessibleMemories.length; i++) {
+      if (access.accessibleMemories[i] && access.accessibleMemories[i].id) {
+        validMemoryIds.push(String(access.accessibleMemories[i].id));
       }
     }
 
     return {
       ok: true,
       filter: {
-        userId: userId,
-        chatId: chatId,
-        projectId: projectId,
-        allowCrossChat: allowCrossChat,
+        userId: access.userId,
+        chatId: access.chatId,
+        projectId: access.projectId,
+        allowCrossChat: access.allowCrossChat,
         validMemoryIds: validMemoryIds
       }
     };
@@ -3267,6 +3502,7 @@
         await mgr.syncRelationsForMemory(savedId, 'local_user');
       }
       _ctx.memories = await S().listMemories();
+      clearExpiredArchivePreviewState();
       closeModalOverlay();
       notifyWorkspaceStateChanged();
       renderCurrentView();
@@ -3290,6 +3526,7 @@
             await S().updateMemory(id, { archived: true, archivedAt: Date.now(), archiveReason: '用户手动归档留存' });
           }
           _ctx.memories = await S().listMemories();
+          clearExpiredArchivePreviewState();
           notifyWorkspaceStateChanged();
           renderCurrentView();
           notifyToast('已归档该条记忆（仍可在「已归档」中查看和恢复）');
@@ -3300,6 +3537,7 @@
             await S().updateMemory(id, { archived: false, archivedAt: 0, archiveReason: '', status: 'active', temporalState: 'current' });
           }
           _ctx.memories = await S().listMemories();
+          clearExpiredArchivePreviewState();
           notifyWorkspaceStateChanged();
           renderCurrentView();
           notifyToast('已恢复为当前有效记忆');
@@ -3312,6 +3550,7 @@
             async function() {
               await S().deleteMemory(id);
               _ctx.memories = await S().listMemories();
+              clearExpiredArchivePreviewState();
               notifyWorkspaceStateChanged();
               renderCurrentView();
               notifyToast('记忆已删除');
@@ -3512,11 +3751,13 @@
 
   // ===== 导航栈管理 =====
   function pushView(viewName) {
+    clearExpiredArchivePreviewState();
     _ctx.viewStack.push(viewName);
     renderCurrentView();
   }
 
   function popView() {
+    clearExpiredArchivePreviewState();
     if (_ctx.viewStack.length <= 1) {
       closeLayer();
       return;
@@ -3620,6 +3861,7 @@
     _ctx.activeChatId = (options && options.activeChatId) || '';
     _ctx.recentSelectedChatId = _ctx.activeChatId || '';
     _ctx.summarySelectedChatId = _ctx.activeChatId || '';
+    clearExpiredArchivePreviewState();
 
     var layer = getLayer();
     if (!layer) {
@@ -3673,10 +3915,13 @@
         diagBadgeEl.classList.toggle('is-warn', !!diagInfo.isWarn);
       }
     } else if (view === 'long-memory') {
+      clearExpiredArchivePreviewState();
       var filtered = getFilteredMemories();
       var listEl = layer.querySelector('#aiw-mem-list');
       var countEl = layer.querySelector('#aiw-mem-count-text');
       var clearBtn = layer.querySelector('#aiw-mem-clear-all');
+      var previewSlot = layer.querySelector('#aiw-expired-preview-slot');
+      if (previewSlot) previewSlot.innerHTML = '';
       if (listEl) {
         listEl.innerHTML = renderMemoryCardsHtml(filtered);
         bindMemoryListItemEvents(layer);
@@ -3686,6 +3931,7 @@
       }
       if (clearBtn) clearBtn.disabled = !_ctx.memories.length;
     } else {
+      clearExpiredArchivePreviewState();
       renderCurrentView();
     }
   }

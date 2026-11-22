@@ -1891,6 +1891,113 @@
     return makeResult(true, true, expirationAt, '一次性临时安排已超过目标日期及 3 天宽限期');
   }
 
+  var PREVIEW_EXPIRED_ARCHIVE_REASON = '一次性计划日期已过，建议归档';
+
+  function hasSupersededByRelation(mem) {
+    if (!mem || !Array.isArray(mem.relations) || !mem.relations.length) return false;
+    for (var i = 0; i < mem.relations.length; i++) {
+      var rel = mem.relations[i];
+      if (!rel || typeof rel !== 'object') continue;
+      if (String(rel.type || '').trim().toLowerCase() === 'superseded_by') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function previewExpiredMemoryArchive(memories, nowTs) {
+    if (!Array.isArray(memories) || memories.length === 0) {
+      return {
+        candidates: [],
+        skippedCount: 0,
+        totalCount: 0
+      };
+    }
+
+    var now = (typeof nowTs === 'number' && Number.isFinite(nowTs))
+      ? nowTs
+      : (nowTs != null && String(nowTs).trim() !== '' && Number.isFinite(Number(nowTs)) ? Number(nowTs) : Date.now());
+
+    var totalCount = memories.length;
+    var skippedCount = 0;
+    var candidates = [];
+    var seenMemoryIds = new Set();
+
+    for (var i = 0; i < totalCount; i++) {
+      var mem = memories[i];
+      if (!mem || typeof mem !== 'object') {
+        skippedCount++;
+        continue;
+      }
+
+      var memId = String(mem.id || '').trim();
+      if (!memId || seenMemoryIds.has(memId)) {
+        skippedCount++;
+        continue;
+      }
+      seenMemoryIds.add(memId);
+
+      // 显式前置守卫：避免对已归档、非 active、手动恢复、冲突或替代残留记忆做无意义重复计算
+      if (mem.archived === true) {
+        skippedCount++;
+        continue;
+      }
+      var status = String(mem.status || '').trim().toLowerCase();
+      if (status !== 'active') {
+        skippedCount++;
+        continue;
+      }
+      var manualRestoredAt = Number(mem.manualRestoredAt);
+      if (isManuallyRestoredActiveMemory(mem) || (Number.isFinite(manualRestoredAt) && manualRestoredAt > 0)) {
+        skippedCount++;
+        continue;
+      }
+      if (isPendingConflictMemory(mem)) {
+        skippedCount++;
+        continue;
+      }
+      var conflictState = String(mem.conflictState || 'none').trim().toLowerCase();
+      var supersededById = String(mem.supersededById || '').trim();
+      if (conflictState === 'superseded' || supersededById || hasSupersededByRelation(mem)) {
+        skippedCount++;
+        continue;
+      }
+
+      var expInfo = inferExplicitExpirationInfo(mem, now);
+      if (
+        !expInfo ||
+        expInfo.eligible !== true ||
+        expInfo.expired !== true ||
+        typeof expInfo.expirationAt !== 'number' ||
+        !Number.isFinite(expInfo.expirationAt)
+      ) {
+        skippedCount++;
+        continue;
+      }
+
+      candidates.push({
+        memoryId: memId,
+        expirationAt: expInfo.expirationAt,
+        reason: PREVIEW_EXPIRED_ARCHIVE_REASON
+      });
+    }
+
+    candidates.sort(function(a, b) {
+      if (a.expirationAt !== b.expirationAt) {
+        return a.expirationAt - b.expirationAt;
+      }
+      if (a.memoryId < b.memoryId) return -1;
+      if (a.memoryId > b.memoryId) return 1;
+      return 0;
+    });
+
+    return {
+      candidates: candidates,
+      skippedCount: skippedCount,
+      totalCount: totalCount
+    };
+  }
+
   async function archiveMemory(id, reason) {
     var store = S();
     if (!store || !id) return null;
@@ -2151,6 +2258,7 @@
     isManuallyRestoredActiveMemory: isManuallyRestoredActiveMemory,
     evaluateArchiveEligibility: evaluateArchiveEligibility,
     inferExplicitExpirationInfo: inferExplicitExpirationInfo,
+    previewExpiredMemoryArchive: previewExpiredMemoryArchive,
     archiveMemory: archiveMemory,
     unarchiveMemory: unarchiveMemory,
     recordMemoriesRecalled: recordMemoriesRecalled,
