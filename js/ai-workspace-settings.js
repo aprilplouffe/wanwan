@@ -43,16 +43,22 @@
     general: null,
     presets: [],
     customApi: null,
+    summaryApiConfig: null,
+    summaryApiPanelOpen: false,
     effectiveApi: null,
     memorySettings: {
       shortTermContext: true,
+      autoSummary: true,
       crossChatMemory: true,
       useMemory: true,
       autoMemory: true,
       referenceHistoryChats: true,
       strategy: 'natural',
       summaryTriggerChars: 3200,
-      recentRawMessagesLimit: 6,
+      recentRawMessagesLimit: 20,
+      summaryIntervalMessages: 20,
+      summaryMergeThreshold: 10,
+      summaryModelMode: 'follow_chat',
       maxMemoryRecallCount: 5,
       maxSingleMemoryLength: 260
     },
@@ -185,19 +191,26 @@
         ? store.getMemorySettings()
         : Promise.resolve({
             shortTermContext: true,
+            autoSummary: true,
             crossChatMemory: true,
             useMemory: true,
             autoMemory: true,
             referenceHistoryChats: true,
             strategy: 'natural',
             summaryTriggerChars: 3200,
-            recentRawMessagesLimit: 6,
+            recentRawMessagesLimit: 20,
+            summaryIntervalMessages: 20,
+            summaryMergeThreshold: 10,
+            summaryModelMode: 'follow_chat',
             maxMemoryRecallCount: 5,
             maxSingleMemoryLength: 260
           }),
       typeof store.listMemories === 'function' ? store.listMemories() : Promise.resolve([]),
       typeof store.listMemoryTasks === 'function' ? store.listMemoryTasks() : Promise.resolve([]),
-      typeof store.listChats === 'function' ? store.listChats() : Promise.resolve([])
+      typeof store.listChats === 'function' ? store.listChats() : Promise.resolve([]),
+      typeof store.getSummaryApiConfig === 'function'
+        ? store.getSummaryApiConfig()
+        : Promise.resolve({ baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false })
     ]);
     _ctx.profile = results[0];
     _ctx.personalization = results[1];
@@ -209,6 +222,7 @@
     _ctx.memories = results[7] || [];
     _ctx.memoryTasks = results[8] || [];
     _ctx.chats = results[9] || [];
+    _ctx.summaryApiConfig = results[10] || { baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false };
     if (AI() && typeof AI().resolveEffectiveApiConfig === 'function') {
       _ctx.effectiveApi = await AI().resolveEffectiveApiConfig();
     }
@@ -246,6 +260,7 @@
       }
     }, 260);
     _ctx.viewStack = [];
+    _ctx.summaryApiPanelOpen = false;
     clearExpiredArchivePreviewState();
     notifyWorkspaceStateChanged();
   }
@@ -1987,7 +2002,8 @@
     explicit_update: '修改记忆',
     explicit_delete: '遗忘删除',
     extract_memory: '自动提取',
-    summarize_chat: '短期摘要'
+    summarize_chat: '短期摘要',
+    merge_summary: '摘要合并'
   };
 
   var DIAG_STAGE_MAP = {
@@ -2185,7 +2201,9 @@
     };
     var bounds = (S() && S().MEMORY_SETTING_BOUNDS) || {
       summaryTriggerChars: { min: 400, max: 12000, def: 3200 },
-      recentRawMessagesLimit: { min: 2, max: 24, def: 6 },
+      recentRawMessagesLimit: { min: 2, max: 60, def: 20 },
+      summaryIntervalMessages: { min: 4, max: 100, def: 20 },
+      summaryMergeThreshold: { min: 2, max: 30, def: 10 },
       maxMemoryRecallCount: { min: 1, max: 12, def: 5 },
       maxSingleMemoryLength: { min: 60, max: 500, def: 260 }
     };
@@ -2275,7 +2293,7 @@
             '<span class="aiw-st-row-icon"><i class="fa-solid fa-sliders"></i></span>' +
             '<div class="aiw-st-row-col">' +
               '<div class="aiw-st-row-label">高级设置</div>' +
-              '<div class="aiw-st-row-desc">摘要阈值 ' + escapeHtml(String(ms.summaryTriggerChars || 3200)) + ' 字 · 近期 ' + escapeHtml(String(ms.recentRawMessagesLimit || 6)) + ' 条 · 召回 ' + escapeHtml(String(ms.maxMemoryRecallCount || 5)) + ' 条</div>' +
+              '<div class="aiw-st-row-desc">摘要阈值 ' + escapeHtml(String(ms.summaryTriggerChars || 3200)) + ' 字 · 近期 ' + escapeHtml(String(ms.recentRawMessagesLimit || 20)) + ' 条 · 召回 ' + escapeHtml(String(ms.maxMemoryRecallCount || 5)) + ' 条</div>' +
             '</div>' +
             '<span class="aiw-st-row-arrow"><i class="fa-solid fa-angle-' + (_ctx.advancedMemoryOpen ? 'up' : 'down') + '"></i></span>' +
           '</button>' +
@@ -2363,7 +2381,7 @@
     var ms = _ctx.memorySettings || {};
     var chats = Array.isArray(_ctx.chats) ? _ctx.chats : [];
     var targetChat = resolveRecentTargetChat();
-    var limit = Math.max(2, Number(ms.recentRawMessagesLimit) || 6);
+    var limit = Math.max(2, Number(ms.recentRawMessagesLimit) || 20);
     var cleanMsgs = targetChat && Array.isArray(targetChat.messages)
       ? targetChat.messages.filter(function(m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim(); })
       : [];
@@ -2478,6 +2496,31 @@
   // ===== 视图 7B：短期摘要独立页面 =====
   function renderShortSummaryHtml() {
     var ms = _ctx.memorySettings || {};
+    var bounds = (S() && S().MEMORY_SETTING_BOUNDS) || {
+      recentRawMessagesLimit: { min: 2, max: 60, def: 20 },
+      summaryIntervalMessages: { min: 4, max: 100, def: 20 },
+      summaryMergeThreshold: { min: 2, max: 30, def: 10 }
+    };
+    var recentLimitVal = Number(ms.recentRawMessagesLimit) || bounds.recentRawMessagesLimit.def;
+    var intervalVal = Number(ms.summaryIntervalMessages) || bounds.summaryIntervalMessages.def;
+    var mergeThresholdVal = Number(ms.summaryMergeThreshold) || bounds.summaryMergeThreshold.def;
+    var autoSummaryOn = ms.autoSummary !== false;
+    var summaryApiCfg = (_ctx.summaryApiConfig && typeof _ctx.summaryApiConfig === 'object')
+      ? _ctx.summaryApiConfig
+      : { baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false };
+    var hasSavedSummaryKey = !!String(summaryApiCfg.apiKey || '').trim();
+    var maskedSummaryKey = hasSavedSummaryKey
+      ? ((AI() && typeof AI().maskApiKey === 'function') ? AI().maskApiKey(summaryApiCfg.apiKey) : '••••')
+      : '';
+    var independentModelReady = !!(
+      summaryApiCfg.complete &&
+      (typeof (S() && S().isSummaryApiComplete) !== 'function' || S().isSummaryApiComplete(summaryApiCfg))
+    );
+    var summaryModelMode = (ms.summaryModelMode === 'independent' && independentModelReady) ? 'independent' : 'follow_chat';
+    var summaryApiTempVal = Number.isFinite(Number(summaryApiCfg.temperature)) ? Number(summaryApiCfg.temperature) : 0.1;
+    var hasAnySummaryApiField = !!(summaryApiCfg.baseUrl || hasSavedSummaryKey || summaryApiCfg.model);
+    var summaryApiPanelOpen = !!_ctx.summaryApiPanelOpen;
+
     var chats = Array.isArray(_ctx.chats) ? _ctx.chats : [];
     var targetChat = resolveSummaryTargetChat();
     var cleanMsgs = targetChat && Array.isArray(targetChat.messages)
@@ -2485,12 +2528,21 @@
       : [];
     var summaryUpTo = targetChat ? Math.min(cleanMsgs.length, Math.max(0, Number(targetChat.summaryUpToCount) || 0)) : 0;
     var unsummarizedCount = Math.max(0, cleanMsgs.length - summaryUpTo);
-    var summaryText = targetChat ? String(targetChat.summary || '').trim() : '';
+    var summaryText = '';
+    if (targetChat) {
+      summaryText = (M() && typeof M().buildShortTermSummaryContext === 'function')
+        ? M().buildShortTermSummaryContext(targetChat)
+        : String(targetChat.summary || '').trim();
+    }
     var summaryTime = targetChat && targetChat.summaryUpdatedAt ? formatMemoryDate(targetChat.summaryUpdatedAt) : '';
+
+    var chatSegments = targetChat && Array.isArray(targetChat.summarySegments) ? targetChat.summarySegments : [];
+    var activeSegmentCount = chatSegments.filter(function(s) { return s && s.status === 'active'; }).length;
+    var mergedSegmentCount = chatSegments.filter(function(s) { return s && s.status === 'merged'; }).length;
 
     var chatSummaryTasks = targetChat
       ? (Array.isArray(_ctx.memoryTasks) ? _ctx.memoryTasks : []).filter(function(t) {
-          return t && t.type === 'summarize_chat' && t.chatId === targetChat.id;
+          return t && (t.type === 'summarize_chat' || t.type === 'merge_summary') && t.chatId === targetChat.id;
         })
       : [];
     var latestTask = chatSummaryTasks[0] || null;
@@ -2499,14 +2551,131 @@
       : (summaryText ? '已完成' : '未触发');
     var taskStatusCls = latestTask ? ('is-' + (latestTask.status || 'pending')) : (summaryText ? 'is-saved' : 'is-idle');
 
+    var settingsCardHtml = (
+      '<div class="aiw-st-group-title">摘要设置</div>' +
+      '<div class="aiw-st-card">' +
+        '<div class="aiw-st-row aiw-st-row-static">' +
+          '<div class="aiw-st-row-col">' +
+            '<div class="aiw-st-row-label">自动摘要</div>' +
+            '<div class="aiw-st-row-desc">开启后按新消息增量自动生成与合并摘要；关闭后不影响读取已有摘要</div>' +
+          '</div>' +
+          '<label class="aiw-switch">' +
+            '<input type="checkbox" id="aiw-ss-auto-summary"' + (autoSummaryOn ? ' checked' : '') + '>' +
+            '<span class="aiw-switch-track"></span>' +
+          '</label>' +
+        '</div>' +
+        '<div class="aiw-ss-settings-body">' +
+          '<div class="aiw-ss-settings-grid">' +
+            '<div class="aiw-ss-setting-field">' +
+              '<label class="aiw-field-label" for="aiw-ss-recent-limit">最近原始消息（' + bounds.recentRawMessagesLimit.min + '-' + bounds.recentRawMessagesLimit.max + ' 条）</label>' +
+              '<div class="aiw-ss-input-wrap">' +
+                '<input type="number" inputmode="numeric" class="aiw-field-input" id="aiw-ss-recent-limit" min="' + bounds.recentRawMessagesLimit.min + '" max="' + bounds.recentRawMessagesLimit.max + '" value="' + escapeHtml(String(recentLimitVal)) + '">' +
+                '<span class="aiw-ss-input-unit">条</span>' +
+              '</div>' +
+              '<div class="aiw-ss-field-hint">按实际消息条数保留直接带入上下文的最近原文</div>' +
+            '</div>' +
+            '<div class="aiw-ss-setting-field">' +
+              '<label class="aiw-field-label" for="aiw-ss-interval-msgs">每 N 条新消息自动摘要（' + bounds.summaryIntervalMessages.min + '-' + bounds.summaryIntervalMessages.max + ' 条）</label>' +
+              '<div class="aiw-ss-input-wrap">' +
+                '<input type="number" inputmode="numeric" class="aiw-field-input" id="aiw-ss-interval-msgs" min="' + bounds.summaryIntervalMessages.min + '" max="' + bounds.summaryIntervalMessages.max + '" value="' + escapeHtml(String(intervalVal)) + '">' +
+                '<span class="aiw-ss-input-unit">条</span>' +
+              '</div>' +
+              '<div class="aiw-ss-field-hint">超出近期保留窗口的未摘要新消息达到此条数时自动触发</div>' +
+            '</div>' +
+            '<div class="aiw-ss-setting-field">' +
+              '<label class="aiw-field-label" for="aiw-ss-merge-threshold">每 N 条独立摘要合并（' + bounds.summaryMergeThreshold.min + '-' + bounds.summaryMergeThreshold.max + ' 条）</label>' +
+              '<div class="aiw-ss-input-wrap">' +
+                '<input type="number" inputmode="numeric" class="aiw-field-input" id="aiw-ss-merge-threshold" min="' + bounds.summaryMergeThreshold.min + '" max="' + bounds.summaryMergeThreshold.max + '" value="' + escapeHtml(String(mergeThresholdVal)) + '">' +
+                '<span class="aiw-ss-input-unit">条</span>' +
+              '</div>' +
+              '<div class="aiw-ss-field-hint">未合并独立摘要段满此条数时自动压缩为综合摘要</div>' +
+            '</div>' +
+            '<div class="aiw-ss-setting-field">' +
+              '<div class="aiw-ss-model-header">' +
+                '<div class="aiw-field-label">摘要模型</div>' +
+                '<button type="button" class="aiw-ss-model-expand-btn" id="aiw-ss-ind-toggle" aria-expanded="' + (summaryApiPanelOpen ? 'true' : 'false') + '">' +
+                  (summaryApiPanelOpen ? '收起独立配置' : (independentModelReady ? '编辑独立配置' : '配置独立模型')) +
+                '</button>' +
+              '</div>' +
+              '<div class="aiw-ss-model-radio-group" role="radiogroup" aria-label="摘要模型">' +
+                '<label class="aiw-ss-model-option' + (summaryModelMode === 'follow_chat' ? ' is-active' : '') + '">' +
+                  '<input type="radio" name="aiw-ss-model-mode" value="follow_chat"' + (summaryModelMode === 'follow_chat' ? ' checked' : '') + '>' +
+                  '<span class="aiw-ss-model-option-body">' +
+                    '<span class="aiw-ss-model-option-head">' +
+                      '<span class="aiw-ss-model-option-title">跟随本对话</span>' +
+                    '</span>' +
+                    '<span class="aiw-ss-model-option-desc">按各对话自身使用的模型执行摘要与合并</span>' +
+                  '</span>' +
+                '</label>' +
+                '<label class="aiw-ss-model-option' + (summaryModelMode === 'independent' ? ' is-active' : '') + (!independentModelReady ? ' is-disabled' : '') + '" id="aiw-ss-ind-option" aria-disabled="' + (!independentModelReady ? 'true' : 'false') + '">' +
+                  '<input type="radio" name="aiw-ss-model-mode" value="independent"' + (summaryModelMode === 'independent' ? ' checked' : '') + (!independentModelReady ? ' disabled' : '') + '>' +
+                  '<span class="aiw-ss-model-option-body">' +
+                    '<span class="aiw-ss-model-option-head">' +
+                      '<span class="aiw-ss-model-option-title">使用独立摘要模型</span>' +
+                      (independentModelReady
+                        ? '<span class="aiw-ss-model-badge is-ready">已配置</span>'
+                        : '<span class="aiw-ss-coming-soon">未配置</span>') +
+                    '</span>' +
+                    '<span class="aiw-ss-model-option-desc">' +
+                      (independentModelReady
+                        ? ('已配置模型：' + escapeHtml(summaryApiCfg.model) + '（温度 ' + escapeHtml(String(summaryApiTempVal)) + '），与主聊天 API 隔离')
+                        : '配置不完整时保持「跟随本对话」，请先完成下方独立模型配置') +
+                    '</span>' +
+                  '</span>' +
+                '</label>' +
+              '</div>' +
+              (summaryApiPanelOpen
+                ? (
+                  '<div class="aiw-ss-model-panel" id="aiw-ss-ind-panel">' +
+                    '<div class="aiw-ss-setting-field">' +
+                      '<label class="aiw-field-label" for="aiw-ss-ind-baseurl">Base URL</label>' +
+                      '<input type="url" class="aiw-field-input" id="aiw-ss-ind-baseurl" placeholder="https://api.openai.com/v1" autocomplete="off" value="' + escapeHtml(summaryApiCfg.baseUrl || '') + '">' +
+                    '</div>' +
+                    '<div class="aiw-ss-setting-field">' +
+                      '<label class="aiw-field-label" for="aiw-ss-ind-apikey">API Key</label>' +
+                      '<input type="password" class="aiw-field-input" id="aiw-ss-ind-apikey" placeholder="' + (hasSavedSummaryKey ? '留空保持已保存密钥，输入新值则更新' : '请输入独立摘要 API Key') + '" autocomplete="new-password" value="">' +
+                      '<div class="aiw-ss-model-key-meta">' +
+                        (hasSavedSummaryKey
+                          ? ('<span>已保存：' + escapeHtml(maskedSummaryKey || '••••') + '（留空保存将保留原密钥）</span>' +
+                             '<button type="button" class="aiw-ss-model-key-clear" id="aiw-ss-ind-clear-key">清除 API Key</button>')
+                          : '<span>尚未保存 API Key</span>') +
+                      '</div>' +
+                    '</div>' +
+                    '<div class="aiw-ss-setting-field">' +
+                      '<label class="aiw-field-label" for="aiw-ss-ind-model">模型名称</label>' +
+                      '<input type="text" class="aiw-field-input" id="aiw-ss-ind-model" placeholder="例如 gpt-4o-mini" autocomplete="off" value="' + escapeHtml(summaryApiCfg.model || '') + '">' +
+                    '</div>' +
+                    '<div class="aiw-ss-setting-field">' +
+                      '<label class="aiw-field-label" for="aiw-ss-ind-temp">温度（0–2，默认 0.1）</label>' +
+                      '<input type="number" inputmode="decimal" step="0.05" min="0" max="2" class="aiw-field-input" id="aiw-ss-ind-temp" value="' + escapeHtml(String(summaryApiTempVal)) + '">' +
+                    '</div>' +
+                    '<div class="aiw-ss-ind-actions">' +
+                      (hasAnySummaryApiField
+                        ? '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ss-ind-clear-all">清空配置</button>'
+                        : '<span></span>') +
+                      '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-ss-ind-save">保存独立配置</button>' +
+                    '</div>' +
+                  '</div>'
+                )
+                : '') +
+            '</div>' +
+          '</div>' +
+          '<div class="aiw-ss-settings-actions">' +
+            '<span class="aiw-ss-settings-scope-hint">仅作用于知屿 · 修改阈值不会重复摘要已处理消息</span>' +
+            '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-ss-settings-save">保存摘要设置</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+
     var selectorHtml = chats.length
       ? (
-        '<div class="aiw-st-card aiw-st-pad">' +
+        '<div class="aiw-st-card aiw-st-pad" style="margin-top:14px;">' +
           '<label class="aiw-field-label" for="aiw-ss-chat-select">切换聊天查看摘要</label>' +
           '<select class="aiw-api-select" id="aiw-ss-chat-select">' +
             chats.map(function(c) {
               var selected = targetChat && c.id === targetChat.id ? ' selected' : '';
-              var hasSum = !!(c && String(c.summary || '').trim());
+              var hasSum = !!(c && (String(c.summary || '').trim() || (Array.isArray(c.summarySegments) && c.summarySegments.length > 0)));
               return '<option value="' + escapeHtml(c.id) + '"' + selected + '>' + escapeHtml(c.title || '新对话') + (hasSum ? '（已有摘要）' : '（暂无摘要）') + '</option>';
             }).join('') +
           '</select>' +
@@ -2525,6 +2694,9 @@
       );
     } else {
       var summarizedRangeText = summaryUpTo > 0 ? ('第 1–' + summaryUpTo + ' 条') : '0 条';
+      var emptyReasonText = autoSummaryOn
+        ? ('当前对话尚未触发阶段性摘要（超出最近 ' + escapeHtml(String(recentLimitVal)) + ' 条原文窗口且累计新增满 ' + escapeHtml(String(intervalVal)) + ' 条消息时会自动生成）。')
+        : '自动摘要当前已关闭，如需自动生成新摘要请在上方开启。';
       var summaryContentHtml = summaryText
         ? (
           '<div class="aiw-rm-summary-box">' +
@@ -2543,9 +2715,18 @@
           '<div class="aiw-mem-empty aiw-ss-empty-inner">' +
             '<div class="aiw-mem-empty-icon"><i class="fa-regular fa-file-lines"></i></div>' +
             '<div class="aiw-mem-empty-title">当前对话暂无短期摘要</div>' +
-            '<div class="aiw-mem-empty-sub">当前对话尚未触发阶段性摘要（当累计内容超过 ' + escapeHtml(String(ms.summaryTriggerChars || 3200)) + ' 字或超出近期保留窗口时会自动生成）。</div>' +
+            '<div class="aiw-mem-empty-sub">' + emptyReasonText + '</div>' +
           '</div>'
         );
+
+      var segmentInfoHtml = (activeSegmentCount > 0 || mergedSegmentCount > 0)
+        ? (
+          '<div class="aiw-ss-info-line">' +
+            '<span>分段摘要状态</span>' +
+            '<span>独立段 ' + activeSegmentCount + ' / ' + mergeThresholdVal + ' 条' + (mergedSegmentCount > 0 ? (' · 已合并 ' + mergedSegmentCount + ' 组') : '') + '</span>' +
+          '</div>'
+        )
+        : '';
 
       var taskHistoryHtml = chatSummaryTasks.length
         ? (
@@ -2555,10 +2736,11 @@
               chatSummaryTasks.slice(0, 6).map(function(t) {
                 var stText = MEMORY_TASK_STATUS_MAP[t.status] || t.status || '等待中';
                 var tTime = formatMemoryDate(t.updatedAt || t.createdAt);
+                var taskTitle = t.type === 'merge_summary' ? '摘要合并任务' : '短期摘要任务';
                 return (
                   '<div class="aiw-mem-task-item is-' + escapeHtml(t.status || 'pending') + '">' +
                     '<div class="aiw-mem-task-top">' +
-                      '<span class="aiw-mem-task-type">短期摘要任务' + (t.attempts ? (' · 第 ' + t.attempts + ' 次') : '') + '</span>' +
+                      '<span class="aiw-mem-task-type">' + taskTitle + (t.attempts ? (' · 第 ' + t.attempts + ' 次') : '') + '</span>' +
                       '<span class="aiw-mem-task-badge is-' + escapeHtml(t.status || 'pending') + '">' + escapeHtml(stText) + '</span>' +
                     '</div>' +
                     '<div class="aiw-mem-task-meta">' +
@@ -2588,6 +2770,7 @@
             '<span>摘要生成时间</span>' +
             '<span>' + (summaryTime ? escapeHtml(summaryTime) : '尚未生成') + '</span>' +
           '</div>' +
+          segmentInfoHtml +
         '</div>' +
 
         '<div class="aiw-st-group-title" style="margin-top:16px;">阶段性摘要</div>' +
@@ -2606,6 +2789,7 @@
       '</div>' +
 
       '<div class="aiw-st-scroll">' +
+        settingsCardHtml +
         selectorHtml +
         mainBodyHtml +
       '</div>'
@@ -2618,6 +2802,221 @@
       chatSelect.addEventListener('change', function() {
         _ctx.summarySelectedChatId = chatSelect.value;
         renderCurrentView();
+      });
+    }
+
+    var autoToggle = layer.querySelector('#aiw-ss-auto-summary');
+    if (autoToggle && S() && typeof S().saveMemorySettings === 'function') {
+      autoToggle.addEventListener('change', async function() {
+        _ctx.memorySettings = await S().saveMemorySettings({
+          autoSummary: autoToggle.checked,
+          applyStrategyPreset: false
+        });
+        notifyWorkspaceStateChanged();
+        renderCurrentView();
+        notifyToast(autoToggle.checked ? '已开启自动摘要' : '已关闭自动摘要（已有摘要仍保留可用）');
+      });
+    }
+
+    var saveBtn = layer.querySelector('#aiw-ss-settings-save');
+    if (saveBtn && S() && typeof S().saveMemorySettings === 'function') {
+      saveBtn.addEventListener('click', async function() {
+        var bounds = S().MEMORY_SETTING_BOUNDS || {};
+        var recentEl = layer.querySelector('#aiw-ss-recent-limit');
+        var intervalEl = layer.querySelector('#aiw-ss-interval-msgs');
+        var mergeEl = layer.querySelector('#aiw-ss-merge-threshold');
+        var autoEl = layer.querySelector('#aiw-ss-auto-summary');
+
+        var rawRecent = recentEl ? Number(recentEl.value) : NaN;
+        var rawInterval = intervalEl ? Number(intervalEl.value) : NaN;
+        var rawMerge = mergeEl ? Number(mergeEl.value) : NaN;
+
+        if (!Number.isFinite(rawRecent) || !Number.isFinite(rawInterval) || !Number.isFinite(rawMerge)) {
+          notifyToast('请输入有效的数字参数');
+          return;
+        }
+
+        var outOfRange =
+          (bounds.recentRawMessagesLimit && (rawRecent < bounds.recentRawMessagesLimit.min || rawRecent > bounds.recentRawMessagesLimit.max)) ||
+          (bounds.summaryIntervalMessages && (rawInterval < bounds.summaryIntervalMessages.min || rawInterval > bounds.summaryIntervalMessages.max)) ||
+          (bounds.summaryMergeThreshold && (rawMerge < bounds.summaryMergeThreshold.min || rawMerge > bounds.summaryMergeThreshold.max));
+
+        var checkedModeEl = layer.querySelector('input[name="aiw-ss-model-mode"]:checked');
+        var selectedSummaryModelMode = (checkedModeEl && !checkedModeEl.disabled && checkedModeEl.value === 'independent')
+          ? 'independent'
+          : 'follow_chat';
+
+        _ctx.memorySettings = await S().saveMemorySettings({
+          autoSummary: autoEl ? autoEl.checked : true,
+          recentRawMessagesLimit: rawRecent,
+          summaryIntervalMessages: rawInterval,
+          summaryMergeThreshold: rawMerge,
+          summaryModelMode: selectedSummaryModelMode,
+          applyStrategyPreset: false
+        });
+        notifyWorkspaceStateChanged();
+        renderCurrentView();
+        notifyToast(outOfRange ? '部分参数超出安全范围，已自动修正并保存' : '摘要设置已保存');
+      });
+    }
+
+    layer.querySelectorAll('input[name="aiw-ss-model-mode"]').forEach(function(radio) {
+      radio.addEventListener('change', async function() {
+        if (!radio.checked || radio.disabled) return;
+        if (!S() || typeof S().saveMemorySettings !== 'function') return;
+        var summaryApiReady = !!(_ctx.summaryApiConfig && _ctx.summaryApiConfig.complete);
+        var nextMode = radio.value === 'independent' ? 'independent' : 'follow_chat';
+        if (nextMode === 'independent' && !summaryApiReady) {
+          _ctx.summaryApiPanelOpen = true;
+          renderCurrentView();
+          notifyToast('独立摘要配置不完整，请先完成配置');
+          return;
+        }
+        try {
+          _ctx.memorySettings = await S().saveMemorySettings({
+            summaryModelMode: nextMode,
+            applyStrategyPreset: false
+          });
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast(nextMode === 'independent' ? '摘要模型已切换为「使用独立摘要模型」' : '摘要模型已切换为「跟随本对话」');
+        } catch (_) {
+          notifyToast('保存摘要模型选择失败，请稍后重试');
+        }
+      });
+    });
+
+    var indToggleBtn = layer.querySelector('#aiw-ss-ind-toggle');
+    if (indToggleBtn) {
+      indToggleBtn.addEventListener('click', function() {
+        _ctx.summaryApiPanelOpen = !_ctx.summaryApiPanelOpen;
+        renderCurrentView();
+      });
+    }
+
+    var indOptionEl = layer.querySelector('#aiw-ss-ind-option');
+    if (indOptionEl) {
+      indOptionEl.addEventListener('click', function() {
+        var ready = !!(_ctx.summaryApiConfig && _ctx.summaryApiConfig.complete);
+        if (!ready) {
+          notifyToast('请先完成独立摘要模型配置（Base URL、API Key 与模型名称）');
+          if (!_ctx.summaryApiPanelOpen) {
+            _ctx.summaryApiPanelOpen = true;
+            renderCurrentView();
+          }
+        }
+      });
+    }
+
+    var indSaveBtn = layer.querySelector('#aiw-ss-ind-save');
+    if (indSaveBtn && S() && typeof S().saveSummaryApiConfig === 'function') {
+      indSaveBtn.addEventListener('click', async function() {
+        var urlEl = layer.querySelector('#aiw-ss-ind-baseurl');
+        var keyEl = layer.querySelector('#aiw-ss-ind-apikey');
+        var modelEl = layer.querySelector('#aiw-ss-ind-model');
+        var tempEl = layer.querySelector('#aiw-ss-ind-temp');
+
+        var baseUrl = urlEl ? String(urlEl.value || '').trim().replace(/\/+$/, '') : '';
+        var typedKey = keyEl ? String(keyEl.value || '').trim() : '';
+        var modelName = modelEl ? String(modelEl.value || '').trim() : '';
+        var tempRawStr = tempEl ? String(tempEl.value || '').trim() : '';
+        var tempVal = tempRawStr === '' ? 0.1 : Number(tempRawStr);
+
+        if (!Number.isFinite(tempVal) || tempVal < 0 || tempVal > 2) {
+          notifyToast('温度需为 0 至 2 之间的数字');
+          return;
+        }
+        if (baseUrl && !/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(baseUrl)) {
+          notifyToast('Base URL 格式无效，需以 http:// 或 https:// 开头');
+          return;
+        }
+
+        var patch = {
+          baseUrl: baseUrl,
+          model: modelName,
+          temperature: Math.round(tempVal * 100) / 100
+        };
+        if (typedKey) {
+          patch.apiKey = typedKey;
+        }
+
+        try {
+          var saved = await S().saveSummaryApiConfig(patch);
+          _ctx.summaryApiConfig = saved;
+          if (!saved || !saved.complete) {
+            if (typeof S().saveMemorySettings === 'function') {
+              _ctx.memorySettings = await S().saveMemorySettings({
+                summaryModelMode: 'follow_chat',
+                applyStrategyPreset: false
+              });
+            }
+            notifyWorkspaceStateChanged();
+            renderCurrentView();
+            notifyToast('配置已保存但尚不完整，请补全 Base URL、API Key 和模型名称，当前保持「跟随本对话」');
+          } else {
+            notifyWorkspaceStateChanged();
+            renderCurrentView();
+            notifyToast('独立摘要模型配置已保存，现可选择「使用独立摘要模型」');
+          }
+        } catch (_) {
+          notifyToast('保存独立摘要配置失败，请稍后重试');
+        }
+      });
+    }
+
+    var indClearKeyBtn = layer.querySelector('#aiw-ss-ind-clear-key');
+    if (indClearKeyBtn && S() && typeof S().saveSummaryApiConfig === 'function') {
+      indClearKeyBtn.addEventListener('click', function() {
+        showConfirmModal(
+          '清除独立摘要 API Key',
+          '确认清除已保存的独立摘要 API Key 吗？清除后配置将变为未完成状态，摘要模型会自动切回「跟随本对话」。',
+          '确认清除',
+          true,
+          async function() {
+            try {
+              _ctx.summaryApiConfig = await S().saveSummaryApiConfig({ clearApiKey: true });
+              if (typeof S().saveMemorySettings === 'function') {
+                _ctx.memorySettings = await S().saveMemorySettings({
+                  summaryModelMode: 'follow_chat',
+                  applyStrategyPreset: false
+                });
+              }
+              notifyWorkspaceStateChanged();
+              renderCurrentView();
+              notifyToast('已清除独立摘要 API Key，已切回「跟随本对话」');
+            } catch (_) {
+              notifyToast('清除 API Key 失败，请稍后重试');
+            }
+          }
+        );
+      });
+    }
+
+    var indClearAllBtn = layer.querySelector('#aiw-ss-ind-clear-all');
+    if (indClearAllBtn && S() && typeof S().clearSummaryApiConfig === 'function') {
+      indClearAllBtn.addEventListener('click', function() {
+        showConfirmModal(
+          '清空独立摘要配置',
+          '确认清空独立摘要模型的 Base URL、API Key、模型名称与温度吗？清空后将切回「跟随本对话」。',
+          '确认清空',
+          true,
+          async function() {
+            try {
+              _ctx.summaryApiConfig = await S().clearSummaryApiConfig();
+              if (typeof S().saveMemorySettings === 'function') {
+                _ctx.memorySettings = await S().saveMemorySettings({
+                  summaryModelMode: 'follow_chat',
+                  applyStrategyPreset: false
+                });
+              }
+              notifyWorkspaceStateChanged();
+              renderCurrentView();
+              notifyToast('已清空独立摘要配置，已切回「跟随本对话」');
+            } catch (_) {
+              notifyToast('清空独立摘要配置失败，请稍后重试');
+            }
+          }
+        );
       });
     }
   }
@@ -4011,12 +4410,26 @@
   // ===== 导航栈管理 =====
   function pushView(viewName) {
     clearExpiredArchivePreviewState();
+    _ctx.summaryApiPanelOpen = false;
     _ctx.viewStack.push(viewName);
+    if (viewName === 'short-summary' && S() && typeof S().getSummaryApiConfig === 'function') {
+      Promise.all([
+        S().getSummaryApiConfig(),
+        typeof S().getMemorySettings === 'function' ? S().getMemorySettings() : Promise.resolve(_ctx.memorySettings)
+      ]).then(function(pair) {
+        _ctx.summaryApiConfig = pair[0] || _ctx.summaryApiConfig;
+        _ctx.memorySettings = pair[1] || _ctx.memorySettings;
+        if ((_ctx.viewStack[_ctx.viewStack.length - 1] || '') === 'short-summary') {
+          renderCurrentView();
+        }
+      }).catch(function() {});
+    }
     renderCurrentView();
   }
 
   function popView() {
     clearExpiredArchivePreviewState();
+    _ctx.summaryApiPanelOpen = false;
     if (_ctx.viewStack.length <= 1) {
       closeLayer();
       return;
@@ -4120,6 +4533,7 @@
     _ctx.activeChatId = (options && options.activeChatId) || '';
     _ctx.recentSelectedChatId = _ctx.activeChatId || '';
     _ctx.summarySelectedChatId = _ctx.activeChatId || '';
+    _ctx.summaryApiPanelOpen = false;
     clearExpiredArchivePreviewState();
 
     var layer = getLayer();
@@ -4151,14 +4565,17 @@
       typeof S().listMemories === 'function' ? S().listMemories() : Promise.resolve([]),
       typeof S().listMemoryTasks === 'function' ? S().listMemoryTasks() : Promise.resolve([]),
       typeof S().listChats === 'function' ? S().listChats() : Promise.resolve([]),
-      typeof S().getMemorySettings === 'function' ? S().getMemorySettings() : Promise.resolve(_ctx.memorySettings)
+      typeof S().getMemorySettings === 'function' ? S().getMemorySettings() : Promise.resolve(_ctx.memorySettings),
+      typeof S().getSummaryApiConfig === 'function' ? S().getSummaryApiConfig() : Promise.resolve(_ctx.summaryApiConfig)
     ]);
     _ctx.memories = results[0] || [];
     _ctx.memoryTasks = results[1] || [];
     _ctx.chats = results[2] || [];
     _ctx.memorySettings = results[3] || _ctx.memorySettings;
+    _ctx.summaryApiConfig = results[4] || _ctx.summaryApiConfig;
 
     if (layer.querySelector('.aiw-st-modal-backdrop')) return;
+    if (view === 'short-summary' && _ctx.summaryApiPanelOpen) return;
 
     if (view === 'memory') {
       var recentBadge = layer.querySelector('#aiw-mem-badge-recent');

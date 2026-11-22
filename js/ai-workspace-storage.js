@@ -15,6 +15,7 @@
     PRESETS_INIT: 'aiw_presets_initialized',
     DEFAULT_PRESET_ID: 'aiw_default_preset_id',
     API_CONFIG: 'aiw_api_config',
+    SUMMARY_API_CONFIG: 'aiw_summary_api_config',
     SELECTED_MODEL: 'aiw_selected_model',
     CHAT_IDS: 'aiw_chat_ids',
     CHAT_PREFIX: 'aiw_chat:',
@@ -31,7 +32,7 @@
       label: '自然 · 推荐',
       summary: '兼顾上下文连贯与开销控制，适合日常绝大多数对话',
       summaryTriggerChars: 3200,
-      recentRawMessagesLimit: 6,
+      recentRawMessagesLimit: 20,
       maxMemoryRecallCount: 5,
       maxSingleMemoryLength: 260
     },
@@ -40,7 +41,7 @@
       label: '省 Token',
       summary: '更早触发阶段摘要并精简近期原文与记忆召回条数，减少上下文占用',
       summaryTriggerChars: 1400,
-      recentRawMessagesLimit: 4,
+      recentRawMessagesLimit: 8,
       maxMemoryRecallCount: 2,
       maxSingleMemoryLength: 140
     },
@@ -49,7 +50,7 @@
       label: '记得更多',
       summary: '保留更多近期原始消息与历史记忆召回条数，适合复杂长程协作',
       summaryTriggerChars: 5600,
-      recentRawMessagesLimit: 12,
+      recentRawMessagesLimit: 32,
       maxMemoryRecallCount: 8,
       maxSingleMemoryLength: 380
     }
@@ -57,20 +58,26 @@
 
   var MEMORY_SETTING_BOUNDS = {
     summaryTriggerChars: { min: 400, max: 12000, def: 3200 },
-    recentRawMessagesLimit: { min: 2, max: 24, def: 6 },
+    recentRawMessagesLimit: { min: 2, max: 60, def: 20 },
+    summaryIntervalMessages: { min: 4, max: 100, def: 20 },
+    summaryMergeThreshold: { min: 2, max: 30, def: 10 },
     maxMemoryRecallCount: { min: 1, max: 12, def: 5 },
     maxSingleMemoryLength: { min: 60, max: 500, def: 260 }
   };
 
   var DEFAULT_MEMORY_SETTINGS = {
     shortTermContext: true,
+    autoSummary: true,
+    summaryModelMode: 'follow_chat',
     crossChatMemory: true,
     useMemory: true,
     autoMemory: true,
     referenceHistoryChats: true,
     strategy: 'natural',
     summaryTriggerChars: 3200,
-    recentRawMessagesLimit: 6,
+    recentRawMessagesLimit: 20,
+    summaryIntervalMessages: 20,
+    summaryMergeThreshold: 10,
     maxMemoryRecallCount: 5,
     maxSingleMemoryLength: 260,
     updatedAt: 0
@@ -666,6 +673,61 @@
     return empty;
   }
 
+  // ===== 7B. 知屿独立摘要模型配置（复用现有 API 校验与 db.config 存储，与 KEYS.API_CONFIG 相互隔离） =====
+  function isSummaryApiComplete(cfg) {
+    return isCustomApiComplete(cfg);
+  }
+
+  async function getSummaryApiConfig() {
+    var saved = await dbGetConfig(KEYS.SUMMARY_API_CONFIG);
+    var src = saved && typeof saved === 'object' ? saved : {};
+    var normalized = {
+      baseUrl: normalizeBaseUrl(src.baseUrl || src.url || ''),
+      apiKey: String(src.apiKey || src.key || '').trim(),
+      model: String(src.model || '').trim(),
+      temperature: normalizeTemperature(src.temperature, 0.1),
+      updatedAt: Number(src.updatedAt) || 0
+    };
+    normalized.complete = isSummaryApiComplete(normalized);
+    return normalized;
+  }
+
+  async function saveSummaryApiConfig(patch) {
+    var current = await getSummaryApiConfig();
+    var p = patch && typeof patch === 'object' ? patch : {};
+    var nextApiKey = current.apiKey;
+    if (p.clearApiKey === true) {
+      nextApiKey = '';
+    } else if (p.apiKey !== undefined) {
+      nextApiKey = String(p.apiKey || '').trim();
+    }
+    var next = {
+      baseUrl: p.baseUrl !== undefined ? normalizeBaseUrl(p.baseUrl) : current.baseUrl,
+      apiKey: nextApiKey,
+      model: p.model !== undefined ? String(p.model || '').trim() : current.model,
+      temperature: p.temperature !== undefined
+        ? normalizeTemperature(p.temperature, 0.1)
+        : current.temperature,
+      updatedAt: Date.now()
+    };
+    next.complete = isSummaryApiComplete(next);
+    await dbPutConfig(KEYS.SUMMARY_API_CONFIG, next);
+    return next;
+  }
+
+  async function clearSummaryApiConfig() {
+    var empty = {
+      baseUrl: '',
+      apiKey: '',
+      model: '',
+      temperature: 0.1,
+      updatedAt: Date.now(),
+      complete: false
+    };
+    await dbDeleteConfig(KEYS.SUMMARY_API_CONFIG);
+    return empty;
+  }
+
   // ===== 8. 知屿记住的模型选择（仅作用于知屿，不影响其他应用） =====
   async function getSelectedModel() {
     var saved = await dbGetConfig(KEYS.SELECTED_MODEL);
@@ -734,10 +796,37 @@
     };
   }
 
+  function normalizeSummarySegment(raw, idx) {
+    if (!raw || typeof raw !== 'object') return null;
+    var startIdx = Math.max(0, Math.floor(Number(raw.startMessageIndex) || 0));
+    var endIdx = Math.max(startIdx, Math.floor(Number(raw.endMessageIndex) || startIdx));
+    var status = String(raw.status || 'active').trim().toLowerCase();
+    if (['active', 'merged', 'compacted'].indexOf(status) === -1) {
+      status = 'active';
+    }
+    var content = String(raw.content || '').trim().slice(0, 1200);
+    if (!content) return null;
+    var mergedFromIds = Array.isArray(raw.mergedFromIds)
+      ? raw.mergedFromIds.filter(Boolean).map(String)
+      : [];
+    return {
+      id: String(raw.id || ('sumseg_' + startIdx + '_' + endIdx + '_' + (idx || 0))).trim(),
+      startMessageIndex: startIdx,
+      endMessageIndex: endIdx,
+      content: content,
+      createdAt: Number(raw.createdAt) || 0,
+      status: status,
+      mergedFromIds: mergedFromIds
+    };
+  }
+
   function normalizeChatRecord(raw, forcedId) {
     var now = Date.now();
     var src = raw && typeof raw === 'object' ? raw : {};
     var msgs = Array.isArray(src.messages) ? src.messages.map(normalizeChatMessage) : [];
+    var segments = Array.isArray(src.summarySegments)
+      ? src.summarySegments.map(normalizeSummarySegment).filter(Boolean)
+      : [];
     return {
       id: String(forcedId || src.id || generateChatId()),
       title: String(src.title || '新对话').trim() || '新对话',
@@ -750,6 +839,8 @@
       presetSnapshot: src.presetSnapshot ? buildPresetSnapshot(src.presetSnapshot) : null,
       projectId: String(src.projectId || '').trim(),
       summary: String(src.summary || '').trim(),
+      summaryLegacyBase: String(src.summaryLegacyBase || '').trim(),
+      summarySegments: segments,
       summaryUpToCount: Math.max(0, Number(src.summaryUpToCount) || 0),
       summaryUpdatedAt: Number(src.summaryUpdatedAt) || 0,
       lastMemoryMessageId: String(src.lastMemoryMessageId || '').trim()
@@ -1108,23 +1199,36 @@
   function clampMemoryNumericSetting(key, rawVal, fallbackVal) {
     var spec = MEMORY_SETTING_BOUNDS[key];
     if (!spec) return Number(rawVal) || 0;
+    var resolvedFallback = (typeof fallbackVal === 'number' && Number.isFinite(fallbackVal))
+      ? Math.min(spec.max, Math.max(spec.min, Math.round(fallbackVal)))
+      : spec.def;
+    if (rawVal === undefined || rawVal === null || rawVal === '') {
+      return resolvedFallback;
+    }
     var n = Math.round(Number(rawVal));
     if (!Number.isFinite(n)) {
-      return typeof fallbackVal === 'number' && Number.isFinite(fallbackVal) ? fallbackVal : spec.def;
+      return resolvedFallback;
     }
     if (n < spec.min) return spec.min;
     if (n > spec.max) return spec.max;
     return n;
   }
 
-  function sanitizeMemorySettings(raw, base) {
+  function sanitizeMemorySettings(raw, base, options) {
     var src = raw && typeof raw === 'object' ? raw : {};
     var prev = base && typeof base === 'object' ? base : DEFAULT_MEMORY_SETTINGS;
     var strategy = src.strategy != null ? String(src.strategy) : String(prev.strategy || 'natural');
     if (!MEMORY_STRATEGY_PRESETS[strategy]) strategy = 'natural';
+    var allowIndependent = !!(options && options.summaryApiComplete === true);
+    var rawSummaryModelMode = src.summaryModelMode != null ? String(src.summaryModelMode).trim() : String(prev.summaryModelMode || 'follow_chat');
+    var summaryModelMode = (rawSummaryModelMode === 'independent' && allowIndependent)
+      ? 'independent'
+      : 'follow_chat';
 
     return {
       shortTermContext: typeof src.shortTermContext === 'boolean' ? src.shortTermContext : (prev.shortTermContext !== false),
+      autoSummary: typeof src.autoSummary === 'boolean' ? src.autoSummary : (prev.autoSummary !== false),
+      summaryModelMode: summaryModelMode,
       crossChatMemory: typeof src.crossChatMemory === 'boolean' ? src.crossChatMemory : (prev.crossChatMemory !== false),
       useMemory: typeof src.useMemory === 'boolean' ? src.useMemory : (prev.useMemory !== false),
       autoMemory: typeof src.autoMemory === 'boolean' ? src.autoMemory : (prev.autoMemory !== false),
@@ -1132,6 +1236,8 @@
       strategy: strategy,
       summaryTriggerChars: clampMemoryNumericSetting('summaryTriggerChars', src.summaryTriggerChars, prev.summaryTriggerChars),
       recentRawMessagesLimit: clampMemoryNumericSetting('recentRawMessagesLimit', src.recentRawMessagesLimit, prev.recentRawMessagesLimit),
+      summaryIntervalMessages: clampMemoryNumericSetting('summaryIntervalMessages', src.summaryIntervalMessages, prev.summaryIntervalMessages),
+      summaryMergeThreshold: clampMemoryNumericSetting('summaryMergeThreshold', src.summaryMergeThreshold, prev.summaryMergeThreshold),
       maxMemoryRecallCount: clampMemoryNumericSetting('maxMemoryRecallCount', src.maxMemoryRecallCount, prev.maxMemoryRecallCount),
       maxSingleMemoryLength: clampMemoryNumericSetting('maxSingleMemoryLength', src.maxSingleMemoryLength, prev.maxSingleMemoryLength),
       updatedAt: Number(src.updatedAt) || Number(prev.updatedAt) || 0
@@ -1140,11 +1246,15 @@
 
   async function getMemorySettings() {
     var saved = await dbGetConfig(KEYS.MEMORY_SETTINGS);
-    return sanitizeMemorySettings(saved, DEFAULT_MEMORY_SETTINGS);
+    var summaryApi = await getSummaryApiConfig();
+    return sanitizeMemorySettings(saved, DEFAULT_MEMORY_SETTINGS, {
+      summaryApiComplete: !!(summaryApi && summaryApi.complete)
+    });
   }
 
   async function saveMemorySettings(patch) {
     var current = await getMemorySettings();
+    var summaryApi = await getSummaryApiConfig();
     var p = patch && typeof patch === 'object' ? patch : {};
     var nextInput = Object.assign({}, current, p, { updatedAt: Date.now() });
     if (p.strategy && MEMORY_STRATEGY_PRESETS[p.strategy] && p.applyStrategyPreset !== false) {
@@ -1154,7 +1264,9 @@
       if (p.maxMemoryRecallCount === undefined) nextInput.maxMemoryRecallCount = preset.maxMemoryRecallCount;
       if (p.maxSingleMemoryLength === undefined) nextInput.maxSingleMemoryLength = preset.maxSingleMemoryLength;
     }
-    var next = sanitizeMemorySettings(nextInput, current);
+    var next = sanitizeMemorySettings(nextInput, current, {
+      summaryApiComplete: !!(summaryApi && summaryApi.complete)
+    });
     next.updatedAt = Date.now();
     return await dbPutConfig(KEYS.MEMORY_SETTINGS, next);
   }
@@ -1414,7 +1526,7 @@
       chatTitle: String(src.chatTitle || ''),
       projectId: String(src.projectId || ''),
       userId: String(src.userId || 'local_user'),
-      payload: src.payload && typeof src.payload === 'object' ? src.payload : {},
+      payload: src.payload && typeof src.payload === 'object' ? deepClone(src.payload) : {},
       status: status,
       attempts: Math.max(0, Number(src.attempts) || 0),
       maxAttempts: Math.max(1, Number(src.maxAttempts) || 3),
@@ -1519,6 +1631,7 @@
     normalizeBaseUrl: normalizeBaseUrl,
     normalizeTemperature: normalizeTemperature,
     isCustomApiComplete: isCustomApiComplete,
+    isSummaryApiComplete: isSummaryApiComplete,
     getProfile: getProfile,
     saveProfile: saveProfile,
     getPersonalization: getPersonalization,
@@ -1540,6 +1653,9 @@
     getCustomApiConfig: getCustomApiConfig,
     saveCustomApiConfig: saveCustomApiConfig,
     clearCustomApiConfig: clearCustomApiConfig,
+    getSummaryApiConfig: getSummaryApiConfig,
+    saveSummaryApiConfig: saveSummaryApiConfig,
+    clearSummaryApiConfig: clearSummaryApiConfig,
     getSelectedModel: getSelectedModel,
     saveSelectedModel: saveSelectedModel,
     buildPresetSnapshot: buildPresetSnapshot,

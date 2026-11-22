@@ -8,10 +8,22 @@
 (function(global) {
   'use strict';
 
-  var DEFAULT_RECENT_RAW = 6;
+  var DEFAULT_RECENT_RAW = 20;
   var DEFAULT_TRIGGER_CHARS = 3200;
+  var DEFAULT_SUMMARY_INTERVAL = 20;
+  var DEFAULT_SUMMARY_MERGE_THRESHOLD = 10;
   var DEFAULT_MAX_RECALL = 5;
   var DEFAULT_MAX_MEM_LENGTH = 260;
+
+  var MAX_SINGLE_SEGMENT_CHARS = 480;
+  var MAX_MERGED_SUMMARY_CHARS = 650;
+  var MAX_SEGMENT_INPUT_CHARS = 4800;
+  var MAX_MERGE_INPUT_BUDGET_CHARS = 2400;
+  var MAX_CONTEXT_SUMMARY_CHARS = 1600;
+  var MAX_CHAT_SUMMARY_FIELD_CHARS = 1000;
+  var MAX_SEGMENT_SOURCE_MESSAGES = 40;
+  var MAX_COMPACTED_SEGMENTS_RETAINED = 30;
+  var _chatSummaryLockChains = Object.create(null);
 
   var STOP_CHARS = new Set([
     '的', '了', '吗', '呢', '吧', '啊', '呀', '哦', '哇', '嗯',
@@ -129,6 +141,7 @@
       : (settings || {});
     return {
       shortTermContext: sanitized.shortTermContext !== false,
+      autoSummary: sanitized.autoSummary !== false,
       crossChatMemory: sanitized.crossChatMemory !== false,
       useMemory: sanitized.useMemory !== false,
       autoMemory: sanitized.autoMemory !== false,
@@ -136,18 +149,28 @@
       strategy: sanitized.strategy || 'natural',
       summaryTriggerChars: Number(sanitized.summaryTriggerChars) || DEFAULT_TRIGGER_CHARS,
       recentRawMessagesLimit: Number(sanitized.recentRawMessagesLimit) || DEFAULT_RECENT_RAW,
+      summaryIntervalMessages: Number(sanitized.summaryIntervalMessages) || DEFAULT_SUMMARY_INTERVAL,
+      summaryMergeThreshold: Number(sanitized.summaryMergeThreshold) || DEFAULT_SUMMARY_MERGE_THRESHOLD,
       maxMemoryRecallCount: Number(sanitized.maxMemoryRecallCount) || DEFAULT_MAX_RECALL,
       maxSingleMemoryLength: Number(sanitized.maxSingleMemoryLength) || DEFAULT_MAX_MEM_LENGTH
     };
   }
 
-  function sanitizeErrorForLog(rawErr) {
-    var msg = String((rawErr && rawErr.message) || rawErr || '任务执行失败').trim();
-    return msg
+  function redactApiSecret(rawText, secretKey) {
+    var out = String(rawText || '')
       .replace(/\bsk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{8,}\b/gi, 'sk-***')
       .replace(/\bBearer\s+[A-Za-z0-9._-]{8,}\b/gi, 'Bearer ***')
-      .replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, 'AIza***')
-      .slice(0, 220);
+      .replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, 'AIza***');
+    var cleanSecret = String(secretKey || '').trim();
+    if (cleanSecret && cleanSecret.length >= 6 && out.indexOf(cleanSecret) !== -1) {
+      out = out.split(cleanSecret).join('[已脱敏]');
+    }
+    return out;
+  }
+
+  function sanitizeErrorForLog(rawErr, secretKey) {
+    var msg = String((rawErr && rawErr.message) || rawErr || '任务执行失败').trim();
+    return redactApiSecret(msg, secretKey).slice(0, 220);
   }
 
   // ===== 1. 敏感信息与秘密守卫（绝不保存密码、API Key、验证码、私钥等） =====
@@ -649,67 +672,379 @@
     }
   }
 
-  // ===== 5. 短期记忆阶段性摘要（全自动，受策略与高级参数控制） =====
-  function getHistoryCharLength(messages) {
-    var total = 0;
-    for (var i = 0; i < (Array.isArray(messages) ? messages.length : 0); i++) {
-      total += String((messages[i] && messages[i].content) || '').length;
+  // ===== 5. 短期记忆阶段性摘要与分段合并（复用统一任务队列，兼容旧版单份摘要） =====
+  function runWithChatSummaryLock(chatId, workFn) {
+    var key = String(chatId || '').trim();
+    if (!key) return Promise.resolve().then(workFn);
+    var prev = _chatSummaryLockChains[key] || Promise.resolve();
+    var current = prev.catch(function() {}).then(workFn);
+    var cleanup = current.then(
+      function() {
+        if (_chatSummaryLockChains[key] === cleanup) delete _chatSummaryLockChains[key];
+      },
+      function() {
+        if (_chatSummaryLockChains[key] === cleanup) delete _chatSummaryLockChains[key];
+      }
+    );
+    _chatSummaryLockChains[key] = cleanup;
+    return current;
+  }
+
+  function getCleanChatMessages(chat) {
+    if (!chat || !Array.isArray(chat.messages)) return [];
+    return chat.messages.filter(function(m) {
+      return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim();
+    });
+  }
+
+  function getEffectiveSummaryUpToCount(chat) {
+    if (!chat || typeof chat !== 'object') return 0;
+    var upTo = Math.max(0, Math.floor(Number(chat.summaryUpToCount) || 0));
+    var segs = Array.isArray(chat.summarySegments) ? chat.summarySegments : [];
+    for (var i = 0; i < segs.length; i++) {
+      var s = segs[i];
+      if (!s || typeof s !== 'object') continue;
+      var endIdx = Math.max(0, Math.floor(Number(s.endMessageIndex) || 0));
+      if (endIdx > upTo) upTo = endIdx;
     }
-    return total;
+    return upTo;
+  }
+
+  function getActiveSummarySegments(chat) {
+    var segs = chat && Array.isArray(chat.summarySegments) ? chat.summarySegments : [];
+    return segs.filter(function(s) {
+      return s && s.status === 'active' && String(s.content || '').trim();
+    }).sort(function(a, b) {
+      return (a.startMessageIndex - b.startMessageIndex) || (a.endMessageIndex - b.endMessageIndex) || ((a.createdAt || 0) - (b.createdAt || 0));
+    });
+  }
+
+  function getLiveSummarySegments(chat) {
+    var segs = chat && Array.isArray(chat.summarySegments) ? chat.summarySegments : [];
+    var live = segs.filter(function(s) {
+      return s && (s.status === 'active' || s.status === 'merged') && String(s.content || '').trim();
+    }).sort(function(a, b) {
+      return (a.startMessageIndex - b.startMessageIndex) || (a.endMessageIndex - b.endMessageIndex) || ((a.createdAt || 0) - (b.createdAt || 0));
+    });
+    var deduped = [];
+    var seenRanges = Object.create(null);
+    for (var i = 0; i < live.length; i++) {
+      var item = live[i];
+      var rk = item.startMessageIndex + ':' + item.endMessageIndex;
+      if (seenRanges[rk]) continue;
+      seenRanges[rk] = true;
+      deduped.push(item);
+    }
+    return deduped;
+  }
+
+  function formatSummarySegmentLine(seg) {
+    var startNum = (Number(seg.startMessageIndex) || 0) + 1;
+    var endNum = Math.max(startNum, Number(seg.endMessageIndex) || startNum);
+    var prefix = seg.status === 'merged'
+      ? ('【阶段综合摘要（第 ' + startNum + '-' + endNum + ' 条）】')
+      : ('[第 ' + startNum + '-' + endNum + ' 条] ');
+    return prefix + String(seg.content || '').trim();
+  }
+
+  function buildShortTermSummaryContext(chat, maxBudgetChars) {
+    if (!chat || typeof chat !== 'object') return '';
+    var budget = Math.max(300, Math.floor(Number(maxBudgetChars) || MAX_CONTEXT_SUMMARY_CHARS));
+    var allSegs = Array.isArray(chat.summarySegments) ? chat.summarySegments : [];
+    if (!allSegs.length) {
+      var legacyOnly = String(chat.summary || '').trim();
+      if (!legacyOnly) return '';
+      return legacyOnly.length > budget ? (legacyOnly.slice(0, budget - 1) + '…') : legacyOnly;
+    }
+
+    var legacyBase = String(chat.summaryLegacyBase || '').trim();
+    var liveSegs = getLiveSummarySegments(chat);
+    if (!legacyBase && !liveSegs.length) {
+      var fallbackLegacy = String(chat.summary || '').trim();
+      return fallbackLegacy.length > budget ? (fallbackLegacy.slice(0, budget - 1) + '…') : fallbackLegacy;
+    }
+
+    var olderBlocks = [];
+    var recentBlocks = [];
+    if (legacyBase) {
+      olderBlocks.push('【早期历史摘要】' + legacyBase);
+    }
+    for (var i = 0; i < liveSegs.length; i++) {
+      var line = formatSummarySegmentLine(liveSegs[i]);
+      if (liveSegs[i].status === 'merged') {
+        olderBlocks.push(line);
+      } else {
+        recentBlocks.push(line);
+      }
+    }
+
+    var allLines = olderBlocks.concat(recentBlocks);
+    var joined = allLines.join('\n');
+    if (joined.length <= budget) return joined;
+
+    var olderBudget = recentBlocks.length ? Math.floor(budget * 0.38) : budget;
+    var recentBudget = budget - (olderBlocks.length ? olderBudget : 0) - (olderBlocks.length && recentBlocks.length ? 1 : 0);
+
+    var pickedOlder = [];
+    var usedOlder = 0;
+    for (var oi = olderBlocks.length - 1; oi >= 0; oi--) {
+      var ob = olderBlocks[oi];
+      var needO = ob.length + (pickedOlder.length ? 1 : 0);
+      if (usedOlder + needO <= olderBudget) {
+        pickedOlder.unshift(ob);
+        usedOlder += needO;
+      } else if (!pickedOlder.length && olderBudget > 40) {
+        var availO = olderBudget - 1;
+        pickedOlder.unshift(ob.slice(0, availO) + '…');
+        usedOlder = olderBudget;
+        break;
+      } else {
+        break;
+      }
+    }
+
+    var remainingBudget = Math.max(recentBudget, budget - usedOlder - (pickedOlder.length ? 1 : 0));
+    var pickedRecent = [];
+    var usedRecent = 0;
+    for (var ri = recentBlocks.length - 1; ri >= 0; ri--) {
+      var rb = recentBlocks[ri];
+      var needR = rb.length + (pickedRecent.length ? 1 : 0);
+      if (usedRecent + needR <= remainingBudget) {
+        pickedRecent.unshift(rb);
+        usedRecent += needR;
+      } else if (!pickedRecent.length && remainingBudget > 40) {
+        var availR = remainingBudget - 1;
+        pickedRecent.unshift(rb.slice(0, availR) + '…');
+        usedRecent = remainingBudget;
+        break;
+      } else {
+        break;
+      }
+    }
+
+    var finalLines = pickedOlder.concat(pickedRecent);
+    var out = finalLines.join('\n');
+    return out.length > budget ? (out.slice(0, budget - 1) + '…') : out;
+  }
+
+  function computeNextSummaryPlan(chat, settings) {
+    if (!chat || !Array.isArray(chat.messages)) return null;
+    var params = resolveMemoryParams(settings);
+    if (!params.shortTermContext || !params.autoSummary) return null;
+
+    var keepRecent = params.recentRawMessagesLimit;
+    var intervalMsgs = params.summaryIntervalMessages;
+    var msgs = getCleanChatMessages(chat);
+    if (msgs.length <= keepRecent) return null;
+
+    var alreadyUpTo = getEffectiveSummaryUpToCount(chat);
+    var targetUpTo = Math.max(0, msgs.length - keepRecent);
+    if (targetUpTo <= alreadyUpTo) return null;
+
+    var deltaCount = targetUpTo - alreadyUpTo;
+    if (deltaCount < intervalMsgs) return null;
+
+    var chunkCap = Math.max(intervalMsgs, MAX_SEGMENT_SOURCE_MESSAGES);
+    var endIndex = Math.min(targetUpTo, alreadyUpTo + chunkCap);
+    if (endIndex <= alreadyUpTo) return null;
+
+    return {
+      startIndex: alreadyUpTo,
+      endIndex: endIndex,
+      deltaCount: endIndex - alreadyUpTo
+    };
   }
 
   function needsShortTermSummary(chat, settings) {
-    if (!chat || !Array.isArray(chat.messages)) return false;
-    var params = resolveMemoryParams(settings);
-    if (!params.shortTermContext) return false;
-
-    var keepRecent = params.recentRawMessagesLimit;
-    var triggerChars = params.summaryTriggerChars;
-    var minMsgs = keepRecent + 4;
-    var stepChars = Math.max(220, Math.round(triggerChars * 0.35));
-    var stepMsgs = Math.max(2, Math.min(4, Math.floor(keepRecent / 2)));
-
-    var msgs = chat.messages.filter(function(m) {
-      return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim();
-    });
-    if (msgs.length <= keepRecent) return false;
-
-    var targetUpTo = msgs.length - keepRecent;
-    var alreadyUpTo = Math.max(0, Number(chat.summaryUpToCount) || 0);
-    if (targetUpTo <= alreadyUpTo) return false;
-
-    var totalChars = getHistoryCharLength(msgs);
-    if (msgs.length < minMsgs && totalChars < triggerChars) {
-      return false;
-    }
-
-    var deltaMsgs = msgs.slice(alreadyUpTo, targetUpTo);
-    var deltaChars = getHistoryCharLength(deltaMsgs);
-    if (deltaMsgs.length >= stepMsgs || deltaChars >= stepChars) {
-      return true;
-    }
-    return false;
+    return !!computeNextSummaryPlan(chat, settings);
   }
 
-  function buildLocalFallbackSummary(prevSummary, deltaMessages) {
+  function computeSummaryMergePlan(chat, settings) {
+    if (!chat || typeof chat !== 'object' || !chat.id) return null;
+    var params = resolveMemoryParams(settings);
+    if (!params.shortTermContext || !params.autoSummary) return null;
+
+    var activeSegs = getActiveSummarySegments(chat);
+    var threshold = params.summaryMergeThreshold;
+    if (activeSegs.length < threshold) return null;
+
+    var batch = activeSegs.slice(0, threshold);
+    var startIndex = batch[0].startMessageIndex;
+    var endIndex = batch[batch.length - 1].endMessageIndex;
+    var segmentIds = batch.map(function(s) { return s.id; });
+    return {
+      segmentIds: segmentIds,
+      startIndex: startIndex,
+      endIndex: endIndex,
+      count: batch.length,
+      turnKey: 'merge_sum:' + String(chat.id) + ':' + startIndex + '-' + endIndex + ':' + batch.length
+    };
+  }
+
+  function needsSummaryMerge(chat, settings) {
+    return !!computeSummaryMergePlan(chat, settings);
+  }
+
+  function buildLocalFallbackSegmentSummary(deltaMessages) {
     var lines = [];
-    if (prevSummary) lines.push(prevSummary);
     var userPoints = [];
     var assistantPoints = [];
     for (var i = 0; i < deltaMessages.length; i++) {
       var m = deltaMessages[i];
-      var text = String(m.content || '').replace(/\s+/g, ' ').trim();
-      if (!text) continue;
-      if (m.role === 'user') userPoints.push(text.slice(0, 90));
-      else assistantPoints.push(text.slice(0, 90));
+      var raw = String((m && m.content) || '').replace(/\s+/g, ' ').trim();
+      if (!raw) continue;
+      var text = containsSensitiveSecret(raw) ? '[已脱敏]' : raw;
+      if (m.role === 'user') userPoints.push(text.slice(0, 80));
+      else assistantPoints.push(text.slice(0, 80));
     }
     if (userPoints.length) {
       lines.push('【用户要求与关键事实】' + userPoints.slice(-4).join('；'));
     }
     if (assistantPoints.length) {
-      lines.push('【阶段推进结论】' + assistantPoints.slice(-2).join('；'));
+      lines.push('【阶段结论与待办】' + assistantPoints.slice(-2).join('；'));
     }
-    return lines.join('\n').slice(0, 900);
+    return lines.join('\n').slice(0, MAX_SINGLE_SEGMENT_CHARS);
+  }
+
+  function buildLocalFallbackMergedSummary(segments) {
+    var parts = [];
+    for (var i = 0; i < segments.length; i++) {
+      var s = segments[i];
+      if (!s || !s.content) continue;
+      var cleaned = String(s.content).replace(/\s+/g, ' ').trim();
+      if (!cleaned) continue;
+      parts.push(cleaned.slice(0, 95));
+    }
+    if (!parts.length) return '';
+    return ('【阶段综合要点】' + parts.join('；')).slice(0, MAX_MERGED_SUMMARY_CHARS);
+  }
+
+  function serializeDialogueWithBudget(deltaMsgs, maxChars) {
+    var budget = Math.max(400, Number(maxChars) || MAX_SEGMENT_INPUT_CHARS);
+    var lines = [];
+    var used = 0;
+    var perMsgCap = Math.max(120, Math.min(360, Math.floor(budget / Math.max(1, deltaMsgs.length))));
+    for (var i = 0; i < deltaMsgs.length; i++) {
+      var m = deltaMsgs[i];
+      var roleLabel = m.role === 'user' ? '用户' : '助手';
+      var raw = String(m.content || '').trim();
+      var safeContent = containsSensitiveSecret(raw) ? '[已脱敏]' : raw.slice(0, perMsgCap);
+      var line = roleLabel + '：' + safeContent;
+      if (used + line.length + 1 > budget) {
+        var rem = budget - used - 1;
+        if (rem > 24) {
+          lines.push(line.slice(0, rem - 1) + '…');
+        }
+        break;
+      }
+      lines.push(line);
+      used += line.length + 1;
+    }
+    return lines.join('\n');
+  }
+
+  function hasOverlappingLiveSegment(segments, startIdx, endIdx) {
+    var arr = Array.isArray(segments) ? segments : [];
+    for (var i = 0; i < arr.length; i++) {
+      var s = arr[i];
+      if (!s || (s.status !== 'active' && s.status !== 'merged')) continue;
+      if (s.endMessageIndex > startIdx && s.startMessageIndex < endIdx) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function readSummaryModelMode(settings) {
+    if (settings && settings.summaryModelMode === 'independent') {
+      return 'independent';
+    }
+    var store = S();
+    var key = store && store.KEYS && store.KEYS.MEMORY_SETTINGS;
+    // 读取 KEYS.MEMORY_SETTINGS 中真实保存的模式，避免独立配置失效时被静默收敛为 follow_chat 而偷偷退回聊天模型
+    if (key) {
+      if (global.db && global.db.config && typeof global.db.config.get === 'function') {
+        try {
+          var row = await global.db.config.get(key);
+          if (row && row.value && typeof row.value === 'object') {
+            return row.value.summaryModelMode === 'independent' ? 'independent' : 'follow_chat';
+          }
+        } catch (_) {}
+      }
+      try {
+        var rawCache = global.localStorage && global.localStorage.getItem('wanwan_aiw_storage_cache_v1');
+        if (rawCache) {
+          var parsedCache = JSON.parse(rawCache);
+          if (parsedCache && parsedCache[key] && parsedCache[key].summaryModelMode === 'independent') {
+            return 'independent';
+          }
+        }
+      } catch (_) {}
+    }
+    if (store && typeof store.getMemorySettings === 'function') {
+      var cur = settings || await store.getMemorySettings();
+      if (cur && cur.summaryModelMode === 'independent') {
+        return 'independent';
+      }
+    }
+    return 'follow_chat';
+  }
+
+  // 按 summaryModelMode 解析摘要/合并任务的模型配置（供 summarize_chat 与 merge_summary 共用，重试时实时重读）：
+  // 1) follow_chat：根据 task.chatId 读取所属聊天的 chat.model，经 resolveEffectiveApiConfig({ chatModel }) 获取配置；
+  // 2) independent：调用 getSummaryApiConfig()；完整时使用其 Base URL / API Key / 模型 / 温度；不完整时明确报错，绝不退回聊天模型。
+  async function resolveChatSummaryTaskApiConfig(chatId, settings) {
+    var store = S();
+    var ai = AI();
+    var mode = await readSummaryModelMode(settings);
+
+    if (mode === 'independent') {
+      var indCfg = (store && typeof store.getSummaryApiConfig === 'function')
+        ? await store.getSummaryApiConfig()
+        : null;
+      var baseUrl = String((indCfg && (indCfg.baseUrl || indCfg.url)) || '').trim().replace(/\/+$/, '');
+      var apiKey = String((indCfg && (indCfg.apiKey || indCfg.key)) || '').trim();
+      var modelName = String((indCfg && indCfg.model) || '').trim();
+      var validUrl = /^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(baseUrl);
+      var isComplete = !!(
+        indCfg &&
+        indCfg.complete !== false &&
+        validUrl &&
+        apiKey &&
+        modelName &&
+        (typeof (store && store.isSummaryApiComplete) !== 'function' || store.isSummaryApiComplete(indCfg))
+      );
+      if (!isComplete) {
+        throw new Error('独立摘要模型配置不完整，请先完善 Base URL、API Key 和模型名称');
+      }
+      var rawTemp = Number(indCfg.temperature);
+      var summaryTemp = Number.isFinite(rawTemp)
+        ? Math.round(Math.max(0, Math.min(2, rawTemp)) * 100) / 100
+        : 0.1;
+      return {
+        url: baseUrl,
+        key: apiKey,
+        model: modelName,
+        temperature: summaryTemp,
+        source: 'summary_independent',
+        mode: 'independent',
+        configured: true
+      };
+    }
+
+    if (!ai || typeof ai.resolveEffectiveApiConfig !== 'function') return null;
+    var chatModel = '';
+    if (chatId && store && typeof store.getChat === 'function') {
+      var targetChat = await store.getChat(chatId);
+      if (targetChat && typeof targetChat.model === 'string') {
+        chatModel = targetChat.model.trim();
+      }
+    }
+    var followApi = await ai.resolveEffectiveApiConfig({ chatModel: chatModel });
+    if (followApi && typeof followApi === 'object') {
+      return Object.assign({}, followApi, { mode: 'follow_chat' });
+    }
+    return followApi;
   }
 
   async function summarizeChatSegment(options) {
@@ -718,69 +1053,338 @@
     var ai = AI();
     if (!store || !opts.chatId) return null;
 
-    var settings = opts.settings || await store.getMemorySettings();
-    var params = resolveMemoryParams(settings);
-    var keepRecent = params.recentRawMessagesLimit;
+    return await runWithChatSummaryLock(opts.chatId, async function() {
+      var settings = opts.settings || await store.getMemorySettings();
+      var params = resolveMemoryParams(settings);
+      var keepRecent = params.recentRawMessagesLimit;
 
-    var chat = await store.getChat(opts.chatId);
-    if (!chat || !Array.isArray(chat.messages)) return null;
+      var chat = await store.getChat(opts.chatId);
+      if (!chat || !Array.isArray(chat.messages)) return null;
 
-    var cleanMsgs = chat.messages.filter(function(m) {
-      return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim();
+      var cleanMsgs = getCleanChatMessages(chat);
+      var prevUpTo = getEffectiveSummaryUpToCount(chat);
+      var targetUpTo = Math.max(0, cleanMsgs.length - keepRecent);
+
+      if (opts.expectedStartIndex != null && Number.isFinite(Number(opts.expectedStartIndex))) {
+        if (Math.floor(Number(opts.expectedStartIndex)) < prevUpTo) {
+          return null;
+        }
+      }
+
+      var chunkCap = Math.max(params.summaryIntervalMessages, MAX_SEGMENT_SOURCE_MESSAGES);
+      var desiredEnd = targetUpTo;
+      if (opts.expectedEndIndex != null && Number.isFinite(Number(opts.expectedEndIndex))) {
+        var expEnd = Math.floor(Number(opts.expectedEndIndex));
+        if (expEnd > prevUpTo && expEnd <= targetUpTo) {
+          desiredEnd = expEnd;
+        }
+      }
+      var endUpTo = Math.min(desiredEnd, prevUpTo + chunkCap);
+      if (endUpTo <= prevUpTo) return null;
+      if (hasOverlappingLiveSegment(chat.summarySegments, prevUpTo, endUpTo)) return null;
+
+      var deltaMsgs = cleanMsgs.slice(prevUpTo, endUpTo);
+      if (!deltaMsgs.length) return null;
+
+      var apiConfig = opts.apiConfig || await resolveChatSummaryTaskApiConfig(opts.chatId, settings);
+      var requestTemp = (apiConfig && apiConfig.mode === 'independent' && Number.isFinite(Number(apiConfig.temperature)))
+        ? Number(apiConfig.temperature)
+        : 0.1;
+      var dialogueText = serializeDialogueWithBudget(deltaMsgs, MAX_SEGMENT_INPUT_CHARS);
+      var segmentText = '';
+      if (ai && typeof ai.requestChatCompletion === 'function' && apiConfig && apiConfig.url && apiConfig.key) {
+        try {
+          var res = await ai.requestChatCompletion({
+            apiConfig: apiConfig,
+            model: apiConfig.model,
+            temperature: requestTemp,
+            maxTokens: 520,
+            messages: [
+              {
+                role: 'system',
+                content: '你是对话短期记忆分段摘要器。请仅针对给出的新增对话片段生成独立、简洁、结构化的阶段摘要，保留：1.当前任务 2.关键事实 3.重要决定 4.用户要求 5.未完成事项。绝不包含密码或密钥，不超过 320 字。'
+              },
+              {
+                role: 'user',
+                content: '【第 ' + (prevUpTo + 1) + ' 至 ' + endUpTo + ' 条对话片段】\n' + dialogueText + '\n\n请输出本段独立摘要：'
+              }
+            ]
+          });
+          segmentText = String((res && res.content) || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        } catch (err) {
+          if (!opts.allowLocalFallback) {
+            throw new Error(sanitizeErrorForLog(err, apiConfig && apiConfig.key));
+          }
+        }
+      }
+
+      if (!segmentText) {
+        segmentText = buildLocalFallbackSegmentSummary(deltaMsgs);
+      }
+      segmentText = redactApiSecret(segmentText, apiConfig && apiConfig.key).trim().slice(0, MAX_SINGLE_SEGMENT_CHARS);
+      if (!segmentText) return null;
+
+      // 写入前再次原子读取最新聊天记录，防止并发消息发送或重复任务导致范围重叠或丢失新消息
+      var latestChat = await store.getChat(opts.chatId);
+      if (!latestChat) return null;
+      var latestUpTo = getEffectiveSummaryUpToCount(latestChat);
+      if (latestUpTo !== prevUpTo || hasOverlappingLiveSegment(latestChat.summarySegments, prevUpTo, endUpTo)) {
+        return null;
+      }
+
+      var prevSegments = Array.isArray(latestChat.summarySegments) ? latestChat.summarySegments.slice() : [];
+      var legacyBase = String(latestChat.summaryLegacyBase || '').trim();
+      if (!legacyBase && prevSegments.length === 0 && String(latestChat.summary || '').trim()) {
+        legacyBase = String(latestChat.summary || '').trim();
+      }
+
+      var nowTs = Date.now();
+      var newSegment = {
+        id: 'sumseg_' + prevUpTo + '_' + endUpTo + '_' + nowTs.toString(36),
+        startMessageIndex: prevUpTo,
+        endMessageIndex: endUpTo,
+        content: segmentText,
+        createdAt: nowTs,
+        status: 'active',
+        mergedFromIds: []
+      };
+      var nextSegments = prevSegments.concat([newSegment]);
+      var nextUpTo = Math.max(latestUpTo, endUpTo);
+      var compiledSummary = buildShortTermSummaryContext({
+        summary: latestChat.summary,
+        summaryLegacyBase: legacyBase,
+        summarySegments: nextSegments
+      }, MAX_CHAT_SUMMARY_FIELD_CHARS);
+
+      var updatedChat = await store.saveChat({
+        id: latestChat.id,
+        summary: compiledSummary,
+        summaryLegacyBase: legacyBase,
+        summarySegments: nextSegments,
+        summaryUpToCount: nextUpTo,
+        summaryUpdatedAt: nowTs,
+        updatedAt: latestChat.updatedAt || nowTs
+      });
+      return updatedChat;
     });
-    var targetUpTo = Math.max(0, cleanMsgs.length - keepRecent);
-    var prevUpTo = Math.max(0, Number(chat.summaryUpToCount) || 0);
-    if (targetUpTo <= prevUpTo) return null;
+  }
 
-    var deltaMsgs = cleanMsgs.slice(prevUpTo, targetUpTo);
-    if (!deltaMsgs.length) return null;
+  function partitionMergeBatches(items, maxBudgetChars) {
+    var budget = Math.max(600, Number(maxBudgetChars) || MAX_MERGE_INPUT_BUDGET_CHARS);
+    var batches = [];
+    var current = [];
+    var currentChars = 0;
 
-    var prevSummary = String(chat.summary || '').trim();
-    var dialogueText = deltaMsgs.map(function(m) {
-      var roleLabel = m.role === 'user' ? '用户' : '助手';
-      var content = String(m.content || '').slice(0, 420);
-      return roleLabel + '：' + (containsSensitiveSecret(content) ? '[已脱敏]' : content);
-    }).join('\n');
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      var text = String(item.text || '').trim();
+      if (!text) continue;
+      if (text.length > Math.floor(budget * 0.45)) {
+        text = text.slice(0, Math.floor(budget * 0.45) - 1) + '…';
+      }
+      var entry = { startMessageIndex: item.startMessageIndex, endMessageIndex: item.endMessageIndex, text: text };
+      var addition = text.length + (current.length ? 2 : 0);
+      if (current.length >= 2 && (currentChars + addition) > budget) {
+        batches.push(current);
+        current = [entry];
+        currentChars = text.length;
+      } else {
+        current.push(entry);
+        currentChars += addition;
+      }
+    }
+    if (current.length) batches.push(current);
+    return batches;
+  }
 
-    var nextSummary = '';
-    if (ai && typeof ai.requestChatCompletion === 'function' && opts.apiConfig && opts.apiConfig.url && opts.apiConfig.key) {
+  async function compressMergeBatchWithBudget(batchEntries, apiConfig, allowLocalFallback, maxBudgetChars) {
+    var ai = AI();
+    var budget = Math.max(600, Number(maxBudgetChars) || MAX_MERGE_INPUT_BUDGET_CHARS);
+    var combinedInput = batchEntries.map(function(entry) {
+      return entry.text;
+    }).join('\n\n').slice(0, budget);
+
+    var mergedText = '';
+    var requestTemp = (apiConfig && apiConfig.mode === 'independent' && Number.isFinite(Number(apiConfig.temperature)))
+      ? Number(apiConfig.temperature)
+      : 0.1;
+    if (ai && typeof ai.requestChatCompletion === 'function' && apiConfig && apiConfig.url && apiConfig.key) {
       try {
         var res = await ai.requestChatCompletion({
-          apiConfig: opts.apiConfig,
-          temperature: 0.1,
-          maxTokens: 600,
+          apiConfig: apiConfig,
+          model: apiConfig.model,
+          temperature: requestTemp,
+          maxTokens: 650,
           messages: [
             {
               role: 'system',
-              content: '你是对话短期工作记忆压缩器。请将已有摘要与新增对话轮次合并成简洁结构化的短期工作记忆，包含：1.当前任务 2.关键事实 3.用户要求 4.未完成事项。绝不包含密码或密钥，不超过 450 字。'
+              content: '你是对话短期记忆压缩合并器。请将多条阶段性摘要合并为一条更紧凑的综合摘要，务必完整保留：1.当前任务 2.关键事实 3.重要决定 4.用户要求 5.未完成事项。去除重复表述，绝不包含密码或密钥，不超过 480 字。'
             },
             {
               role: 'user',
-              content: (prevSummary ? ('【已有短期摘要】\n' + prevSummary + '\n\n') : '') +
-                '【新增较早轮次对话】\n' + dialogueText + '\n\n请输出更新后的短期摘要：'
+              content: '【待合并的阶段摘要列表】\n' + combinedInput + '\n\n请输出合并后的紧凑综合摘要：'
             }
           ]
         });
-        nextSummary = String((res && res.content) || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        mergedText = String((res && res.content) || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
       } catch (err) {
-        if (!opts.allowLocalFallback) {
-          throw err;
+        if (!allowLocalFallback) {
+          throw new Error(sanitizeErrorForLog(err, apiConfig && apiConfig.key));
         }
       }
     }
 
-    if (!nextSummary) {
-      nextSummary = buildLocalFallbackSummary(prevSummary, deltaMsgs);
+    if (!mergedText) {
+      mergedText = buildLocalFallbackMergedSummary(batchEntries.map(function(e) { return { content: e.text }; }));
     }
+    return redactApiSecret(mergedText, apiConfig && apiConfig.key).trim().slice(0, MAX_MERGED_SUMMARY_CHARS);
+  }
 
-    var updatedChat = await store.saveChat({
-      id: chat.id,
-      summary: nextSummary.slice(0, 900),
-      summaryUpToCount: targetUpTo,
-      summaryUpdatedAt: Date.now(),
-      updatedAt: chat.updatedAt || Date.now()
+  async function mergeChatSummarySegments(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var store = S();
+    if (!store || !opts.chatId) return null;
+
+    return await runWithChatSummaryLock(opts.chatId, async function() {
+      var settings = opts.settings || await store.getMemorySettings();
+      var params = resolveMemoryParams(settings);
+      var chat = await store.getChat(opts.chatId);
+      if (!chat) return null;
+
+      var activeSegs = getActiveSummarySegments(chat);
+      var targetSegs = [];
+      if (Array.isArray(opts.segmentIds) && opts.segmentIds.length) {
+        var wantedSet = new Set(opts.segmentIds.map(String));
+        targetSegs = activeSegs.filter(function(s) { return wantedSet.has(s.id); });
+      } else if (activeSegs.length >= params.summaryMergeThreshold) {
+        targetSegs = activeSegs.slice(0, params.summaryMergeThreshold);
+      }
+
+      if (targetSegs.length < 2) return null;
+      targetSegs.sort(function(a, b) {
+        return (a.startMessageIndex - b.startMessageIndex) || (a.endMessageIndex - b.endMessageIndex);
+      });
+
+      var apiConfig = opts.apiConfig || await resolveChatSummaryTaskApiConfig(opts.chatId, settings);
+
+      var budget = Math.max(600, Number(opts.maxInputBudgetChars) || MAX_MERGE_INPUT_BUDGET_CHARS);
+      var currentItems = targetSegs.map(function(seg) {
+        var safeBody = containsSensitiveSecret(seg.content) ? '[已脱敏]' : String(seg.content || '').slice(0, MAX_SINGLE_SEGMENT_CHARS);
+        return {
+          startMessageIndex: seg.startMessageIndex,
+          endMessageIndex: seg.endMessageIndex,
+          text: '[第 ' + (seg.startMessageIndex + 1) + '-' + seg.endMessageIndex + ' 条] ' + safeBody
+        };
+      });
+
+      var batchPassCount = 0;
+      var mergedContent = '';
+      var maxRounds = 4;
+      for (var round = 0; round < maxRounds; round++) {
+        var batches = partitionMergeBatches(currentItems, budget);
+        if (!batches.length) return null;
+        if (batches.length === 1) {
+          batchPassCount++;
+          mergedContent = await compressMergeBatchWithBudget(batches[0], apiConfig, !!opts.allowLocalFallback, budget);
+          break;
+        }
+        var nextRoundItems = [];
+        for (var bi = 0; bi < batches.length; bi++) {
+          batchPassCount++;
+          var b = batches[bi];
+          var partSummary = await compressMergeBatchWithBudget(b, apiConfig, !!opts.allowLocalFallback, budget);
+          if (!partSummary) continue;
+          nextRoundItems.push({
+            startMessageIndex: b[0].startMessageIndex,
+            endMessageIndex: b[b.length - 1].endMessageIndex,
+            text: '[第 ' + (b[0].startMessageIndex + 1) + '-' + b[b.length - 1].endMessageIndex + ' 条阶段合并] ' + partSummary.slice(0, MAX_SINGLE_SEGMENT_CHARS)
+          });
+        }
+        if (!nextRoundItems.length) return null;
+        if (nextRoundItems.length === 1) {
+          mergedContent = nextRoundItems[0].text.slice(0, MAX_MERGED_SUMMARY_CHARS);
+          break;
+        }
+        currentItems = nextRoundItems;
+      }
+      if (!mergedContent && currentItems.length) {
+        batchPassCount++;
+        mergedContent = await compressMergeBatchWithBudget(currentItems, apiConfig, !!opts.allowLocalFallback, budget);
+      }
+
+      mergedContent = String(mergedContent || '').trim().slice(0, MAX_MERGED_SUMMARY_CHARS);
+      if (!mergedContent) return null;
+
+      // 合并成功后再原子读取最新聊天并校验目标段仍为 active，绝不丢弃合并期间新写入的消息或新摘要段
+      var latestChat = await store.getChat(opts.chatId);
+      if (!latestChat) return null;
+      var latestSegs = Array.isArray(latestChat.summarySegments) ? latestChat.summarySegments : [];
+      var targetIdSet = new Set(targetSegs.map(function(s) { return s.id; }));
+      var stillActiveTargets = latestSegs.filter(function(s) {
+        return s && s.status === 'active' && targetIdSet.has(s.id);
+      });
+      if (stillActiveTargets.length !== targetSegs.length) {
+        return null;
+      }
+
+      var minStart = targetSegs[0].startMessageIndex;
+      var maxEnd = targetSegs[targetSegs.length - 1].endMessageIndex;
+      var nowTs = Date.now();
+      var mergedSegment = {
+        id: 'summerge_' + minStart + '_' + maxEnd + '_' + nowTs.toString(36),
+        startMessageIndex: minStart,
+        endMessageIndex: maxEnd,
+        content: mergedContent,
+        createdAt: nowTs,
+        status: 'merged',
+        mergedFromIds: targetSegs.map(function(s) { return s.id; })
+      };
+
+      var liveUpdated = [];
+      var compactedList = [];
+      for (var li = 0; li < latestSegs.length; li++) {
+        var seg = latestSegs[li];
+        if (!seg) continue;
+        if (targetIdSet.has(seg.id)) {
+          compactedList.push(Object.assign({}, seg, { status: 'compacted' }));
+        } else if (seg.status === 'compacted') {
+          compactedList.push(seg);
+        } else {
+          liveUpdated.push(seg);
+        }
+      }
+      liveUpdated.push(mergedSegment);
+      liveUpdated.sort(function(a, b) {
+        return (a.startMessageIndex - b.startMessageIndex) || (a.endMessageIndex - b.endMessageIndex) || ((a.createdAt || 0) - (b.createdAt || 0));
+      });
+      if (compactedList.length > MAX_COMPACTED_SEGMENTS_RETAINED) {
+        compactedList = compactedList.slice(compactedList.length - MAX_COMPACTED_SEGMENTS_RETAINED);
+      }
+
+      var nextSegments = compactedList.concat(liveUpdated);
+      var nextUpTo = Math.max(getEffectiveSummaryUpToCount(latestChat), maxEnd);
+      var compiledSummary = buildShortTermSummaryContext({
+        summary: latestChat.summary,
+        summaryLegacyBase: latestChat.summaryLegacyBase,
+        summarySegments: nextSegments
+      }, MAX_CHAT_SUMMARY_FIELD_CHARS);
+
+      var savedChat = await store.saveChat({
+        id: latestChat.id,
+        summary: compiledSummary,
+        summaryLegacyBase: String(latestChat.summaryLegacyBase || '').trim(),
+        summarySegments: nextSegments,
+        summaryUpToCount: nextUpTo,
+        summaryUpdatedAt: nowTs,
+        updatedAt: latestChat.updatedAt || nowTs
+      });
+      return {
+        chat: savedChat,
+        mergedCount: targetSegs.length,
+        mergedSegment: mergedSegment,
+        batchPassCount: batchPassCount
+      };
     });
-    return updatedChat;
   }
 
   // ===== 6. 统一三层记忆检索入口（供聊天主流程调用） =====
@@ -1232,9 +1836,27 @@
       emptyResult.summaryUpToCount = 0;
       emptyResult.maxRecentMessages = 0;
     } else {
+      var summaryChat = activeChat;
+      var lookupChatId = String(opts.chatId || (activeChat && activeChat.id) || '').trim();
+      if (lookupChatId && typeof store.getChat === 'function') {
+        try {
+          var storedChat = await store.getChat(lookupChatId);
+          if (storedChat) {
+            var storedUpTo = getEffectiveSummaryUpToCount(storedChat);
+            var passedUpTo = getEffectiveSummaryUpToCount(activeChat);
+            var storedTime = Number(storedChat.summaryUpdatedAt) || 0;
+            var passedTime = Number(activeChat && activeChat.summaryUpdatedAt) || 0;
+            if (!activeChat || storedUpTo >= passedUpTo || storedTime >= passedTime) {
+              summaryChat = storedChat;
+            }
+          }
+        } catch (_) {
+          // 读取失败时回退到传入的 activeChat
+        }
+      }
       emptyResult.useShortTermHistory = true;
-      emptyResult.shortTermSummary = activeChat ? String(activeChat.summary || '').trim() : '';
-      emptyResult.summaryUpToCount = activeChat ? Math.max(0, Number(activeChat.summaryUpToCount) || 0) : 0;
+      emptyResult.shortTermSummary = buildShortTermSummaryContext(summaryChat, MAX_CONTEXT_SUMMARY_CHARS);
+      emptyResult.summaryUpToCount = getEffectiveSummaryUpToCount(summaryChat);
       emptyResult.maxRecentMessages = params.recentRawMessagesLimit;
     }
 
@@ -4883,27 +5505,80 @@
       }
     }
 
-    if (params.shortTermContext && opts.chatId && typeof store.getChat === 'function') {
+    if (params.shortTermContext && params.autoSummary && opts.chatId && typeof store.getChat === 'function') {
       var chat = await store.getChat(opts.chatId);
-      if (needsShortTermSummary(chat, params)) {
-        var sumTarget = Math.max(0, chat.messages.length - params.recentRawMessagesLimit);
-        var sumTask = await store.enqueueMemoryTask({
-          type: 'summarize_chat',
-          turnKey: 'sum:' + String(opts.chatId) + ':' + String(sumTarget),
-          chatId: opts.chatId,
-          chatTitle: chat.title || opts.chatTitle || '',
-          projectId: chat.projectId || opts.projectId || '',
-          userId: opts.userId || 'local_user',
-          status: 'pending',
-          memoryWritten: false,
-          savedMemoryIds: [],
-          payload: { targetUpTo: sumTarget }
+      var existingTasks = typeof store.listMemoryTasks === 'function' ? await store.listMemoryTasks() : [];
+      var sumPlan = computeNextSummaryPlan(chat, params);
+      if (sumPlan) {
+        var activeOverlapSum = existingTasks.find(function(t) {
+          if (!t || t.type !== 'summarize_chat' || t.chatId !== opts.chatId) return false;
+          if (t.status !== 'pending' && t.status !== 'running' && t.status !== 'retry_waiting') return false;
+          var tStart = t.payload && t.payload.startIndex != null ? Number(t.payload.startIndex) : -1;
+          var tEnd = t.payload && (t.payload.endIndex != null ? Number(t.payload.endIndex) : Number(t.payload.targetUpTo || 0));
+          return tStart === sumPlan.startIndex || (tEnd > sumPlan.startIndex);
         });
-        queued.push(sumTask);
+        if (!activeOverlapSum) {
+          var sumTask = await store.enqueueMemoryTask({
+            type: 'summarize_chat',
+            turnKey: 'sum:' + String(opts.chatId) + ':' + String(sumPlan.startIndex) + ':' + String(sumPlan.endIndex),
+            chatId: opts.chatId,
+            chatTitle: chat.title || opts.chatTitle || '',
+            projectId: chat.projectId || opts.projectId || '',
+            userId: opts.userId || 'local_user',
+            status: 'pending',
+            memoryWritten: false,
+            savedMemoryIds: [],
+            payload: {
+              startIndex: sumPlan.startIndex,
+              endIndex: sumPlan.endIndex,
+              targetUpTo: sumPlan.endIndex
+            }
+          });
+          queued.push(sumTask);
+        }
+      }
+
+      var mergeTaskQueued = await maybeEnqueueSummaryMergeTask(chat, params, opts, existingTasks);
+      if (mergeTaskQueued) {
+        queued.push(mergeTaskQueued);
       }
     }
 
     return queued;
+  }
+
+  async function maybeEnqueueSummaryMergeTask(chat, params, meta, preloadedTasks) {
+    var store = S();
+    if (!store || typeof store.enqueueMemoryTask !== 'function' || !chat || !chat.id) return null;
+    var plan = computeSummaryMergePlan(chat, params);
+    if (!plan) return null;
+
+    var tasks = Array.isArray(preloadedTasks)
+      ? preloadedTasks
+      : (typeof store.listMemoryTasks === 'function' ? await store.listMemoryTasks() : []);
+    var activeMerge = tasks.find(function(t) {
+      if (!t || t.type !== 'merge_summary' || t.chatId !== chat.id) return false;
+      return t.status === 'pending' || t.status === 'running' || t.status === 'retry_waiting';
+    });
+    if (activeMerge) return null;
+
+    return await store.enqueueMemoryTask({
+      type: 'merge_summary',
+      turnKey: plan.turnKey,
+      chatId: chat.id,
+      chatTitle: chat.title || (meta && meta.chatTitle) || '',
+      projectId: chat.projectId || (meta && meta.projectId) || '',
+      userId: (meta && meta.userId) || 'local_user',
+      status: 'pending',
+      memoryWritten: false,
+      savedMemoryIds: [],
+      payload: {
+        segmentIds: plan.segmentIds,
+        startIndex: plan.startIndex,
+        endIndex: plan.endIndex,
+        count: plan.count
+      }
+    });
   }
 
   async function processMemoryTaskQueue(apiConfig, options) {
@@ -5014,11 +5689,14 @@
             }
           } else if (task.type === 'summarize_chat') {
             var currentSettings = await store.getMemorySettings();
+            var taskSummaryApi = await resolveChatSummaryTaskApiConfig(task.chatId, currentSettings);
             var updatedChat = await summarizeChatSegment({
               chatId: task.chatId,
+              apiConfig: taskSummaryApi,
               settings: currentSettings,
-              apiConfig: effectiveApi,
-              allowLocalFallback: false
+              allowLocalFallback: false,
+              expectedStartIndex: task.payload && task.payload.startIndex != null ? task.payload.startIndex : undefined,
+              expectedEndIndex: task.payload && task.payload.endIndex != null ? task.payload.endIndex : (task.payload && task.payload.targetUpTo != null ? task.payload.targetUpTo : undefined)
             });
             processed++;
             if (updatedChat && updatedChat.id) {
@@ -5031,6 +5709,10 @@
                 lastError: '',
                 resultSummary: '已更新至第 ' + updatedChat.summaryUpToCount + ' 条消息摘要'
               });
+              var mergeTaskAfterSum = await maybeEnqueueSummaryMergeTask(updatedChat, currentSettings, task);
+              if (mergeTaskAfterSum && mergeTaskAfterSum.status === 'pending') {
+                _queueRerunRequested = true;
+              }
             } else {
               await store.updateMemoryTask(task.id, {
                 status: 'skipped',
@@ -5039,6 +5721,37 @@
                 savedMemoryIds: [],
                 lastError: '',
                 resultSummary: '无需更新摘要'
+              });
+            }
+          } else if (task.type === 'merge_summary') {
+            var mergeSettings = await store.getMemorySettings();
+            var taskMergeApi = await resolveChatSummaryTaskApiConfig(task.chatId, mergeSettings);
+            var mergeRes = await mergeChatSummarySegments({
+              chatId: task.chatId,
+              apiConfig: taskMergeApi,
+              settings: mergeSettings,
+              allowLocalFallback: false,
+              segmentIds: task.payload && Array.isArray(task.payload.segmentIds) ? task.payload.segmentIds : undefined
+            });
+            processed++;
+            if (mergeRes && mergeRes.chat && mergeRes.chat.id) {
+              summarizedChats.push(mergeRes.chat);
+              await store.updateMemoryTask(task.id, {
+                status: 'saved',
+                attempts: (task.attempts || 0) + 1,
+                memoryWritten: true,
+                savedMemoryIds: [],
+                lastError: '',
+                resultSummary: '已合并 ' + mergeRes.mergedCount + ' 条独立摘要'
+              });
+            } else {
+              await store.updateMemoryTask(task.id, {
+                status: 'skipped',
+                attempts: (task.attempts || 0) + 1,
+                memoryWritten: false,
+                savedMemoryIds: [],
+                lastError: '',
+                resultSummary: '无需合并摘要'
               });
             }
           }
@@ -5131,7 +5844,12 @@
     retrieveRelevantMemories: retrieveRelevantMemories,
     retrieveWorkspaceContext: retrieveWorkspaceContext,
     needsShortTermSummary: needsShortTermSummary,
+    computeNextSummaryPlan: computeNextSummaryPlan,
+    needsSummaryMerge: needsSummaryMerge,
+    computeSummaryMergePlan: computeSummaryMergePlan,
+    buildShortTermSummaryContext: buildShortTermSummaryContext,
     summarizeChatSegment: summarizeChatSegment,
+    mergeChatSummarySegments: mergeChatSummarySegments,
     detectMemoryIntentFast: detectMemoryIntentFast,
     detectExplicitMemoryCommand: detectExplicitMemoryCommand,
     detectUnsupportedMonitoringOrReminderRequest: detectUnsupportedMonitoringOrReminderRequest,
