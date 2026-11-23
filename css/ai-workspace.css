@@ -3270,6 +3270,38 @@
   border-top: 1px solid var(--aiw-border);
 }
 
+.aiw-ss-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aiw-ss-prompt-counter {
+  font-size: 11px;
+  color: var(--aiw-hint);
+  font-variant-numeric: tabular-nums;
+}
+
+.aiw-ss-prompt-counter.is-over {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.aiw-ss-prompt-textarea {
+  min-height: 88px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.aiw-ss-prompt-textarea.is-invalid {
+  border-color: #dc2626;
+}
+
+.aiw-ss-field-hint.is-error {
+  color: #dc2626;
+}
+
 .aiw-diag-steps {
   margin-top: 8px;
   padding: 8px 10px;

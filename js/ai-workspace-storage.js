@@ -65,10 +65,14 @@
     maxSingleMemoryLength: { min: 60, max: 500, def: 260 }
   };
 
+  var MAX_CUSTOM_SUMMARY_PROMPT_LENGTH = 1000;
+
   var DEFAULT_MEMORY_SETTINGS = {
     shortTermContext: true,
     autoSummary: true,
     summaryModelMode: 'follow_chat',
+    customSummaryPrompt: '',
+    summaryReadWorldBook: false,
     crossChatMemory: true,
     useMemory: true,
     autoMemory: true,
@@ -1225,10 +1229,20 @@
       ? 'independent'
       : 'follow_chat';
 
+    var rawCustomSummaryPrompt = src.customSummaryPrompt != null
+      ? String(src.customSummaryPrompt)
+      : String(prev.customSummaryPrompt || '');
+    var customSummaryPrompt = rawCustomSummaryPrompt
+      .replace(/\r\n/g, '\n')
+      .trim()
+      .slice(0, MAX_CUSTOM_SUMMARY_PROMPT_LENGTH);
+
     return {
       shortTermContext: typeof src.shortTermContext === 'boolean' ? src.shortTermContext : (prev.shortTermContext !== false),
       autoSummary: typeof src.autoSummary === 'boolean' ? src.autoSummary : (prev.autoSummary !== false),
       summaryModelMode: summaryModelMode,
+      customSummaryPrompt: customSummaryPrompt,
+      summaryReadWorldBook: typeof src.summaryReadWorldBook === 'boolean' ? src.summaryReadWorldBook : (prev.summaryReadWorldBook === true),
       crossChatMemory: typeof src.crossChatMemory === 'boolean' ? src.crossChatMemory : (prev.crossChatMemory !== false),
       useMemory: typeof src.useMemory === 'boolean' ? src.useMemory : (prev.useMemory !== false),
       autoMemory: typeof src.autoMemory === 'boolean' ? src.autoMemory : (prev.autoMemory !== false),
@@ -1627,6 +1641,7 @@
     MEMORY_SCOPES: MEMORY_SCOPES,
     MEMORY_STRATEGY_PRESETS: MEMORY_STRATEGY_PRESETS,
     MEMORY_SETTING_BOUNDS: MEMORY_SETTING_BOUNDS,
+    MAX_CUSTOM_SUMMARY_PROMPT_LENGTH: MAX_CUSTOM_SUMMARY_PROMPT_LENGTH,
     DEFAULT_MEMORY_SETTINGS: DEFAULT_MEMORY_SETTINGS,
     normalizeBaseUrl: normalizeBaseUrl,
     normalizeTemperature: normalizeTemperature,

@@ -45,6 +45,7 @@
     customApi: null,
     summaryApiConfig: null,
     summaryApiPanelOpen: false,
+    summaryCustomPromptDraft: null,
     effectiveApi: null,
     memorySettings: {
       shortTermContext: true,
@@ -59,6 +60,8 @@
       summaryIntervalMessages: 20,
       summaryMergeThreshold: 10,
       summaryModelMode: 'follow_chat',
+      customSummaryPrompt: '',
+      summaryReadWorldBook: false,
       maxMemoryRecallCount: 5,
       maxSingleMemoryLength: 260
     },
@@ -202,6 +205,8 @@
             summaryIntervalMessages: 20,
             summaryMergeThreshold: 10,
             summaryModelMode: 'follow_chat',
+            customSummaryPrompt: '',
+            summaryReadWorldBook: false,
             maxMemoryRecallCount: 5,
             maxSingleMemoryLength: 260
           }),
@@ -219,6 +224,7 @@
     _ctx.presets = results[4];
     _ctx.customApi = results[5];
     _ctx.memorySettings = results[6] || _ctx.memorySettings;
+    _ctx.summaryCustomPromptDraft = null;
     _ctx.memories = results[7] || [];
     _ctx.memoryTasks = results[8] || [];
     _ctx.chats = results[9] || [];
@@ -372,6 +378,11 @@
             '<span class="aiw-st-row-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>' +
             '<span class="aiw-st-row-label">预设与提示词</span>' +
             '<span class="aiw-st-row-val">' + escapeHtml(presetSummary) + '</span>' +
+            '<span class="aiw-st-row-arrow"><i class="fa-solid fa-angle-right"></i></span>' +
+          '</button>' +
+          '<button type="button" class="aiw-st-row" data-st-nav="worldbooks">' +
+            '<span class="aiw-st-row-icon"><i class="fa-solid fa-book-open"></i></span>' +
+            '<span class="aiw-st-row-label">世界书</span>' +
             '<span class="aiw-st-row-arrow"><i class="fa-solid fa-angle-right"></i></span>' +
           '</button>' +
           '<button type="button" class="aiw-st-row" data-st-nav="memory">' +
@@ -2505,6 +2516,7 @@
     var intervalVal = Number(ms.summaryIntervalMessages) || bounds.summaryIntervalMessages.def;
     var mergeThresholdVal = Number(ms.summaryMergeThreshold) || bounds.summaryMergeThreshold.def;
     var autoSummaryOn = ms.autoSummary !== false;
+    var summaryReadWorldBookOn = ms.summaryReadWorldBook === true;
     var summaryApiCfg = (_ctx.summaryApiConfig && typeof _ctx.summaryApiConfig === 'object')
       ? _ctx.summaryApiConfig
       : { baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false };
@@ -2520,6 +2532,12 @@
     var summaryApiTempVal = Number.isFinite(Number(summaryApiCfg.temperature)) ? Number(summaryApiCfg.temperature) : 0.1;
     var hasAnySummaryApiField = !!(summaryApiCfg.baseUrl || hasSavedSummaryKey || summaryApiCfg.model);
     var summaryApiPanelOpen = !!_ctx.summaryApiPanelOpen;
+    var maxCustomPromptLen = (S() && Number(S().MAX_CUSTOM_SUMMARY_PROMPT_LENGTH)) || 1000;
+    var customPromptVal = (_ctx.summaryCustomPromptDraft !== null && _ctx.summaryCustomPromptDraft !== undefined)
+      ? String(_ctx.summaryCustomPromptDraft)
+      : String(ms.customSummaryPrompt || '');
+    var customPromptLen = customPromptVal.replace(/\r\n/g, '\n').length;
+    var customPromptOver = customPromptLen > maxCustomPromptLen;
 
     var chats = Array.isArray(_ctx.chats) ? _ctx.chats : [];
     var targetChat = resolveSummaryTargetChat();
@@ -2561,6 +2579,16 @@
           '</div>' +
           '<label class="aiw-switch">' +
             '<input type="checkbox" id="aiw-ss-auto-summary"' + (autoSummaryOn ? ' checked' : '') + '>' +
+            '<span class="aiw-switch-track"></span>' +
+          '</label>' +
+        '</div>' +
+        '<div class="aiw-st-row aiw-st-row-static">' +
+          '<div class="aiw-st-row-col">' +
+            '<div class="aiw-st-row-label">摘要读取世界书</div>' +
+            '<div class="aiw-st-row-desc">开启后，生成摘要时可参考当前聊天适用的世界书设定，不会将设定直接当作已发生的事件。</div>' +
+          '</div>' +
+          '<label class="aiw-switch">' +
+            '<input type="checkbox" id="aiw-ss-read-worldbook"' + (summaryReadWorldBookOn ? ' checked' : '') + '>' +
             '<span class="aiw-switch-track"></span>' +
           '</label>' +
         '</div>' +
@@ -2658,6 +2686,18 @@
                   '</div>'
                 )
                 : '') +
+            '</div>' +
+            '<div class="aiw-ss-setting-field">' +
+              '<div class="aiw-ss-prompt-header">' +
+                '<label class="aiw-field-label" for="aiw-ss-custom-prompt">自定义摘要要求</label>' +
+                '<span class="aiw-ss-prompt-counter' + (customPromptOver ? ' is-over' : '') + '" id="aiw-ss-custom-prompt-count">' + escapeHtml(String(customPromptLen)) + ' / ' + escapeHtml(String(maxCustomPromptLen)) + ' 字</span>' +
+              '</div>' +
+              '<textarea class="aiw-field-textarea aiw-ss-prompt-textarea' + (customPromptOver ? ' is-invalid' : '') + '" id="aiw-ss-custom-prompt" rows="4" placeholder="例如：重点记录人物关系、重要决定、未完成事项。">' + escapeHtml(customPromptVal) + '</textarea>' +
+              '<div class="aiw-ss-field-hint' + (customPromptOver ? ' is-error' : '') + '" id="aiw-ss-custom-prompt-hint">' +
+                (customPromptOver
+                  ? ('已超出 ' + escapeHtml(String(maxCustomPromptLen)) + ' 字上限（超出 ' + escapeHtml(String(customPromptLen - maxCustomPromptLen)) + ' 字），请精简后再保存')
+                  : ('可选，最多 ' + escapeHtml(String(maxCustomPromptLen)) + ' 字；留空时保持默认摘要行为')) +
+              '</div>' +
             '</div>' +
           '</div>' +
           '<div class="aiw-ss-settings-actions">' +
@@ -2818,6 +2858,54 @@
       });
     }
 
+    var worldBookToggle = layer.querySelector('#aiw-ss-read-worldbook');
+    if (worldBookToggle && S() && typeof S().saveMemorySettings === 'function') {
+      worldBookToggle.addEventListener('change', async function() {
+        var nextChecked = !!worldBookToggle.checked;
+        try {
+          _ctx.memorySettings = await S().saveMemorySettings({
+            summaryReadWorldBook: nextChecked,
+            applyStrategyPreset: false
+          });
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast(nextChecked ? '已开启摘要读取世界书' : '已关闭摘要读取世界书');
+        } catch (_) {
+          worldBookToggle.checked = !nextChecked;
+          notifyToast('保存摘要读取世界书设置失败，请稍后重试');
+        }
+      });
+    }
+
+    var maxCustomPromptLen = (S() && Number(S().MAX_CUSTOM_SUMMARY_PROMPT_LENGTH)) || 1000;
+    var customPromptEl = layer.querySelector('#aiw-ss-custom-prompt');
+    var customPromptCountEl = layer.querySelector('#aiw-ss-custom-prompt-count');
+    var customPromptHintEl = layer.querySelector('#aiw-ss-custom-prompt-hint');
+    if (customPromptEl) {
+      var prevOverLimit = String(customPromptEl.value || '').replace(/\r\n/g, '\n').length > maxCustomPromptLen;
+      customPromptEl.addEventListener('input', function() {
+        var rawVal = String(customPromptEl.value || '');
+        _ctx.summaryCustomPromptDraft = rawVal;
+        var len = rawVal.replace(/\r\n/g, '\n').length;
+        var isOver = len > maxCustomPromptLen;
+        if (customPromptCountEl) {
+          customPromptCountEl.textContent = len + ' / ' + maxCustomPromptLen + ' 字';
+          customPromptCountEl.classList.toggle('is-over', isOver);
+        }
+        customPromptEl.classList.toggle('is-invalid', isOver);
+        if (customPromptHintEl) {
+          customPromptHintEl.classList.toggle('is-error', isOver);
+          customPromptHintEl.textContent = isOver
+            ? ('已超出 ' + maxCustomPromptLen + ' 字上限（超出 ' + (len - maxCustomPromptLen) + ' 字），请精简后再保存')
+            : ('可选，最多 ' + maxCustomPromptLen + ' 字；留空时保持默认摘要行为');
+        }
+        if (!prevOverLimit && isOver) {
+          notifyToast('自定义摘要要求最多 ' + maxCustomPromptLen + ' 字，请精简后再保存');
+        }
+        prevOverLimit = isOver;
+      });
+    }
+
     var saveBtn = layer.querySelector('#aiw-ss-settings-save');
     if (saveBtn && S() && typeof S().saveMemorySettings === 'function') {
       saveBtn.addEventListener('click', async function() {
@@ -2826,6 +2914,9 @@
         var intervalEl = layer.querySelector('#aiw-ss-interval-msgs');
         var mergeEl = layer.querySelector('#aiw-ss-merge-threshold');
         var autoEl = layer.querySelector('#aiw-ss-auto-summary');
+        var worldBookEl = layer.querySelector('#aiw-ss-read-worldbook');
+        var promptEl = layer.querySelector('#aiw-ss-custom-prompt');
+        var promptHintEl = layer.querySelector('#aiw-ss-custom-prompt-hint');
 
         var rawRecent = recentEl ? Number(recentEl.value) : NaN;
         var rawInterval = intervalEl ? Number(intervalEl.value) : NaN;
@@ -2833,6 +2924,22 @@
 
         if (!Number.isFinite(rawRecent) || !Number.isFinite(rawInterval) || !Number.isFinite(rawMerge)) {
           notifyToast('请输入有效的数字参数');
+          return;
+        }
+
+        var rawCustomPrompt = promptEl ? String(promptEl.value || '') : '';
+        var normalizedCustomPrompt = rawCustomPrompt.replace(/\r\n/g, '\n');
+        if (normalizedCustomPrompt.length > maxCustomPromptLen) {
+          _ctx.summaryCustomPromptDraft = rawCustomPrompt;
+          if (promptEl) {
+            promptEl.classList.add('is-invalid');
+            promptEl.focus();
+          }
+          if (promptHintEl) {
+            promptHintEl.classList.add('is-error');
+            promptHintEl.textContent = '已超出 ' + maxCustomPromptLen + ' 字上限（超出 ' + (normalizedCustomPrompt.length - maxCustomPromptLen) + ' 字），请精简后再保存';
+          }
+          notifyToast('自定义摘要要求不能超过 ' + maxCustomPromptLen + ' 字，请精简后再保存');
           return;
         }
 
@@ -2846,17 +2953,29 @@
           ? 'independent'
           : 'follow_chat';
 
-        _ctx.memorySettings = await S().saveMemorySettings({
-          autoSummary: autoEl ? autoEl.checked : true,
-          recentRawMessagesLimit: rawRecent,
-          summaryIntervalMessages: rawInterval,
-          summaryMergeThreshold: rawMerge,
-          summaryModelMode: selectedSummaryModelMode,
-          applyStrategyPreset: false
-        });
-        notifyWorkspaceStateChanged();
-        renderCurrentView();
-        notifyToast(outOfRange ? '部分参数超出安全范围，已自动修正并保存' : '摘要设置已保存');
+        try {
+          _ctx.memorySettings = await S().saveMemorySettings({
+            autoSummary: autoEl ? autoEl.checked : true,
+            summaryReadWorldBook: worldBookEl ? !!worldBookEl.checked : false,
+            recentRawMessagesLimit: rawRecent,
+            summaryIntervalMessages: rawInterval,
+            summaryMergeThreshold: rawMerge,
+            summaryModelMode: selectedSummaryModelMode,
+            customSummaryPrompt: normalizedCustomPrompt.trim(),
+            applyStrategyPreset: false
+          });
+          _ctx.summaryCustomPromptDraft = null;
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast(outOfRange ? '部分参数超出安全范围，已自动修正并保存' : '摘要设置已保存');
+        } catch (_) {
+          _ctx.summaryCustomPromptDraft = rawCustomPrompt;
+          if (promptHintEl) {
+            promptHintEl.classList.add('is-error');
+            promptHintEl.textContent = '保存失败，已保留当前输入，请稍后重试';
+          }
+          notifyToast('保存摘要设置失败，已保留当前输入，请稍后重试');
+        }
       });
     }
 
@@ -4438,6 +4557,26 @@
     renderCurrentView();
   }
 
+  // ===== 视图 4B：世界书管理（基础入口与空状态） =====
+  function renderWorldBooksHtml() {
+    return (
+      '<div class="aiw-st-topbar">' +
+        '<button type="button" class="aiw-circle-btn" id="aiw-st-sub-back" aria-label="返回设置">' +
+          '<i class="fa-solid fa-arrow-left"></i>' +
+        '</button>' +
+        '<div class="aiw-st-topbar-title">世界书</div>' +
+        '<div class="aiw-st-topbar-spacer"></div>' +
+      '</div>' +
+
+      '<div class="aiw-st-scroll">' +
+        '<div class="aiw-preset-empty">' +
+          '<div class="aiw-preset-empty-icon"><i class="fa-solid fa-book-open"></i></div>' +
+          '<div class="aiw-preset-empty-title">还没有世界书</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
   function renderCurrentView() {
     var layer = getLayer();
     if (!layer) return;
@@ -4458,6 +4597,8 @@
     } else if (view === 'preset-editor') {
       layer.innerHTML = renderPresetEditorHtml();
       bindPresetEditorEvents(layer);
+    } else if (view === 'worldbooks') {
+      layer.innerHTML = renderWorldBooksHtml();
     } else if (view === 'memory') {
       layer.innerHTML = renderMemoryPageHtml();
       bindMemoryPageEvents(layer);
