@@ -36,6 +36,7 @@
     messages: [],
     selectedModel: '',
     activePreset: null,
+    explicitNoPreset: false,
     presets: [],
     worldbooks: [],
     effectiveWorldBooks: [],
@@ -362,12 +363,18 @@
   }
 
   function resolveEffectivePresetForState() {
-    if (_state.activeChat && _state.activeChat.presetSnapshot) {
-      return _state.activeChat.presetSnapshot;
+    if (_state.activeChat) {
+      if (_state.activeChat.presetSnapshot) {
+        return _state.activeChat.presetSnapshot;
+      }
+      if (_state.activeChat.presetId) {
+        var matched = (_state.presets || []).find(function(p) { return p.id === _state.activeChat.presetId; });
+        if (matched) return matched;
+      }
+      return null;
     }
-    if (_state.activeChat && _state.activeChat.presetId) {
-      var matched = (_state.presets || []).find(function(p) { return p.id === _state.activeChat.presetId; });
-      if (matched) return matched;
+    if (_state.explicitNoPreset) {
+      return null;
     }
     if (_state.activePreset) return _state.activePreset;
     if (_state.general && _state.general.autoUseDefaultPreset === false) {
@@ -720,9 +727,9 @@
           _state.defaultPreset = nextState.presets.find(function(p) { return p.isDefault; }) || nextState.presets[0] || null;
           if (_state.activePreset && _state.activePreset.id) {
             var refreshedActive = nextState.presets.find(function(p) { return p && p.id === _state.activePreset.id; });
-            if (refreshedActive) _state.activePreset = refreshedActive;
+            _state.activePreset = refreshedActive || null;
           }
-          if (!_state.activeChat) {
+          if (!_state.activeChat && !_state.explicitNoPreset && !_state.activePreset) {
             _state.activePreset = (!_state.general || _state.general.autoUseDefaultPreset !== false)
               ? _state.defaultPreset
               : null;
@@ -970,6 +977,7 @@
         var pid = btn.getAttribute('data-pick-preset');
         var chosen = pid === '__none__' ? null : list.find(function(p) { return p.id === pid; }) || null;
         _state.activePreset = chosen;
+        _state.explicitNoPreset = (pid === '__none__');
 
         if (_state.activeChat && S()) {
           _state.activeChat = await S().saveChat({
@@ -1084,6 +1092,10 @@
           _state.activeChatId = null;
           _state.activeChat = null;
           _state.messages = [];
+          _state.explicitNoPreset = false;
+          _state.activePreset = (!_state.general || _state.general.autoUseDefaultPreset !== false)
+            ? _state.defaultPreset
+            : null;
           await refreshEffectiveApi();
           syncContextStrip(page);
           updateMainStage(page);
@@ -1151,6 +1163,13 @@
         _state.activeChatId = loaded.id;
         _state.activeChat = loaded;
         _state.messages = Array.isArray(loaded.messages) ? loaded.messages.slice() : [];
+        if (loaded.presetId || loaded.presetSnapshot) {
+          _state.explicitNoPreset = false;
+          _state.activePreset = (_state.presets || []).find(function(p) { return p && p.id === loaded.presetId; }) || loaded.presetSnapshot || null;
+        } else {
+          _state.explicitNoPreset = true;
+          _state.activePreset = null;
+        }
         if (loaded.model) {
           _state.selectedModel = loaded.model;
           if (S()) await S().saveSelectedModel(loaded.model);
@@ -1546,7 +1565,7 @@
         var presetForWorldBook = resolveLatestPresetForWorldBooks();
         var wbMatchRes = await AI().matchWorldBooksForReply({
           preset: presetForWorldBook,
-          messages: historyBeforeTurn,
+          messages: memContext.useShortTermHistory ? historyBeforeTurn : [],
           userInput: userText
         });
         if (wbMatchRes && Array.isArray(wbMatchRes.matchedEntries)) {
@@ -1861,6 +1880,7 @@
     _state.activeChatId = null;
     _state.activeChat = null;
     _state.messages = [];
+    _state.explicitNoPreset = false;
     if (!_state.general || _state.general.autoUseDefaultPreset !== false) {
       _state.activePreset = _state.defaultPreset;
     } else {
@@ -2054,10 +2074,18 @@
       if (refreshedChat) {
         _state.activeChat = refreshedChat;
         _state.messages = refreshedChat.messages.slice();
+        if (refreshedChat.presetId || refreshedChat.presetSnapshot) {
+          _state.explicitNoPreset = false;
+          _state.activePreset = (_state.presets || []).find(function(p) { return p && p.id === refreshedChat.presetId; }) || refreshedChat.presetSnapshot || null;
+        } else {
+          _state.explicitNoPreset = true;
+          _state.activePreset = null;
+        }
       } else {
         _state.activeChatId = null;
         _state.activeChat = null;
         _state.messages = [];
+        _state.explicitNoPreset = false;
       }
       await refreshEffectiveApi();
     }

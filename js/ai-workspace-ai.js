@@ -376,23 +376,68 @@
 
     if (!uniqueEntries.length) return '';
 
+    var fullPreamble =
+      '【世界书背景设定（静态设定参考，非真实发生的对话）】\n' +
+      '以下内容为当前生效的世界书设定资料（已按优先级排序），仅用于提供世界观、人物、地点与规则等背景参考，切勿将其误认为用户刚刚说过的话或已经真实发生过的对话事件；若与系统规则或用户当前明确指令冲突，以系统规则和用户当前指令为准：\n';
+    var compactPreamble = '【世界书背景设定】\n';
+    var preamble = (maxTotal >= fullPreamble.length + 120)
+      ? fullPreamble
+      : (maxTotal >= compactPreamble.length + 40 ? compactPreamble : '');
+
+    var truncTag = '…（超出长度上限，已截断）';
+    var maxFooterChars = ('\n\n（注：为控制上下文长度，另有 ' + String(uniqueEntries.length) + ' 条较低优先级世界书词条未注入）').length;
+    var noFooterBudget = Math.max(0, maxTotal - preamble.length);
+    var withFooterBudget = Math.max(0, maxTotal - preamble.length - maxFooterChars);
+
     var defaultSingleLimit = uniqueEntries.length > 1
-      ? Math.min(WORLDBOOK_MAX_SINGLE_ENTRY_CHARS, maxTotal)
-      : maxTotal;
+      ? Math.min(WORLDBOOK_MAX_SINGLE_ENTRY_CHARS, noFooterBudget)
+      : noFooterBudget;
     var singleLimit = (Number.isFinite(Number(opts.maxSingleEntryChars)) && Number(opts.maxSingleEntryChars) > 0)
-      ? Math.min(Math.floor(Number(opts.maxSingleEntryChars)), maxTotal)
+      ? Math.min(Math.floor(Number(opts.maxSingleEntryChars)), noFooterBudget)
       : defaultSingleLimit;
+
+    // 检查是否所有词条无需任何截断即可直接放入 noFooterBudget
+    var rawFullBlocks = [];
+    var rawFullLen = 0;
+    var fitsWithoutAnyTruncation = true;
+    for (var k = 0; k < uniqueEntries.length; k++) {
+      var e0 = uniqueEntries[k];
+      var hp0 = [];
+      if (e0.comment) hp0.push('[' + e0.comment + ']');
+      if (e0.bookName) hp0.push('（世界书：' + e0.bookName + '）');
+      var hl0 = hp0.length ? ('- ' + hp0.join('')) : '- [世界书设定]';
+      if (e0.content.length > singleLimit) {
+        fitsWithoutAnyTruncation = false;
+        break;
+      }
+      var sep0 = rawFullBlocks.length > 0 ? 2 : 0;
+      var bt0 = hl0 + '\n' + e0.content;
+      rawFullLen += sep0 + bt0.length;
+      if (rawFullLen > noFooterBudget) {
+        fitsWithoutAnyTruncation = false;
+        break;
+      }
+      rawFullBlocks.push(bt0);
+    }
+
+    if (fitsWithoutAnyTruncation && rawFullBlocks.length > 0) {
+      return preamble + rawFullBlocks.join('\n\n');
+    }
+
+    // 需要截断或省略时，严格预留 preamble + footerNote 预算，保证整段注入长度 <= maxTotal
+    var bodyBudget = withFooterBudget >= 60 ? withFooterBudget : noFooterBudget;
+    var allowFooter = withFooterBudget >= 60;
+    var effectiveSingleLimit = Math.min(singleLimit, bodyBudget);
 
     var blocks = [];
     var usedChars = 0;
     var truncatedAny = false;
     var omittedCount = 0;
-    var truncTag = '…（超出长度上限，已截断）';
 
     for (var j = 0; j < uniqueEntries.length; j++) {
       var entry = uniqueEntries[j];
-      var remaining = maxTotal - usedChars;
-      if (remaining < 80) {
+      var remaining = bodyBudget - usedChars;
+      if (remaining < 40) {
         omittedCount = uniqueEntries.length - j;
         truncatedAny = true;
         break;
@@ -404,18 +449,29 @@
       var headerLine = headerParts.length ? ('- ' + headerParts.join('')) : '- [世界书设定]';
       var sepCost = blocks.length > 0 ? 2 : 0;
       var overhead = sepCost + headerLine.length + 1;
-      var allowedContentChars = Math.min(singleLimit, remaining - overhead);
+      var allowedContentChars = Math.min(effectiveSingleLimit, remaining - overhead);
 
-      if (allowedContentChars < 40) {
-        omittedCount = uniqueEntries.length - j;
-        truncatedAny = true;
-        break;
+      if (allowedContentChars < 24) {
+        if (blocks.length === 0 && remaining - sepCost >= 20) {
+          headerLine = '- [世界书设定]';
+          overhead = sepCost + headerLine.length + 1;
+          allowedContentChars = Math.min(effectiveSingleLimit, remaining - overhead);
+        }
+        if (allowedContentChars < 16) {
+          omittedCount = uniqueEntries.length - j;
+          truncatedAny = true;
+          break;
+        }
       }
 
       var bodyText = entry.content;
       if (bodyText.length > allowedContentChars) {
-        var sliceBudget = Math.max(20, allowedContentChars - truncTag.length);
-        bodyText = safeSlicePromptText(bodyText, sliceBudget) + truncTag;
+        if (allowedContentChars > truncTag.length + 4) {
+          var sliceBudget = allowedContentChars - truncTag.length;
+          bodyText = safeSlicePromptText(bodyText, sliceBudget) + truncTag;
+        } else {
+          bodyText = safeSlicePromptText(bodyText, allowedContentChars);
+        }
         truncatedAny = true;
       }
 
@@ -424,21 +480,25 @@
       usedChars += sepCost + blockText.length;
     }
 
-    if (!blocks.length) return '';
-
-    var footerNote = '';
-    if (omittedCount > 0) {
-      footerNote = '\n\n（注：为控制上下文长度，另有 ' + omittedCount + ' 条较低优先级世界书词条未注入）';
-    } else if (truncatedAny) {
-      footerNote = '\n\n（注：部分较长世界书设定已按长度上限截断）';
+    if (!blocks.length) {
+      var fallbackContent = safeSlicePromptText(uniqueEntries[0].content, Math.max(0, maxTotal - preamble.length));
+      return fallbackContent ? (preamble + fallbackContent) : '';
     }
 
-    return (
-      '【世界书背景设定（静态设定参考，非真实发生的对话）】\n' +
-      '以下内容为当前生效的世界书设定资料（已按优先级排序），仅用于提供世界观、人物、地点与规则等背景参考，切勿将其误认为用户刚刚说过的话或已经真实发生过的对话事件；若与系统规则或用户当前明确指令冲突，以系统规则和用户当前指令为准：\n' +
-      blocks.join('\n\n') +
-      footerNote
-    );
+    var footerNote = '';
+    if (allowFooter) {
+      if (omittedCount > 0) {
+        footerNote = '\n\n（注：为控制上下文长度，另有 ' + omittedCount + ' 条较低优先级世界书词条未注入）';
+      } else if (truncatedAny) {
+        footerNote = '\n\n（注：部分较长世界书设定已按长度上限截断）';
+      }
+    }
+
+    var result = preamble + blocks.join('\n\n') + footerNote;
+    if (result.length > maxTotal) {
+      result = safeSlicePromptText(result, maxTotal);
+    }
+    return result;
   }
 
   // ===== 提示词组装引擎（严格顺序：1.基础系统规则 -> 2.个性化设置 -> 3.当前预设 -> 3.5.世界书背景设定 -> 4.相关长期记忆 -> 5.跨窗口历史参考 -> 6.当前对话摘要 -> 7.近期原始消息 -> 8.当前用户输入） =====

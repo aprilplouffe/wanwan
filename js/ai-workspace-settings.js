@@ -1030,7 +1030,7 @@
     for (var bi = 0; bi < boundIds.length; bi++) {
       boundSet[boundIds[bi]] = true;
     }
-    var globalWbCount = wbList.filter(function(wb) { return wb && wb.globalEnabled === true; }).length;
+    var globalWbCount = wbList.filter(function(wb) { return wb && wb.enabled !== false && wb.globalEnabled === true; }).length;
 
     var wbChecklistHtml = wbList.length
       ? (
@@ -1038,18 +1038,20 @@
           wbList.map(function(wb) {
             var checked = !!boundSet[wb.id];
             var entryCount = Array.isArray(wb.entries) ? wb.entries.length : 0;
+            var isEnabled = wb.enabled !== false;
             var isGlobal = wb.globalEnabled === true;
             var subParts = ['词条 ' + entryCount + ' 条'];
             if (wb.description && String(wb.description).trim()) {
               subParts.push(String(wb.description).trim());
             }
             return (
-              '<label class="aiw-pe-wb-item' + (checked ? ' is-checked' : '') + '">' +
+              '<label class="aiw-pe-wb-item' + (checked ? ' is-checked' : '') + (isEnabled ? '' : ' is-disabled') + '">' +
                 '<input type="checkbox" class="aiw-pe-wb-checkbox" data-pe-wb-id="' + escapeHtml(wb.id) + '"' + (checked ? ' checked' : '') + '>' +
                 '<span class="aiw-pe-wb-check-box" aria-hidden="true"><i class="fa-solid fa-check"></i></span>' +
                 '<div class="aiw-pe-wb-info">' +
                   '<div class="aiw-pe-wb-title-row">' +
                     '<span class="aiw-pe-wb-name">' + escapeHtml(wb.name || '未命名世界书') + '</span>' +
+                    (!isEnabled ? '<span class="aiw-wbe-badge is-disabled">已停用</span>' : '') +
                     (isGlobal ? '<span class="aiw-wbe-badge is-global"><i class="fa-solid fa-globe"></i> 全局启用</span>' : '') +
                   '</div>' +
                   '<div class="aiw-pe-wb-sub">' + escapeHtml(subParts.join(' · ')) + '</div>' +
@@ -4726,33 +4728,40 @@
   // ===== 视图 4B：世界书管理（创建、列表展示、修改名称与简介、删除确认） =====
   function renderWorldBooksHtml() {
     var list = Array.isArray(_ctx.worldbooks) ? _ctx.worldbooks : [];
-    var globalCount = list.filter(function(wb) { return wb && wb.globalEnabled === true; }).length;
+    var enabledCount = list.filter(function(wb) { return wb && wb.enabled !== false; }).length;
+    var globalCount = list.filter(function(wb) { return wb && wb.enabled !== false && wb.globalEnabled === true; }).length;
 
     var cardsHtml = list.length
       ? list.map(function(wb) {
           var entryCount = Array.isArray(wb.entries) ? wb.entries.length : 0;
           var descText = String(wb.description || '').trim() || '暂无简介';
+          var isEnabled = wb.enabled !== false;
           var isGlobal = wb.globalEnabled === true;
           return (
-            '<div class="aiw-preset-card' + (isGlobal ? ' is-wb-global' : '') + '" data-wb-card="' + escapeHtml(wb.id) + '" style="cursor:pointer;">' +
-              '<div class="aiw-preset-top" data-wb-open="' + escapeHtml(wb.id) + '">' +
+            '<div class="aiw-preset-card' + (isEnabled && isGlobal ? ' is-wb-global' : '') + (isEnabled ? '' : ' is-wb-disabled') + '" data-wb-card="' + escapeHtml(wb.id) + '" style="cursor:pointer;">' +
+              '<div class="aiw-preset-top aiw-wbe-card-head" data-wb-open="' + escapeHtml(wb.id) + '">' +
                 '<span class="aiw-preset-avatar"><i class="fa-solid fa-book-open"></i></span>' +
                 '<div class="aiw-preset-meta">' +
                   '<div class="aiw-preset-title-row">' +
                     '<span class="aiw-preset-name">' + escapeHtml(wb.name || '未命名世界书') + '</span>' +
+                    '<span class="aiw-wbe-badge ' + (isEnabled ? 'is-enabled' : 'is-disabled') + '">' + (isEnabled ? '已启用' : '已停用') + '</span>' +
                     (isGlobal ? '<span class="aiw-wbe-badge is-global"><i class="fa-solid fa-globe"></i> 全局启用</span>' : '') +
                   '</div>' +
                   '<div class="aiw-preset-desc">' + escapeHtml(descText) + '</div>' +
                 '</div>' +
+                '<label class="aiw-switch aiw-wbe-card-switch aiw-wb-enable-switch" title="' + (isEnabled ? '已启用世界书，点击停用' : '已停用世界书，点击启用') + '">' +
+                  '<input type="checkbox" data-wb-enabled-toggle="' + escapeHtml(wb.id) + '"' + (isEnabled ? ' checked' : '') + '>' +
+                  '<span class="aiw-switch-track"></span>' +
+                '</label>' +
               '</div>' +
               '<div class="aiw-preset-tags" data-wb-open="' + escapeHtml(wb.id) + '">' +
                 '<span class="aiw-preset-tag">词条：' + escapeHtml(String(entryCount)) + ' 条</span>' +
-                '<span class="aiw-preset-tag' + (isGlobal ? ' is-wb-global-tag' : '') + '">' + (isGlobal ? '范围：全局通用' : '范围：按预设绑定') + '</span>' +
+                '<span class="aiw-preset-tag' + (isEnabled && isGlobal ? ' is-wb-global-tag' : '') + '">' + (isGlobal ? '范围：全局通用' : '范围：按预设绑定') + '</span>' +
               '</div>' +
               '<div class="aiw-wb-global-row">' +
                 '<div class="aiw-wb-global-info">' +
                   '<span class="aiw-wb-global-label">全局启用</span>' +
-                  '<span class="aiw-wb-global-hint">' + (isGlobal ? '所有聊天通用生效' : '关闭后仍可由预设单独绑定') + '</span>' +
+                  '<span class="aiw-wb-global-hint">' + (!isEnabled ? '当前世界书已停用，启用后才会参与回复' : (isGlobal ? '所有聊天通用生效' : '关闭后仍可由预设单独绑定')) + '</span>' +
                 '</div>' +
                 '<label class="aiw-switch" title="' + (isGlobal ? '已全局启用，点击关闭' : '未全局启用，点击开启') + '">' +
                   '<input type="checkbox" data-wb-global-toggle="' + escapeHtml(wb.id) + '"' + (isGlobal ? ' checked' : '') + '>' +
@@ -4800,7 +4809,7 @@
       '<div class="aiw-st-scroll">' +
         '<input type="file" id="aiw-wb-import-file" accept=".json,.txt,.docx,.doc,application/json,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword" style="display:none;">' +
         '<div class="aiw-pr-toolbar">' +
-          '<span class="aiw-pr-count">共 ' + escapeHtml(String(list.length)) + ' 本世界书 · 全局启用 ' + escapeHtml(String(globalCount)) + ' 本</span>' +
+          '<span class="aiw-pr-count">共 ' + escapeHtml(String(list.length)) + ' 本 · 已启用 ' + escapeHtml(String(enabledCount)) + ' 本 · 全局 ' + escapeHtml(String(globalCount)) + ' 本</span>' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
             '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-wb-import-btn">' +
               '<i class="fa-solid fa-file-import"></i> 导入世界书' +
@@ -5020,6 +5029,45 @@
       });
     }
 
+    layer.querySelectorAll('.aiw-wb-enable-switch').forEach(function(sw) {
+      sw.addEventListener('click', function(e) {
+        if (e && e.stopPropagation) e.stopPropagation();
+      });
+    });
+
+    layer.querySelectorAll('[data-wb-enabled-toggle]').forEach(function(input) {
+      input.addEventListener('change', async function(e) {
+        if (e && e.stopPropagation) e.stopPropagation();
+        var wbId = input.getAttribute('data-wb-enabled-toggle');
+        if (!wbId) return;
+        var nextEnabled = !!input.checked;
+        var store = S();
+        if (!store) {
+          input.checked = !nextEnabled;
+          notifyToast('当前无法更新世界书启用状态');
+          return;
+        }
+        var targetBook = (_ctx.worldbooks || []).find(function(item) { return item && item.id === wbId; });
+        try {
+          if (typeof store.setWorldBookEnabled === 'function') {
+            await store.setWorldBookEnabled(wbId, nextEnabled);
+          } else if (typeof store.updateWorldBook === 'function') {
+            await store.updateWorldBook(wbId, { enabled: nextEnabled });
+          } else {
+            throw new Error('UNSUPPORTED');
+          }
+          _ctx.worldbooks = typeof store.listWorldBooks === 'function' ? await store.listWorldBooks() : [];
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          var bookLabel = (targetBook && targetBook.name) ? ('「' + targetBook.name + '」') : '该世界书';
+          notifyToast(nextEnabled ? ('已启用世界书 ' + bookLabel) : ('已停用世界书 ' + bookLabel));
+        } catch (_) {
+          input.checked = !nextEnabled;
+          notifyToast('更新世界书启用状态失败，请稍后重试');
+        }
+      });
+    });
+
     layer.querySelectorAll('.aiw-wb-global-row').forEach(function(row) {
       row.addEventListener('click', function(e) {
         if (e && e.stopPropagation) e.stopPropagation();
@@ -5219,6 +5267,9 @@
       '</div>' +
 
       '<div class="aiw-st-scroll">' +
+        (book.enabled === false
+          ? '<div class="aiw-pe-wb-note" style="margin:0 0 10px;padding:8px 10px;border-radius:10px;border:1px solid var(--aiw-border);background:var(--aiw-surface);">当前世界书已停用，其词条暂不参与 AI 对话回复；返回世界书列表开启后生效。</div>'
+          : '') +
         '<div class="aiw-pr-toolbar">' +
           '<span class="aiw-pr-count">共 ' + escapeHtml(String(entries.length)) + ' 条词条 · 已启用 ' + escapeHtml(String(enabledCount)) + ' 条' + (book.description ? (' · ' + escapeHtml(book.description.slice(0, 20)) + (book.description.length > 20 ? '…' : '')) : '') + '</span>' +
         '</div>' +

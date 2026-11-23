@@ -4142,7 +4142,11 @@
 }
 
 .aiw-preset-card.is-wbe-disabled .aiw-preset-meta,
-.aiw-preset-card.is-wbe-disabled .aiw-preset-tags {
+.aiw-preset-card.is-wbe-disabled .aiw-preset-tags,
+.aiw-preset-card.is-wb-disabled .aiw-preset-meta,
+.aiw-preset-card.is-wb-disabled .aiw-preset-tags,
+.aiw-preset-card.is-wb-disabled .aiw-wb-global-row,
+.aiw-pe-wb-item.is-disabled .aiw-pe-wb-info {
   opacity: 0.62;
 }
 

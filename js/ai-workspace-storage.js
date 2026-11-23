@@ -1850,6 +1850,20 @@
     return true;
   }
 
+  async function setWorldBookEnabled(id, enabled) {
+    if (!id) return null;
+    var existing = await getWorldBook(id);
+    if (!existing) return null;
+    var next = normalizeWorldBookRecord(Object.assign({}, existing, {
+      id: existing.id,
+      enabled: enabled !== false,
+      createdAt: existing.createdAt,
+      updatedAt: existing.updatedAt
+    }), existing.id);
+    await dbPutConfig(KEYS.WORLDBOOK_PREFIX + next.id, next);
+    return next;
+  }
+
   async function setWorldBookGlobalEnabled(id, globalEnabled) {
     if (!id) return null;
     var existing = await getWorldBook(id);
@@ -1867,7 +1881,7 @@
   async function listGlobalWorldBooks() {
     var list = await listWorldBooks();
     return list.filter(function(item) {
-      return item && item.globalEnabled === true;
+      return item && item.enabled !== false && item.globalEnabled === true;
     });
   }
 
@@ -1878,6 +1892,7 @@
     for (var i = 0; i < booksList.length; i++) {
       var wb = booksList[i];
       if (!wb || !wb.id) continue;
+      if (wb.enabled === false) continue;
       byId[wb.id] = wb;
       if (wb.globalEnabled === true) {
         globalBooks.push(wb);
@@ -1946,6 +1961,7 @@
       var startIdx = Math.max(0, messages.length - scanDepth);
       for (var i = startIdx; i < messages.length; i++) {
         var msg = messages[i];
+        if (msg && typeof msg === 'object' && msg.role === 'system') continue;
         var msgText = typeof msg === 'string'
           ? msg
           : (msg && msg.content != null ? String(msg.content) : '');
@@ -2135,6 +2151,10 @@
     var preset = null;
     if (opts.preset && typeof opts.preset === 'object') {
       preset = opts.preset;
+      if (preset.id && !Array.isArray(preset.worldBookIds)) {
+        var latestPreset = await getPreset(String(preset.id).trim());
+        if (latestPreset) preset = latestPreset;
+      }
     } else if (typeof opts.presetId === 'string' && opts.presetId.trim()) {
       preset = await getPreset(opts.presetId.trim());
     }
@@ -2172,7 +2192,10 @@
     var idx = entries.findIndex(function(item) { return item && item.id === entryId; });
     if (idx === -1) return null;
     var existing = entries[idx];
-    var p = patch && typeof patch === 'object' ? patch : {};
+    var p = patch && typeof patch === 'object' ? Object.assign({}, patch) : {};
+    if (typeof p.disable !== 'boolean' && typeof p.enabled === 'boolean') {
+      p.disable = !p.enabled;
+    }
     var nextEntry = normalizeWorldBookEntry(Object.assign({}, existing, p, {
       id: existing.id,
       createdAt: existing.createdAt,
@@ -3218,6 +3241,7 @@
     getWorldBook: getWorldBook,
     createWorldBook: createWorldBook,
     updateWorldBook: updateWorldBook,
+    setWorldBookEnabled: setWorldBookEnabled,
     setWorldBookGlobalEnabled: setWorldBookGlobalEnabled,
     deleteWorldBook: deleteWorldBook,
     normalizeWorldBookIdList: normalizeWorldBookIdList,
