@@ -79,7 +79,11 @@
     expiredPreview: null,
     expiredArchiveRunning: false,
     expiredArchiveResult: null,
-    expiredPreviewEpoch: 0
+    expiredPreviewEpoch: 0,
+    favorites: [],
+    favoritesSearchQuery: '',
+    favoritesRoleFilter: 'all',
+    onNavigateToChatMessage: null
   };
 
   function S() {
@@ -239,7 +243,8 @@
       typeof store.getSummaryApiConfig === 'function'
         ? store.getSummaryApiConfig()
         : Promise.resolve({ baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false }),
-      typeof store.listWorldBooks === 'function' ? store.listWorldBooks() : Promise.resolve([])
+      typeof store.listWorldBooks === 'function' ? store.listWorldBooks() : Promise.resolve([]),
+      typeof store.listFavorites === 'function' ? store.listFavorites() : Promise.resolve([])
     ]);
     _ctx.profile = results[0];
     _ctx.personalization = results[1];
@@ -254,6 +259,7 @@
     _ctx.chats = results[9] || [];
     _ctx.summaryApiConfig = results[10] || { baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false };
     _ctx.worldbooks = results[11] || [];
+    _ctx.favorites = results[12] || [];
     if (AI() && typeof AI().resolveEffectiveApiConfig === 'function') {
       _ctx.effectiveApi = await AI().resolveEffectiveApiConfig();
     }
@@ -272,7 +278,8 @@
         memorySettings: _ctx.memorySettings,
         memories: _ctx.memories,
         worldbooks: _ctx.worldbooks,
-        chats: _ctx.chats
+        chats: _ctx.chats,
+        favorites: _ctx.favorites
       });
     }
   }
@@ -365,6 +372,8 @@
     var memorySummary = anyMemoryActive ? (memCount + ' 条') : '已关闭';
     var wbCount = (_ctx.worldbooks || []).length;
     var wbSummary = wbCount ? (wbCount + ' 本') : '暂无';
+    var favCount = (_ctx.favorites || []).length;
+    var favSummary = favCount ? (favCount + ' 条') : '暂无';
 
     return (
       '<div class="aiw-st-topbar">' +
@@ -419,6 +428,12 @@
             '<span class="aiw-st-row-icon"><i class="fa-regular fa-bookmark"></i></span>' +
             '<span class="aiw-st-row-label">记忆</span>' +
             '<span class="aiw-st-row-val">' + escapeHtml(memorySummary) + '</span>' +
+            '<span class="aiw-st-row-arrow"><i class="fa-solid fa-angle-right"></i></span>' +
+          '</button>' +
+          '<button type="button" class="aiw-st-row" data-st-nav="favorites">' +
+            '<span class="aiw-st-row-icon"><i class="fa-regular fa-star"></i></span>' +
+            '<span class="aiw-st-row-label">我的收藏</span>' +
+            '<span class="aiw-st-row-val">' + escapeHtml(favSummary) + '</span>' +
             '<span class="aiw-st-row-arrow"><i class="fa-solid fa-angle-right"></i></span>' +
           '</button>' +
           '<button type="button" class="aiw-st-row" data-st-action="plugins-entry">' +
@@ -1548,6 +1563,7 @@
     if (res && res.mode === 'overwrite') {
       return '已完成覆盖恢复（' +
         (s.chatsAdded || 0) + ' 个对话 / ' +
+        (s.favoritesAdded || 0) + ' 条收藏 / ' +
         (s.memoriesAdded || 0) + ' 条记忆 / ' +
         (s.presetsAdded || 0) + ' 个预设 / ' +
         (s.worldbooksAdded || 0) + ' 本世界书）';
@@ -1556,6 +1572,7 @@
     if (s.chatsAdded) parts.push('新增对话 ' + s.chatsAdded);
     if (s.chatsMerged) parts.push('合并对话 ' + s.chatsMerged);
     if (s.messagesAdded) parts.push('新增消息 ' + s.messagesAdded);
+    if (s.favoritesAdded) parts.push('新增收藏 ' + s.favoritesAdded);
     if (s.memoriesAdded) parts.push('新增记忆 ' + s.memoriesAdded);
     if (s.presetsAdded) parts.push('新增预设 ' + s.presetsAdded);
     if (s.worldbooksAdded) parts.push('新增世界书 ' + s.worldbooksAdded);
@@ -1663,6 +1680,7 @@
       var versionText = parsed.isLegacyBackup ? 'v1 旧版备份' : ('v' + parsed.version + ' 完整备份');
       var countParts = [
         '对话 ' + (sum.chatsCount || 0) + ' 个（' + (sum.messagesCount || 0) + ' 条消息）',
+        '收藏 ' + (sum.favoritesCount || 0) + ' 条',
         '记忆 ' + (sum.memoriesCount || 0) + ' 条',
         '预设 ' + (sum.presetsCount || 0) + ' 个',
         '世界书 ' + (sum.worldbooksCount || 0) + ' 本（' + (sum.worldbookEntriesCount || 0) + ' 条词条）'
@@ -5759,6 +5777,234 @@
     });
   }
 
+  // ===== 视图 8：我的收藏中心 =====
+  function formatFavoriteTime(ts) {
+    var n = Number(ts) || 0;
+    if (!n) return '';
+    var d = new Date(n);
+    if (isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' +
+      String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0') + ' ' +
+      String(d.getHours()).padStart(2, '0') + ':' +
+      String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function getFilteredFavorites() {
+    var list = Array.isArray(_ctx.favorites) ? _ctx.favorites : [];
+    var roleFilter = _ctx.favoritesRoleFilter || 'all';
+    var q = String(_ctx.favoritesSearchQuery || '').trim().toLowerCase();
+    var chatMap = {};
+    (_ctx.chats || []).forEach(function(c) {
+      if (c && c.id) chatMap[c.id] = c;
+    });
+    return list.filter(function(item) {
+      if (!item) return false;
+      if (roleFilter === 'assistant' && item.role !== 'assistant') return false;
+      if (roleFilter === 'user' && item.role !== 'user') return false;
+      if (!q) return true;
+      var liveChat = item.chatId ? chatMap[item.chatId] : null;
+      var sourceTitle = (liveChat && liveChat.title) || item.chatTitle || '';
+      return String(item.content || '').toLowerCase().indexOf(q) !== -1 ||
+        sourceTitle.toLowerCase().indexOf(q) !== -1 ||
+        String(item.model || '').toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  function renderFavoritesListCardsHtml(filtered) {
+    var allList = Array.isArray(_ctx.favorites) ? _ctx.favorites : [];
+    if (!allList.length) {
+      return (
+        '<div class="aiw-fav-empty">' +
+          '<div class="aiw-fav-empty-icon"><i class="fa-regular fa-star"></i></div>' +
+          '<div class="aiw-fav-empty-title">还没有收藏消息</div>' +
+          '<div class="aiw-fav-empty-desc">在聊天中点击任意消息的「⋯」菜单并选择「添加收藏」，即可把重要内容集中保存到这里。</div>' +
+        '</div>'
+      );
+    }
+    if (!filtered.length) {
+      return (
+        '<div class="aiw-fav-empty">' +
+          '<div class="aiw-fav-empty-title">未找到匹配的收藏</div>' +
+          '<div class="aiw-fav-empty-desc">尝试更换搜索关键词或切换筛选标签。</div>' +
+          '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-fav-reset-filter">清空筛选条件</button>' +
+        '</div>'
+      );
+    }
+    var chatMap = {};
+    (_ctx.chats || []).forEach(function(c) {
+      if (c && c.id) chatMap[c.id] = c;
+    });
+    return filtered.map(function(item) {
+      var liveChat = item.chatId ? chatMap[item.chatId] : null;
+      var sourceTitle = (liveChat && liveChat.title) || item.chatTitle || '未知对话';
+      var chatMissing = item.chatId && !liveChat;
+      var roleLabel = item.role === 'user' ? '我的消息' : '知屿回复';
+      var roleCls = item.role === 'user' ? 'is-user' : 'is-assistant';
+      var timeText = formatFavoriteTime(item.createdAt || item.messageCreatedAt);
+      var rawContent = String(item.content || '');
+      var previewText = rawContent.length > 360 ? (rawContent.slice(0, 360) + '…') : rawContent;
+
+      return (
+        '<div class="aiw-fav-card" data-fav-id="' + escapeHtml(item.id) + '">' +
+          '<div class="aiw-fav-card-head">' +
+            '<span class="aiw-fav-role-tag ' + roleCls + '">' + escapeHtml(roleLabel) + '</span>' +
+            '<span class="aiw-fav-source" title="' + escapeHtml(sourceTitle) + '">' +
+              '<i class="fa-regular fa-comment-dots"></i> ' + escapeHtml(sourceTitle) +
+              (chatMissing ? ' <span class="aiw-fav-missing-tag">(原对话已删除)</span>' : '') +
+            '</span>' +
+            (timeText ? '<span class="aiw-fav-time">' + escapeHtml(timeText) + '</span>' : '') +
+          '</div>' +
+          '<div class="aiw-fav-card-body" data-fav-jump="' + escapeHtml(item.id) + '" role="button" tabindex="0" title="点击跳转原聊天并定位消息">' +
+            escapeHtml(previewText) +
+          '</div>' +
+          '<div class="aiw-fav-card-foot">' +
+            '<button type="button" class="aiw-fav-act-btn is-jump" data-fav-jump="' + escapeHtml(item.id) + '">' +
+              '<i class="fa-solid fa-location-crosshairs"></i> 定位原消息' +
+            '</button>' +
+            '<button type="button" class="aiw-fav-act-btn" data-fav-copy="' + escapeHtml(item.id) + '">' +
+              '<i class="fa-regular fa-copy"></i> 复制' +
+            '</button>' +
+            '<button type="button" class="aiw-fav-act-btn is-danger" data-fav-remove="' + escapeHtml(item.id) + '">' +
+              '<i class="fa-solid fa-star"></i> 取消收藏' +
+            '</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function renderFavoritesHtml() {
+    var allList = Array.isArray(_ctx.favorites) ? _ctx.favorites : [];
+    var filtered = getFilteredFavorites();
+    var aiCount = allList.filter(function(it) { return it && it.role === 'assistant'; }).length;
+    var userCount = allList.filter(function(it) { return it && it.role === 'user'; }).length;
+    var filter = _ctx.favoritesRoleFilter || 'all';
+    var q = _ctx.favoritesSearchQuery || '';
+
+    return (
+      '<div class="aiw-st-topbar">' +
+        '<button type="button" class="aiw-circle-btn" id="aiw-st-sub-back" aria-label="返回设置">' +
+          '<i class="fa-solid fa-arrow-left"></i>' +
+        '</button>' +
+        '<div class="aiw-st-topbar-title">我的收藏</div>' +
+        '<div class="aiw-st-topbar-spacer"></div>' +
+      '</div>' +
+
+      '<div class="aiw-st-scroll">' +
+        '<div class="aiw-fav-toolbar">' +
+          '<div class="aiw-fav-search-wrap">' +
+            '<i class="fa-solid fa-magnifying-glass"></i>' +
+            '<input type="search" class="aiw-fav-search-input" id="aiw-fav-search-input" value="' + escapeHtml(q) + '" placeholder="搜索收藏内容或来源对话...">' +
+            '<button type="button" class="aiw-fav-search-clear" id="aiw-fav-search-clear" aria-label="清空搜索"' + (q ? '' : ' hidden') + '><i class="fa-solid fa-xmark"></i></button>' +
+          '</div>' +
+          '<div class="aiw-fav-filter-row">' +
+            '<button type="button" class="aiw-fav-filter-pill' + (filter === 'all' ? ' is-active' : '') + '" data-fav-role="all">全部 (' + allList.length + ')</button>' +
+            '<button type="button" class="aiw-fav-filter-pill' + (filter === 'assistant' ? ' is-active' : '') + '" data-fav-role="assistant">AI 回复 (' + aiCount + ')</button>' +
+            '<button type="button" class="aiw-fav-filter-pill' + (filter === 'user' ? ' is-active' : '') + '" data-fav-role="user">我的消息 (' + userCount + ')</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="aiw-fav-list" id="aiw-fav-list">' +
+          renderFavoritesListCardsHtml(filtered) +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function bindFavoritesItemEvents(layer) {
+    var listEl = layer.querySelector('#aiw-fav-list');
+    if (!listEl) return;
+
+    var resetBtn = listEl.querySelector('#aiw-fav-reset-filter');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function() {
+        _ctx.favoritesSearchQuery = '';
+        _ctx.favoritesRoleFilter = 'all';
+        renderCurrentView();
+      });
+    }
+
+    listEl.querySelectorAll('[data-fav-jump]').forEach(function(el) {
+      var handler = async function() {
+        var favId = el.getAttribute('data-fav-jump');
+        var target = (_ctx.favorites || []).find(function(it) { return it && it.id === favId; });
+        if (!target) return;
+        if (typeof _ctx.onNavigateToChatMessage === 'function') {
+          await _ctx.onNavigateToChatMessage(target);
+        } else {
+          notifyToast('暂无法跳转到原对话');
+        }
+      };
+      el.addEventListener('click', handler);
+      if (el.getAttribute('role') === 'button') {
+        el.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handler();
+          }
+        });
+      }
+    });
+
+    listEl.querySelectorAll('[data-fav-copy]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var favId = btn.getAttribute('data-fav-copy');
+        var target = (_ctx.favorites || []).find(function(it) { return it && it.id === favId; });
+        if (target) copyTextSafely(target.content || '');
+      });
+    });
+
+    listEl.querySelectorAll('[data-fav-remove]').forEach(function(btn) {
+      btn.addEventListener('click', async function(e) {
+        e.stopPropagation();
+        var favId = btn.getAttribute('data-fav-remove');
+        var store = S();
+        if (!store || typeof store.removeFavoriteById !== 'function') return;
+        var res = await store.removeFavoriteById(favId);
+        _ctx.favorites = res.favorites || [];
+        notifyWorkspaceStateChanged();
+        renderCurrentView();
+        notifyToast('已取消收藏');
+      });
+    });
+  }
+
+  function bindFavoritesEvents(layer) {
+    var searchEl = layer.querySelector('#aiw-fav-search-input');
+    var clearBtn = layer.querySelector('#aiw-fav-search-clear');
+
+    function refreshListOnly() {
+      var listEl = layer.querySelector('#aiw-fav-list');
+      if (!listEl) return;
+      listEl.innerHTML = renderFavoritesListCardsHtml(getFilteredFavorites());
+      bindFavoritesItemEvents(layer);
+    }
+
+    if (searchEl) {
+      searchEl.addEventListener('input', function() {
+        _ctx.favoritesSearchQuery = searchEl.value || '';
+        if (clearBtn) clearBtn.hidden = !_ctx.favoritesSearchQuery;
+        refreshListOnly();
+      });
+    }
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function() {
+        _ctx.favoritesSearchQuery = '';
+        renderCurrentView();
+      });
+    }
+
+    layer.querySelectorAll('[data-fav-role]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        _ctx.favoritesRoleFilter = btn.getAttribute('data-fav-role') || 'all';
+        renderCurrentView();
+      });
+    });
+
+    bindFavoritesItemEvents(layer);
+  }
+
   function renderCurrentView() {
     var layer = getLayer();
     if (!layer) return;
@@ -5800,6 +6046,9 @@
     } else if (view === 'memory-diagnostics') {
       layer.innerHTML = renderMemoryDiagnosticsHtml();
       bindMemoryDiagnosticsEvents(layer);
+    } else if (view === 'favorites') {
+      layer.innerHTML = renderFavoritesHtml();
+      bindFavoritesEvents(layer);
     } else if (view === 'general') {
       layer.innerHTML = renderGeneralHtml();
       bindGeneralEvents(layer);
@@ -5857,9 +6106,14 @@
     if (!pageEl || !S()) return;
     _ctx.page = pageEl;
     _ctx.onStateChanged = onStateChanged || null;
+    _ctx.onNavigateToChatMessage = (options && typeof options.onNavigateToChatMessage === 'function')
+      ? options.onNavigateToChatMessage
+      : null;
     _ctx.activeChatId = (options && options.activeChatId) || '';
     _ctx.recentSelectedChatId = _ctx.activeChatId || '';
     _ctx.summarySelectedChatId = _ctx.activeChatId || '';
+    _ctx.favoritesSearchQuery = '';
+    _ctx.favoritesRoleFilter = 'all';
     _ctx.summaryApiPanelOpen = false;
     clearExpiredArchivePreviewState();
 

@@ -25,7 +25,8 @@
     MEMORY_TASKS: 'aiw_memory_tasks',
     DELETED_MEMORY_SIGS: 'aiw_deleted_memory_sigs',
     WORLDBOOK_IDS: 'aiw_worldbook_ids',
-    WORLDBOOK_PREFIX: 'aiw_worldbook:'
+    WORLDBOOK_PREFIX: 'aiw_worldbook:',
+    FAVORITES: 'aiw_favorites'
   };
 
   var MEMORY_STRATEGY_PRESETS = {
@@ -804,10 +805,45 @@
     return clean.slice(0, 22) + '…';
   }
 
+  function normalizeMessageQuote(rawQuote) {
+    if (!rawQuote || typeof rawQuote !== 'object') return null;
+    var qContent = String(rawQuote.content == null ? '' : rawQuote.content).trim();
+    if (!qContent) return null;
+    return {
+      id: String(rawQuote.id || '').trim(),
+      role: rawQuote.role === 'assistant' ? 'assistant' : 'user',
+      content: qContent.slice(0, 600)
+    };
+  }
+
+  function normalizeMessageTranslations(rawTrans) {
+    if (!rawTrans || typeof rawTrans !== 'object' || Array.isArray(rawTrans)) return null;
+    var out = {};
+    var keys = Object.keys(rawTrans);
+    var count = 0;
+    for (var i = 0; i < keys.length && count < 12; i++) {
+      var k = String(keys[i] || '').trim();
+      if (!k || k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      var item = rawTrans[k];
+      if (!item || typeof item !== 'object') continue;
+      var text = String(item.text == null ? '' : item.text).trim();
+      if (!text) continue;
+      out[k] = {
+        lang: String(item.lang || k).trim() || k,
+        langLabel: String(item.langLabel || k).trim() || k,
+        text: text,
+        model: item.model ? String(item.model).trim() : '',
+        updatedAt: Number(item.updatedAt) || 0
+      };
+      count++;
+    }
+    return count > 0 ? out : null;
+  }
+
   function normalizeChatMessage(raw) {
     var src = raw && typeof raw === 'object' ? raw : {};
     var role = src.role === 'assistant' || src.role === 'system' ? src.role : 'user';
-    return {
+    var msg = {
       id: String(src.id || generateMessageId()),
       role: role,
       content: String(src.content == null ? '' : src.content),
@@ -817,6 +853,13 @@
       aborted: !!src.aborted,
       deepThink: !!src.deepThink
     };
+    var quote = normalizeMessageQuote(src.quote);
+    if (quote) msg.quote = quote;
+    var editedAt = Number(src.editedAt);
+    if (Number.isFinite(editedAt) && editedAt > 0) msg.editedAt = editedAt;
+    var translations = normalizeMessageTranslations(src.translations);
+    if (translations) msg.translations = translations;
+    return msg;
   }
 
   function normalizeSummarySegment(raw, idx) {
@@ -861,6 +904,8 @@
       presetId: String(src.presetId || '').trim(),
       presetSnapshot: src.presetSnapshot ? buildPresetSnapshot(src.presetSnapshot) : null,
       projectId: String(src.projectId || '').trim(),
+      branchedFromChatId: String(src.branchedFromChatId || '').trim(),
+      branchedFromMessageId: String(src.branchedFromMessageId || '').trim(),
       summary: String(src.summary || '').trim(),
       summaryLegacyBase: String(src.summaryLegacyBase || '').trim(),
       summarySegments: segments,
@@ -972,6 +1017,176 @@
         return String(m.content || '').toLowerCase().indexOf(q) !== -1;
       });
     });
+  }
+
+  // ===== 9.5 独立消息收藏存储（aiw_favorites，持久化并纳入知屿完整备份） =====
+  function generateFavoriteId() {
+    return 'fav_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  }
+
+  function normalizeFavoriteRecord(raw) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var role = src.role === 'user' ? 'user' : 'assistant';
+    return {
+      id: String(src.id || generateFavoriteId()).trim(),
+      chatId: String(src.chatId || '').trim(),
+      chatTitle: String(src.chatTitle || '未命名对话').trim() || '未命名对话',
+      messageId: String(src.messageId || '').trim(),
+      role: role,
+      content: String(src.content == null ? '' : src.content),
+      model: String(src.model || '').trim(),
+      messageCreatedAt: Number(src.messageCreatedAt) || 0,
+      createdAt: Number(src.createdAt) || Date.now()
+    };
+  }
+
+  function buildFavoriteLookupKey(chatId, messageId, role, content) {
+    var cid = String(chatId || '').trim();
+    var mid = String(messageId || '').trim();
+    if (cid && mid) return 'cm:' + cid + '::' + mid;
+    if (mid) return 'm:' + mid;
+    return 'rc:' + (role === 'user' ? 'user' : 'assistant') + '::' + String(content || '').trim();
+  }
+
+  async function listFavorites() {
+    var raw = await dbGetConfig(KEYS.FAVORITES);
+    if (!Array.isArray(raw)) return [];
+    var seen = {};
+    var items = [];
+    for (var i = 0; i < raw.length; i++) {
+      if (!raw[i] || typeof raw[i] !== 'object') continue;
+      var norm = normalizeFavoriteRecord(raw[i]);
+      if (!norm.content.trim()) continue;
+      var k = buildFavoriteLookupKey(norm.chatId, norm.messageId, norm.role, norm.content);
+      if (seen[k]) continue;
+      seen[k] = true;
+      items.push(norm);
+    }
+    items.sort(function(a, b) {
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+    return items;
+  }
+
+  async function saveFavoritesList(list) {
+    var arr = Array.isArray(list) ? list : [];
+    await dbPutConfig(KEYS.FAVORITES, arr);
+    return arr;
+  }
+
+  async function isMessageFavorited(chatId, messageId) {
+    var cid = String(chatId || '').trim();
+    var mid = String(messageId || '').trim();
+    if (!mid) return false;
+    var list = await listFavorites();
+    return list.some(function(item) {
+      if (cid && item.chatId) {
+        return item.chatId === cid && item.messageId === mid;
+      }
+      return item.messageId === mid;
+    });
+  }
+
+  async function addFavorite(data) {
+    var norm = normalizeFavoriteRecord(data);
+    if (!norm.content.trim()) return { added: false, item: null, favorites: await listFavorites() };
+    var list = await listFavorites();
+    var targetKey = buildFavoriteLookupKey(norm.chatId, norm.messageId, norm.role, norm.content);
+    var existing = list.find(function(it) {
+      return buildFavoriteLookupKey(it.chatId, it.messageId, it.role, it.content) === targetKey;
+    });
+    if (existing) {
+      return { added: false, item: existing, favorites: list };
+    }
+    list.unshift(norm);
+    await saveFavoritesList(list);
+    return { added: true, item: norm, favorites: list };
+  }
+
+  async function removeFavoriteById(favId) {
+    var cleanId = String(favId || '').trim();
+    if (!cleanId) return { removed: false, favorites: await listFavorites() };
+    var list = await listFavorites();
+    var next = list.filter(function(it) { return it.id !== cleanId; });
+    if (next.length !== list.length) {
+      await saveFavoritesList(next);
+      return { removed: true, favorites: next };
+    }
+    return { removed: false, favorites: list };
+  }
+
+  async function removeFavoriteByMessage(chatId, messageId) {
+    var cid = String(chatId || '').trim();
+    var mid = String(messageId || '').trim();
+    if (!mid) return { removed: false, favorites: await listFavorites() };
+    var list = await listFavorites();
+    var next = list.filter(function(it) {
+      if (cid && it.chatId) {
+        return !(it.chatId === cid && it.messageId === mid);
+      }
+      return it.messageId !== mid;
+    });
+    if (next.length !== list.length) {
+      await saveFavoritesList(next);
+      return { removed: true, favorites: next };
+    }
+    return { removed: false, favorites: list };
+  }
+
+  async function toggleMessageFavorite(data) {
+    var norm = normalizeFavoriteRecord(data);
+    var list = await listFavorites();
+    var targetKey = buildFavoriteLookupKey(norm.chatId, norm.messageId, norm.role, norm.content);
+    var idx = list.findIndex(function(it) {
+      if (norm.messageId && it.messageId === norm.messageId && (!norm.chatId || !it.chatId || it.chatId === norm.chatId)) {
+        return true;
+      }
+      return buildFavoriteLookupKey(it.chatId, it.messageId, it.role, it.content) === targetKey;
+    });
+    if (idx !== -1) {
+      list.splice(idx, 1);
+      await saveFavoritesList(list);
+      return { favorited: false, item: null, favorites: list };
+    }
+    if (!norm.content.trim()) {
+      return { favorited: false, item: null, favorites: list };
+    }
+    list.unshift(norm);
+    await saveFavoritesList(list);
+    return { favorited: true, item: norm, favorites: list };
+  }
+
+  async function searchFavorites(query) {
+    var list = await listFavorites();
+    var q = String(query || '').trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(function(item) {
+      return (item.content || '').toLowerCase().indexOf(q) !== -1 ||
+        (item.chatTitle || '').toLowerCase().indexOf(q) !== -1 ||
+        (item.model || '').toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  async function syncFavoriteMessageContent(chatId, messageId, nextContent, nextChatTitle) {
+    var mid = String(messageId || '').trim();
+    if (!mid) return false;
+    var cid = String(chatId || '').trim();
+    var list = await listFavorites();
+    var changed = false;
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      if (it.messageId === mid && (!cid || !it.chatId || it.chatId === cid)) {
+        if (nextContent !== undefined && nextContent !== null) {
+          it.content = String(nextContent);
+        }
+        if (nextChatTitle) {
+          it.chatTitle = String(nextChatTitle);
+        }
+        changed = true;
+      }
+    }
+    if (changed) await saveFavoritesList(list);
+    return changed;
   }
 
   // ===== 10. 独立长期记忆存储（aiw_memory_ids / aiw_memory:<id>，绝不混入 db.memories） =====
@@ -3190,7 +3405,8 @@
       dbGetConfig(KEYS.WORLDBOOK_IDS),
       dbGetConfig(KEYS.CHAT_IDS),
       dbGetConfig(KEYS.MEMORY_IDS),
-      dbGetConfig(KEYS.SELECTED_MODEL)
+      dbGetConfig(KEYS.SELECTED_MODEL),
+      listFavorites()
     ]);
 
     var profile = results[0];
@@ -3214,6 +3430,7 @@
     var rawChatIds = results[18];
     var rawMemoryIds = results[19];
     var rawSelectedModel = results[20];
+    var favorites = Array.isArray(results[21]) ? results[21] : [];
 
     var defaultPreset = presets.find(function(p) { return p && p.isDefault; }) || null;
     var defaultPresetId = String(rawDefaultPresetId || (defaultPreset && defaultPreset.id) || '').trim();
@@ -3280,6 +3497,7 @@
       },
       chats: deepClone(chats),
       chatOrder: Array.isArray(rawChatIds) ? rawChatIds.slice() : chats.map(function(c) { return c.id; }),
+      favorites: deepClone(favorites),
       memory: {
         settings: deepClone(memorySettings),
         memories: deepClone(memories),
@@ -3296,6 +3514,7 @@
       counts: {
         chats: chats.length,
         messages: totalMessages,
+        favorites: favorites.length,
         memories: memories.length,
         memoryTasks: memoryTasks.length,
         deletedMemorySignatures: deletedSignatures.length,
@@ -3356,7 +3575,7 @@
       }
     }
 
-    var optionalArrFields = ['presets', 'worldbooks', 'chats'];
+    var optionalArrFields = ['presets', 'worldbooks', 'chats', 'favorites'];
     for (var ai = 0; ai < optionalArrFields.length; ai++) {
       var afName = optionalArrFields[ai];
       if (safe[afName] !== undefined && safe[afName] !== null && !Array.isArray(safe[afName])) {
@@ -3372,6 +3591,7 @@
       safe.presets !== undefined ||
       safe.worldbooks !== undefined ||
       safe.chats !== undefined ||
+      safe.favorites !== undefined ||
       safe.memory !== undefined ||
       safe.apiConfig !== undefined
     );
@@ -3451,6 +3671,21 @@
         var normChat = normalizeChatRecord(rawChat, rawChat.id);
         messagesCount += normChat.messages.length;
         chats.push(normChat);
+      }
+    }
+
+    // 校验并规范化 favorites
+    var favorites = [];
+    var hasFavoritesSection = Array.isArray(safe.favorites);
+    if (hasFavoritesSection) {
+      for (var fvi = 0; fvi < safe.favorites.length; fvi++) {
+        if (!isPlainObject(safe.favorites[fvi])) {
+          return { ok: false, error: '导入失败：第 ' + (fvi + 1) + ' 条收藏记录格式无效' };
+        }
+        var normFav = normalizeFavoriteRecord(safe.favorites[fvi]);
+        if (normFav.content.trim()) {
+          favorites.push(normFav);
+        }
       }
     }
 
@@ -3599,7 +3834,7 @@
       updatedAt: Number(safe.general.updatedAt) || 0
     } : null;
 
-    var isLegacyBackup = version === 1 && !hasChatsSection && !hasWorldbooksSection && !hasMemorySection && !hasApiSection;
+    var isLegacyBackup = version === 1 && !hasChatsSection && !hasWorldbooksSection && !hasMemorySection && !hasApiSection && !hasFavoritesSection;
 
     return {
       ok: true,
@@ -3612,6 +3847,7 @@
         exportedAt: safe.exportedAt ? String(safe.exportedAt) : '',
         chatsCount: chats.length,
         messagesCount: messagesCount,
+        favoritesCount: favorites.length,
         memoriesCount: memoryData.memories.length,
         memoryTasksCount: memoryData.tasks.length,
         presetsCount: presets.length,
@@ -3639,6 +3875,8 @@
         chats: chats,
         hasChatsSection: hasChatsSection,
         chatOrder: Array.isArray(safe.chatOrder) ? safe.chatOrder.filter(Boolean).map(String) : chats.map(function(c) { return c.id; }),
+        favorites: favorites,
+        hasFavoritesSection: hasFavoritesSection,
         memory: memoryData,
         hasMemorySection: hasMemorySection,
         apiConfig: apiData,
@@ -3665,7 +3903,8 @@
       KEYS.MEMORY_IDS,
       KEYS.MEMORY_TASKS,
       KEYS.DELETED_MEMORY_SIGS,
-      KEYS.WORLDBOOK_IDS
+      KEYS.WORLDBOOK_IDS,
+      KEYS.FAVORITES
     ];
     for (var fi = 0; fi < fixedKeys.length; fi++) {
       keySet[fixedKeys[fi]] = true;
@@ -4149,6 +4388,22 @@
         }
         await dbPutConfig(KEYS.CHAT_IDS, orderedChatIds);
 
+        // 收藏消息列表
+        var favSeen = {};
+        var restoredFavorites = [];
+        for (var fvi = 0; fvi < data.favorites.length; fvi++) {
+          var favItem = normalizeFavoriteRecord(data.favorites[fvi]);
+          if (!favItem.content.trim()) continue;
+          var fk = buildFavoriteLookupKey(favItem.chatId, favItem.messageId, favItem.role, favItem.content);
+          if (favSeen[fk]) continue;
+          favSeen[fk] = true;
+          restoredFavorites.push(favItem);
+        }
+        restoredFavorites.sort(function(a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+        if (restoredFavorites.length > 0 || data.hasFavoritesSection) {
+          await saveFavoritesList(restoredFavorites);
+        }
+
         return {
           ok: true,
           mode: 'overwrite',
@@ -4158,6 +4413,7 @@
             chatsAdded: chatIds.length,
             chatsMerged: 0,
             messagesAdded: restoredMsgCount,
+            favoritesAdded: restoredFavorites.length,
             memoriesAdded: memIds.length,
             presetsAdded: presetIds.length,
             worldbooksAdded: wbIds.length
@@ -4464,6 +4720,36 @@
         await dbPutConfig(KEYS.DELETED_MEMORY_SIGS, mergedSigs.slice(0, 100));
       }
 
+      // 5.5 收藏消息合并与去重
+      var favAddedCount = 0;
+      if (data.favorites && data.favorites.length) {
+        var existingFavs = await listFavorites();
+        var favKeySet = {};
+        var favIdSet = {};
+        for (var efi = 0; efi < existingFavs.length; efi++) {
+          var ef = existingFavs[efi];
+          favIdSet[ef.id] = true;
+          favKeySet[buildFavoriteLookupKey(ef.chatId, ef.messageId, ef.role, ef.content)] = true;
+        }
+        for (var ifi = 0; ifi < data.favorites.length; ifi++) {
+          var incFav = normalizeFavoriteRecord(data.favorites[ifi]);
+          if (!incFav.content.trim()) continue;
+          if (incFav.chatId && chatIdMap[incFav.chatId]) {
+            incFav.chatId = chatIdMap[incFav.chatId];
+          }
+          var incFavKey = buildFavoriteLookupKey(incFav.chatId, incFav.messageId, incFav.role, incFav.content);
+          if (favKeySet[incFavKey] || favIdSet[incFav.id]) continue;
+          existingFavs.push(incFav);
+          favIdSet[incFav.id] = true;
+          favKeySet[incFavKey] = true;
+          favAddedCount++;
+        }
+        if (favAddedCount > 0) {
+          existingFavs.sort(function(a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+          await saveFavoritesList(existingFavs);
+        }
+      }
+
       // 6. 个人资料、个性化、外观、常规设置（保留本地已修改项，未配置项由备份补全）
       if (data.profile) {
         var exProfileRaw = await dbGetConfig(KEYS.PROFILE);
@@ -4499,6 +4785,7 @@
           chatsAdded: chatsAddedCount,
           chatsMerged: chatsMergedCount,
           messagesAdded: messagesAddedCount,
+          favoritesAdded: favAddedCount,
           memoriesAdded: memAddedCount,
           presetsAdded: presetAddedCount,
           worldbooksAdded: wbAddedCount
@@ -4618,6 +4905,14 @@
     buildFullBackupPayload: buildFullBackupPayload,
     buildFullBackupJson: buildFullBackupJson,
     parseFullBackupJson: parseFullBackupJson,
-    importBackupFromJson: importBackupFromJson
+    importBackupFromJson: importBackupFromJson,
+    listFavorites: listFavorites,
+    isMessageFavorited: isMessageFavorited,
+    addFavorite: addFavorite,
+    removeFavoriteById: removeFavoriteById,
+    removeFavoriteByMessage: removeFavoriteByMessage,
+    toggleMessageFavorite: toggleMessageFavorite,
+    searchFavorites: searchFavorites,
+    syncFavoriteMessageContent: syncFavoriteMessageContent
   };
 })(typeof window !== 'undefined' ? window : globalThis);

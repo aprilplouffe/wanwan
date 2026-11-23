@@ -45,6 +45,10 @@
     effectiveApi: null,
     isStreaming: false,
     abortController: null,
+    favorites: [],
+    quotedMessage: null,
+    translatingMap: {},
+    activeTranslationLangMap: {},
     userProfile: {
       name: '我',
       avatar: 'img/ava-00.jpg',
@@ -432,7 +436,8 @@
           S().listPresets(),
           S().getSelectedModel(),
           S().listChats(),
-          typeof S().listWorldBooks === 'function' ? S().listWorldBooks() : Promise.resolve([])
+          typeof S().listWorldBooks === 'function' ? S().listWorldBooks() : Promise.resolve([]),
+          typeof S().listFavorites === 'function' ? S().listFavorites() : Promise.resolve([])
         ]);
         _state.userProfile = results[0];
         _state.appearance = results[1];
@@ -442,6 +447,7 @@
         _state.selectedModel = results[5] || '';
         _state.chats = results[6] || [];
         _state.worldbooks = results[7] || [];
+        _state.favorites = results[8] || [];
         _state.defaultPreset = _state.presets.find(function(p) { return p.isDefault; }) || _state.presets[0] || null;
         if (!_state.activePreset && (!_state.general || _state.general.autoUseDefaultPreset !== false)) {
           _state.activePreset = _state.defaultPreset;
@@ -537,6 +543,15 @@
       '</div>' +
 
       '<div class="aiw-composer-wrap">' +
+        '<div class="aiw-quote-bar" id="aiw-quote-bar" hidden>' +
+          '<div class="aiw-quote-bar-body">' +
+            '<div class="aiw-quote-bar-role" id="aiw-quote-bar-role">引用消息</div>' +
+            '<div class="aiw-quote-bar-text" id="aiw-quote-bar-text"></div>' +
+          '</div>' +
+          '<button type="button" class="aiw-quote-bar-close" id="aiw-quote-clear" aria-label="取消引用" title="取消引用">' +
+            '<i class="fa-solid fa-xmark"></i>' +
+          '</button>' +
+        '</div>' +
         '<div class="aiw-mode-chip-bar" id="aiw-mode-chip-bar" hidden>' +
           '<button type="button" class="aiw-mode-chip" id="aiw-chip-deep-think" title="点击取消深入思考">' +
             '<i class="fa-regular fa-lightbulb"></i>' +
@@ -741,6 +756,9 @@
         if (Array.isArray(nextState.chats)) {
           _state.chats = nextState.chats;
         }
+        if (Array.isArray(nextState.favorites)) {
+          _state.favorites = nextState.favorites;
+        }
       }
       if (S()) {
         _state.selectedModel = await S().getSelectedModel();
@@ -752,6 +770,11 @@
         if (!nextState || !Array.isArray(nextState.chats)) {
           if (typeof S().listChats === 'function') {
             _state.chats = await S().listChats();
+          }
+        }
+        if (!nextState || !Array.isArray(nextState.favorites)) {
+          if (typeof S().listFavorites === 'function') {
+            _state.favorites = await S().listFavorites();
           }
         }
         if (_state.activeChatId) {
@@ -782,8 +805,79 @@
       syncContextStrip(page);
       updateMainStage(page);
     }, {
-      activeChatId: _state.activeChat ? _state.activeChat.id : ''
+      activeChatId: _state.activeChat ? _state.activeChat.id : '',
+      onNavigateToChatMessage: async function(target) {
+        await navigateToChatMessage(page, target);
+      }
     });
+  }
+
+  async function navigateToChatMessage(page, target) {
+    if (!page || !target || !S()) return;
+    if (_state.isStreaming) {
+      notifyToast('请先停止当前生成后再跳转');
+      return;
+    }
+    var chatId = String(target.chatId || '').trim();
+    var msgId = String(target.messageId || '').trim();
+    if (!chatId) {
+      notifyToast('该收藏缺少来源对话信息');
+      return;
+    }
+    var loaded = typeof S().getChat === 'function' ? await S().getChat(chatId) : null;
+    if (!loaded) {
+      notifyToast('原对话已被删除，暂无法跳转定位');
+      return;
+    }
+
+    if (global.AiWorkspaceSettings && typeof global.AiWorkspaceSettings.closeSettingsCenter === 'function') {
+      global.AiWorkspaceSettings.closeSettingsCenter();
+    }
+
+    _state.activeChatId = loaded.id;
+    _state.activeChat = loaded;
+    _state.messages = Array.isArray(loaded.messages) ? loaded.messages.slice() : [];
+    _state.quotedMessage = null;
+    syncQuoteBarUI(page);
+    if (loaded.presetId || loaded.presetSnapshot) {
+      _state.explicitNoPreset = false;
+      _state.activePreset = (_state.presets || []).find(function(p) { return p && p.id === loaded.presetId; }) || loaded.presetSnapshot || null;
+    } else {
+      _state.explicitNoPreset = true;
+      _state.activePreset = null;
+    }
+    if (loaded.model) {
+      _state.selectedModel = loaded.model;
+      await S().saveSelectedModel(loaded.model);
+    }
+    await refreshEffectiveApi();
+    setSidebarOpen(page, false);
+    syncContextStrip(page);
+    updateMainStage(page, { preserveScroll: true });
+    renderSidebarChats(page);
+
+    if (msgId) {
+      var targetRow = Array.from(page.querySelectorAll('.aiw-msg-row')).find(function(el) {
+        return el.getAttribute('data-msg-id') === msgId;
+      });
+      if (targetRow) {
+        requestAnimationFrame(function() {
+          try {
+            targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } catch (_) {
+            targetRow.scrollIntoView(true);
+          }
+          targetRow.classList.remove('aiw-msg-highlight');
+          void targetRow.offsetWidth;
+          targetRow.classList.add('aiw-msg-highlight');
+          setTimeout(function() {
+            if (targetRow) targetRow.classList.remove('aiw-msg-highlight');
+          }, 2400);
+        });
+      } else {
+        notifyToast('原消息已从该对话中移除，已为您打开所在对话');
+      }
+    }
   }
 
   function syncContextStrip(page) {
@@ -1192,6 +1286,8 @@
         _state.activeChatId = loaded.id;
         _state.activeChat = loaded;
         _state.messages = Array.isArray(loaded.messages) ? loaded.messages.slice() : [];
+        _state.quotedMessage = null;
+        syncQuoteBarUI(page);
         if (loaded.presetId || loaded.presetSnapshot) {
           _state.explicitNoPreset = false;
           _state.activePreset = (_state.presets || []).find(function(p) { return p && p.id === loaded.presetId; }) || loaded.presetSnapshot || null;
@@ -1222,15 +1318,113 @@
   }
 
   // ===== 主聊天区渲染与单条流式消息更新 =====
+  var TRANSLATION_TARGETS = [
+    { lang: 'zh-CN', label: '简体中文', hint: 'Chinese (Simplified)' },
+    { lang: 'en', label: 'English（英文）', hint: 'English' },
+    { lang: 'zh-TW', label: '繁體中文', hint: 'Chinese (Traditional)' },
+    { lang: 'ja', label: '日本語（日语）', hint: 'Japanese' },
+    { lang: 'ko', label: '한국어（韩语）', hint: 'Korean' },
+    { lang: 'fr', label: 'Français（法语）', hint: 'French' },
+    { lang: 'de', label: 'Deutsch（德语）', hint: 'German' },
+    { lang: 'es', label: 'Español（西班牙语）', hint: 'Spanish' }
+  ];
+
+  function isMessageFavoritedInState(msgId) {
+    if (!msgId) return false;
+    var activeChatId = _state.activeChat ? _state.activeChat.id : '';
+    return (_state.favorites || []).some(function(fav) {
+      if (!fav) return false;
+      if (activeChatId && fav.chatId) {
+        return fav.chatId === activeChatId && fav.messageId === msgId;
+      }
+      return fav.messageId === msgId;
+    });
+  }
+
+  function renderTranslationPanelHtml(m) {
+    if (!m || m.role !== 'assistant' || m.streaming) return '';
+    var pending = _state.translatingMap && _state.translatingMap[m.id];
+    if (pending) {
+      return (
+        '<div class="aiw-msg-trans-card is-loading">' +
+          '<div class="aiw-msg-trans-head">' +
+            '<span class="aiw-msg-trans-title"><i class="fa-solid fa-language"></i> 正在翻译为 ' + escapeHtml(pending.label) + '...</span>' +
+          '</div>' +
+          '<div class="aiw-msg-trans-loading"><span class="aiw-pulse-dot"></span><span>保持原文不变，正在生成译文</span></div>' +
+        '</div>'
+      );
+    }
+
+    var translations = m.translations && typeof m.translations === 'object' ? m.translations : null;
+    if (!translations) return '';
+    var langKeys = Object.keys(translations);
+    if (!langKeys.length) return '';
+
+    var activePref = _state.activeTranslationLangMap && _state.activeTranslationLangMap[m.id];
+    if (activePref === '__hidden__') return '';
+
+    var activeLang = activePref && translations[activePref] ? activePref : '';
+    if (!activeLang) {
+      langKeys.sort(function(a, b) {
+        return (translations[b].updatedAt || 0) - (translations[a].updatedAt || 0);
+      });
+      activeLang = langKeys[0];
+    }
+    var item = translations[activeLang];
+    if (!item || !item.text) return '';
+
+    var langPills = langKeys.length > 1
+      ? '<div class="aiw-msg-trans-langs">' + langKeys.map(function(lk) {
+          var t = translations[lk];
+          return '<button type="button" class="aiw-msg-trans-lang-pill' + (lk === activeLang ? ' is-active' : '') + '" data-msg-act="switch-trans-lang" data-msg-id="' + escapeHtml(m.id) + '" data-trans-lang="' + escapeHtml(lk) + '">' + escapeHtml((t && t.langLabel) || lk) + '</button>';
+        }).join('') + '</div>'
+      : '';
+
+    return (
+      '<div class="aiw-msg-trans-card">' +
+        '<div class="aiw-msg-trans-head">' +
+          '<span class="aiw-msg-trans-title"><i class="fa-solid fa-language"></i> 译文 · ' + escapeHtml(item.langLabel || activeLang) + '</span>' +
+          '<div class="aiw-msg-trans-ops">' +
+            '<button type="button" class="aiw-msg-trans-op" data-msg-act="translate" data-msg-id="' + escapeHtml(m.id) + '" title="选择目标语言或重新翻译">切换语言</button>' +
+            '<button type="button" class="aiw-msg-trans-op" data-msg-act="copy-trans" data-msg-id="' + escapeHtml(m.id) + '" data-trans-lang="' + escapeHtml(activeLang) + '" title="复制译文">复制译文</button>' +
+            '<button type="button" class="aiw-msg-trans-op" data-msg-act="hide-trans" data-msg-id="' + escapeHtml(m.id) + '" title="收起译文">收起</button>' +
+          '</div>' +
+        '</div>' +
+        langPills +
+        '<div class="aiw-msg-trans-body">' + renderMarkdownHtml(item.text) + '</div>' +
+      '</div>'
+    );
+  }
+
   function renderMessageItemHtml(m, idx, totalCount) {
     if (m.role === 'user') {
       var badge = m.deepThink
         ? '<div class="aiw-msg-badge"><i class="fa-regular fa-lightbulb"></i><span>深入思考</span></div>'
         : '';
+      var quoteHtml = '';
+      if (m.quote && m.quote.content) {
+        var qRole = m.quote.role === 'assistant' ? '引用知屿回复' : '引用先前消息';
+        var qText = m.quote.content.length > 90 ? (m.quote.content.slice(0, 90) + '…') : m.quote.content;
+        quoteHtml =
+          '<div class="aiw-msg-quote-ref">' +
+            '<div class="aiw-msg-quote-ref-role"><i class="fa-solid fa-reply"></i> ' + escapeHtml(qRole) + '</div>' +
+            '<div class="aiw-msg-quote-ref-text">' + escapeHtml(qText) + '</div>' +
+          '</div>';
+      }
+      var userMetaHtml = m.editedAt ? '<span class="aiw-msg-edited-tag">已编辑</span>' : '';
+      var userActionsHtml =
+        '<div class="aiw-msg-actions is-user-actions">' +
+          userMetaHtml +
+          '<button type="button" class="aiw-msg-act-btn" data-msg-act="copy" data-msg-id="' + escapeHtml(m.id) + '" title="复制消息"><i class="fa-regular fa-copy"></i> 复制</button>' +
+          '<button type="button" class="aiw-msg-act-btn" data-msg-act="edit" data-msg-id="' + escapeHtml(m.id) + '" title="编辑消息"><i class="fa-regular fa-pen-to-square"></i> 编辑</button>' +
+          '<button type="button" class="aiw-msg-act-btn is-more-btn" data-msg-act="more" data-msg-id="' + escapeHtml(m.id) + '" title="更多消息操作" aria-label="更多消息操作"><i class="fa-solid fa-ellipsis"></i></button>' +
+        '</div>';
       return (
         '<div class="aiw-msg-row is-user" data-msg-id="' + escapeHtml(m.id) + '">' +
           badge +
+          quoteHtml +
           '<div class="aiw-msg-bubble">' + escapeHtml(m.content) + '</div>' +
+          userActionsHtml +
         '</div>'
       );
     }
@@ -1261,15 +1455,19 @@
         '</div>';
     }
 
+    var translationHtml = renderTranslationPanelHtml(m);
+
     var actionsHtml = '';
     if (!m.streaming) {
       var isLastAssistant = idx === totalCount - 1;
+      var editedBadge = m.editedAt ? '<span class="aiw-msg-edited-tag">已编辑</span>' : '';
       actionsHtml =
         '<div class="aiw-msg-actions">' +
-          (m.content
-            ? '<button type="button" class="aiw-msg-act-btn" data-msg-act="copy" data-msg-id="' + escapeHtml(m.id) + '" title="复制回复"><i class="fa-regular fa-copy"></i> 复制</button>'
-            : '') +
+          '<button type="button" class="aiw-msg-act-btn" data-msg-act="copy" data-msg-id="' + escapeHtml(m.id) + '" title="复制回复"><i class="fa-regular fa-copy"></i> 复制</button>' +
           '<button type="button" class="aiw-msg-act-btn' + (isLastAssistant ? ' is-primary-act' : '') + '" data-msg-act="regen" data-msg-id="' + escapeHtml(m.id) + '" title="重新生成回答"><i class="fa-solid fa-rotate-right"></i> 重新生成</button>' +
+          '<button type="button" class="aiw-msg-act-btn" data-msg-act="translate" data-msg-id="' + escapeHtml(m.id) + '" title="翻译此回复（保留原文）"><i class="fa-solid fa-language"></i> 翻译</button>' +
+          '<button type="button" class="aiw-msg-act-btn is-more-btn" data-msg-act="more" data-msg-id="' + escapeHtml(m.id) + '" title="更多消息操作" aria-label="更多消息操作"><i class="fa-solid fa-ellipsis"></i></button>' +
+          editedBadge +
           (m.model ? '<span class="aiw-msg-model-tag">' + escapeHtml(m.model) + '</span>' : '') +
         '</div>';
     }
@@ -1279,9 +1477,855 @@
         '<div class="aiw-msg-bubble" id="aiw-msg-bubble-' + escapeHtml(m.id) + '">' + bodyHtml + '</div>' +
         statusLine +
         errorHtml +
+        translationHtml +
         actionsHtml +
       '</div>'
     );
+  }
+
+  function downloadWorkspaceTextFile(filename, text, mimeType) {
+    try {
+      var blob = new Blob([String(text == null ? '' : text)], { type: mimeType || 'text/plain;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() {
+        a.remove();
+        URL.revokeObjectURL(url);
+      }, 1200);
+      notifyToast('已开始下载：' + filename);
+      return true;
+    } catch (_) {
+      notifyToast('当前环境不支持下载，请使用复制功能');
+      return false;
+    }
+  }
+
+  function syncQuoteBarUI(page) {
+    if (!page) return;
+    var bar = page.querySelector('#aiw-quote-bar');
+    var roleEl = page.querySelector('#aiw-quote-bar-role');
+    var textEl = page.querySelector('#aiw-quote-bar-text');
+    if (!bar) return;
+    var q = _state.quotedMessage;
+    if (!q || !q.content) {
+      bar.hidden = true;
+      if (textEl) textEl.textContent = '';
+      return;
+    }
+    bar.hidden = false;
+    if (roleEl) roleEl.textContent = q.role === 'assistant' ? '引用知屿回复' : '引用我的消息';
+    if (textEl) textEl.textContent = q.content.replace(/\s+/g, ' ').slice(0, 120);
+  }
+
+  function quoteMessageAction(page, msg) {
+    if (!msg) return;
+    var text = String(msg.content || '').trim();
+    if (!text) {
+      notifyToast('该消息暂无可引用的正文内容');
+      return;
+    }
+    _state.quotedMessage = {
+      id: msg.id,
+      role: msg.role === 'assistant' ? 'assistant' : 'user',
+      content: text.slice(0, 600)
+    };
+    syncQuoteBarUI(page);
+    var input = page.querySelector('#aiw-input');
+    if (input) {
+      try { input.focus(); } catch (_) {}
+    }
+    notifyToast('已添加到引用栏');
+  }
+
+  function openSelectTextModal(page, msg) {
+    if (!msg) return;
+    var content = String(msg.content || msg.error || '');
+    if (!content) {
+      notifyToast('该消息暂无可选择的文本内容');
+      return;
+    }
+    var modal = showInlineModal(
+      page,
+      '选择文本',
+      '<div class="aiw-msg-op-tip">支持自由拖动或点击下方按钮选取所需片段并复制：</div>' +
+      '<textarea class="aiw-select-textarea" id="aiw-select-ta" readonly>' + escapeHtml(content) + '</textarea>',
+      '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-sel-all">全选</button>' +
+      '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-sel-copy">复制选中 / 全文</button>'
+    );
+    if (!modal) return;
+    var ta = modal.querySelector('#aiw-select-ta');
+    modal.querySelector('#aiw-sel-all').addEventListener('click', function() {
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(0, ta.value.length);
+    });
+    modal.querySelector('#aiw-sel-copy').addEventListener('click', async function() {
+      if (!ta) return;
+      var start = ta.selectionStart;
+      var end = ta.selectionEnd;
+      var slice = (typeof start === 'number' && typeof end === 'number' && end > start)
+        ? ta.value.slice(start, end)
+        : ta.value;
+      await copyTextSafely(slice);
+    });
+  }
+
+  function openEditMessageModal(page, msg) {
+    if (!msg) return;
+    if (_state.isStreaming) {
+      notifyToast('请先停止当前回答后再编辑消息');
+      return;
+    }
+    var isUser = msg.role === 'user';
+    var footer =
+      '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ed-cancel">取消</button>' +
+      (isUser ? '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ed-save-regen">保存并重新生成</button>' : '') +
+      '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-ed-save">保存修改</button>';
+
+    var modal = showInlineModal(
+      page,
+      isUser ? '编辑我的消息' : '编辑 AI 回复',
+      '<textarea class="aiw-edit-textarea" id="aiw-edit-ta" placeholder="输入消息内容...">' + escapeHtml(msg.content || '') + '</textarea>',
+      footer
+    );
+    if (!modal) return;
+    var footEl = modal.querySelector('.aiw-ws-modal-foot');
+    if (footEl) footEl.classList.add('aiw-bk-modal-foot');
+
+    var ta = modal.querySelector('#aiw-edit-ta');
+    setTimeout(function() {
+      if (ta) {
+        try {
+          ta.focus();
+          ta.setSelectionRange(ta.value.length, ta.value.length);
+        } catch (_) {}
+      }
+    }, 50);
+
+    async function saveEditedContent(andRegen) {
+      var nextText = String(ta ? ta.value : '').trim();
+      if (!nextText) {
+        notifyToast('消息内容不能为空');
+        return;
+      }
+      var target = _state.messages.find(function(m) { return m.id === msg.id; });
+      if (!target) {
+        closeInlineModal(page);
+        return;
+      }
+      target.content = nextText;
+      target.editedAt = Date.now();
+      target.error = '';
+      target.aborted = false;
+      if (_state.quotedMessage && _state.quotedMessage.id === target.id) {
+        _state.quotedMessage.content = nextText.slice(0, 600);
+        syncQuoteBarUI(page);
+      }
+      await persistCurrentChatMessages();
+      if (S() && typeof S().syncFavoriteMessageContent === 'function' && _state.activeChat) {
+        await S().syncFavoriteMessageContent(_state.activeChat.id, target.id, nextText, _state.activeChat.title);
+        if (typeof S().listFavorites === 'function') {
+          _state.favorites = await S().listFavorites();
+        }
+      }
+      closeInlineModal(page);
+      updateMainStage(page, { preserveScroll: true });
+      notifyToast('已更新消息内容');
+      if (andRegen) {
+        await regenerateAtMessage(page, target.id);
+      }
+    }
+
+    modal.querySelector('#aiw-ed-cancel').addEventListener('click', function() { closeInlineModal(page); });
+    modal.querySelector('#aiw-ed-save').addEventListener('click', function() { saveEditedContent(false); });
+    var regenBtn = modal.querySelector('#aiw-ed-save-regen');
+    if (regenBtn) {
+      regenBtn.addEventListener('click', function() { saveEditedContent(true); });
+    }
+  }
+
+  function confirmDeleteMessage(page, msg) {
+    if (!msg) return;
+    if (_state.isStreaming) {
+      notifyToast('请先停止当前回答后再删除消息');
+      return;
+    }
+    var snippet = String(msg.content || msg.error || '').replace(/\s+/g, ' ').trim();
+    if (snippet.length > 60) snippet = snippet.slice(0, 60) + '…';
+    var modal = showInlineModal(
+      page,
+      '删除消息',
+      '<p class="aiw-st-modal-msg">确定要删除这条' + (msg.role === 'user' ? '用户消息' : 'AI 回复') + '吗？删除后将从当前聊天记录中移除且无法恢复。</p>' +
+      (snippet ? '<div class="aiw-msg-delete-preview">' + escapeHtml(snippet) + '</div>' : ''),
+      '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-mdel-cancel">取消</button>' +
+      '<button type="button" class="aiw-st-btn-danger aiw-st-btn-sm" id="aiw-mdel-ok">确认删除</button>'
+    );
+    if (!modal) return;
+    modal.querySelector('#aiw-mdel-cancel').addEventListener('click', function() { closeInlineModal(page); });
+    modal.querySelector('#aiw-mdel-ok').addEventListener('click', async function() {
+      var idx = _state.messages.findIndex(function(m) { return m.id === msg.id; });
+      if (idx !== -1) {
+        _state.messages.splice(idx, 1);
+      }
+      if (_state.quotedMessage && _state.quotedMessage.id === msg.id) {
+        _state.quotedMessage = null;
+        syncQuoteBarUI(page);
+      }
+      if (_state.translatingMap) delete _state.translatingMap[msg.id];
+      if (_state.activeTranslationLangMap) delete _state.activeTranslationLangMap[msg.id];
+      await persistCurrentChatMessages();
+      closeInlineModal(page);
+      updateMainStage(page, { preserveScroll: true });
+      notifyToast('已删除消息');
+    });
+  }
+
+  async function toggleFavoriteMessageAction(page, msg) {
+    if (!msg || !S() || typeof S().toggleMessageFavorite !== 'function') return;
+    var text = String(msg.content || '').trim();
+    if (!text) {
+      notifyToast('该消息暂无正文内容，无法收藏');
+      return;
+    }
+    var chatId = _state.activeChat ? _state.activeChat.id : '';
+    var chatTitle = (_state.activeChat && _state.activeChat.title) || '当前对话';
+    var res = await S().toggleMessageFavorite({
+      chatId: chatId,
+      chatTitle: chatTitle,
+      messageId: msg.id,
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content: text,
+      model: msg.model || '',
+      messageCreatedAt: msg.createdAt || Date.now()
+    });
+    _state.favorites = res.favorites || [];
+    notifyToast(res.favorited ? '已添加到「我的收藏」' : '已取消收藏');
+  }
+
+  async function branchChatFromMessage(page, msg) {
+    if (!msg || !S()) return;
+    if (_state.isStreaming) {
+      notifyToast('请先停止当前回答后再创建分支');
+      return;
+    }
+    var idx = _state.messages.findIndex(function(m) { return m.id === msg.id; });
+    if (idx === -1) return;
+
+    var baseChat = _state.activeChat;
+    var baseTitle = (baseChat && baseChat.title) ? baseChat.title : '新对话';
+    var branchTitle = baseTitle.replace(/\s*·\s*分支(?:\s*\d+)?$/, '') + ' · 分支';
+    var clonedMessages = _state.messages.slice(0, idx + 1).map(function(item, mIdx) {
+      var cloned = {
+        id: S().generateMessageId() + '_b' + mIdx,
+        role: item.role,
+        content: String(item.content || ''),
+        createdAt: Number(item.createdAt) || Date.now(),
+        model: item.model ? String(item.model) : '',
+        error: item.error ? String(item.error) : '',
+        aborted: !!item.aborted,
+        deepThink: !!item.deepThink
+      };
+      if (item.quote) cloned.quote = Object.assign({}, item.quote);
+      if (item.editedAt) cloned.editedAt = item.editedAt;
+      if (item.translations) cloned.translations = JSON.parse(JSON.stringify(item.translations));
+      return cloned;
+    });
+
+    var preset = resolveEffectivePresetForState();
+    var newBranch = await S().createChat({
+      title: branchTitle,
+      model: (baseChat && baseChat.model) || _state.selectedModel || '',
+      presetId: (baseChat && baseChat.presetId) || (preset ? preset.id : ''),
+      presetSnapshot: (baseChat && baseChat.presetSnapshot)
+        ? JSON.parse(JSON.stringify(baseChat.presetSnapshot))
+        : (preset ? S().buildPresetSnapshot(preset) : null),
+      projectId: (baseChat && baseChat.projectId) || '',
+      branchedFromChatId: (baseChat && baseChat.id) || '',
+      branchedFromMessageId: msg.id,
+      messages: clonedMessages
+    });
+
+    _state.activeChatId = newBranch.id;
+    _state.activeChat = newBranch;
+    _state.messages = Array.isArray(newBranch.messages) ? newBranch.messages.slice() : [];
+    _state.quotedMessage = null;
+    syncQuoteBarUI(page);
+    await reloadChatList(page);
+    await refreshEffectiveApi();
+    syncContextStrip(page);
+    updateMainStage(page);
+    notifyToast('已创建分支对话，原对话保持不变');
+  }
+
+  async function openForwardMessageModal(page, msg) {
+    if (!msg) return;
+    var text = String(msg.content || msg.error || '').trim();
+    if (!text) {
+      notifyToast('该消息暂无可转发的内容');
+      return;
+    }
+    var allChats = S() && typeof S().listChats === 'function' ? await S().listChats() : (_state.chats || []);
+    var currentChatId = _state.activeChat ? _state.activeChat.id : '';
+
+    function renderChatTargetsHtml(filterText) {
+      var q = String(filterText || '').trim().toLowerCase();
+      var list = allChats.filter(function(c) {
+        if (!c) return false;
+        if (!q) return true;
+        return String(c.title || '').toLowerCase().indexOf(q) !== -1;
+      });
+      if (!list.length) {
+        return '<div class="aiw-picker-empty">没有匹配的对话，可直接点击下方「新建对话并转发」。</div>';
+      }
+      return list.map(function(c) {
+        var isCurrent = c.id === currentChatId;
+        var msgCount = Array.isArray(c.messages) ? c.messages.length : 0;
+        return (
+          '<button type="button" class="aiw-picker-item" data-fwd-chat="' + escapeHtml(c.id) + '">' +
+            '<span class="aiw-picker-icon"><i class="fa-regular fa-comments"></i></span>' +
+            '<div class="aiw-picker-text">' +
+              '<div class="aiw-picker-title">' + escapeHtml(c.title || '新对话') + (isCurrent ? ' <span class="aiw-mini-badge">当前</span>' : '') + '</div>' +
+              '<div class="aiw-picker-desc">共 ' + msgCount + ' 条消息</div>' +
+            '</div>' +
+            '<span class="aiw-picker-check"><i class="fa-solid fa-paper-plane"></i></span>' +
+          '</button>'
+        );
+      }).join('');
+    }
+
+    var snippet = text.length > 100 ? (text.slice(0, 100) + '…') : text;
+    var bodyHtml =
+      '<div class="aiw-msg-fwd-preview">' + escapeHtml(snippet) + '</div>' +
+      '<div class="aiw-msg-fwd-mode-row">' +
+        '<label class="aiw-msg-fwd-radio"><input type="radio" name="aiw-fwd-mode" value="append" checked> 直接存入目标对话</label>' +
+        '<label class="aiw-msg-fwd-radio"><input type="radio" name="aiw-fwd-mode" value="draft"> 填入目标输入框</label>' +
+      '</div>' +
+      '<input type="search" class="aiw-field-input" id="aiw-fwd-search" placeholder="搜索知屿对话...">' +
+      '<div class="aiw-picker-list aiw-model-picker-list" id="aiw-fwd-list" style="margin-top:8px">' +
+        renderChatTargetsHtml('') +
+      '</div>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-fwd-copy">复制转发文本</button>' +
+      '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-fwd-new-chat">新建对话并转发</button>';
+
+    var modal = showInlineModal(page, '转发消息', bodyHtml, footerHtml);
+    if (!modal) return;
+    var footEl = modal.querySelector('.aiw-ws-modal-foot');
+    if (footEl) footEl.classList.add('aiw-bk-modal-foot');
+
+    function getFwdMode() {
+      var checked = modal.querySelector('input[name="aiw-fwd-mode"]:checked');
+      return checked ? checked.value : 'append';
+    }
+
+    async function forwardToChat(targetChatId) {
+      if (_state.isStreaming) {
+        notifyToast('请先停止当前回答后再切换对话');
+        return;
+      }
+      var mode = getFwdMode();
+      var targetChat = targetChatId ? await S().getChat(targetChatId) : null;
+      if (!targetChat) {
+        var preset = resolveEffectivePresetForState();
+        targetChat = await S().createChat({
+          title: '转发：' + (S().generateChatTitle(text)),
+          model: _state.selectedModel || '',
+          presetId: preset ? preset.id : '',
+          presetSnapshot: preset ? S().buildPresetSnapshot(preset) : null,
+          messages: []
+        });
+      }
+      if (mode === 'append') {
+        var nextMsgs = Array.isArray(targetChat.messages) ? targetChat.messages.slice() : [];
+        nextMsgs.push({
+          id: S().generateMessageId(),
+          role: msg.role === 'assistant' ? 'assistant' : 'user',
+          content: text,
+          createdAt: Date.now(),
+          model: msg.role === 'assistant' ? (msg.model || '') : '',
+          quote: {
+            id: msg.id,
+            role: msg.role === 'assistant' ? 'assistant' : 'user',
+            content: '转发自「' + ((_state.activeChat && _state.activeChat.title) || '原对话') + '」'
+          }
+        });
+        targetChat = await S().saveChat({
+          id: targetChat.id,
+          messages: nextMsgs,
+          updatedAt: Date.now()
+        });
+      }
+      _state.activeChatId = targetChat.id;
+      _state.activeChat = targetChat;
+      _state.messages = Array.isArray(targetChat.messages) ? targetChat.messages.slice() : [];
+      _state.quotedMessage = null;
+      syncQuoteBarUI(page);
+      closeInlineModal(page);
+      await reloadChatList(page);
+      await refreshEffectiveApi();
+      syncContextStrip(page);
+      updateMainStage(page);
+      if (mode === 'draft') {
+        var inputEl = page.querySelector('#aiw-input');
+        if (inputEl) {
+          inputEl.value = text;
+          syncComposerButtons(page);
+          try { inputEl.focus(); } catch (_) {}
+        }
+        notifyToast('已填入目标对话输入框');
+      } else {
+        notifyToast('已转发到「' + (targetChat.title || '新对话') + '」');
+      }
+    }
+
+    function bindChatClicks() {
+      modal.querySelectorAll('[data-fwd-chat]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          forwardToChat(btn.getAttribute('data-fwd-chat'));
+        });
+      });
+    }
+    bindChatClicks();
+
+    var searchEl = modal.querySelector('#aiw-fwd-search');
+    if (searchEl) {
+      searchEl.addEventListener('input', function() {
+        var listEl = modal.querySelector('#aiw-fwd-list');
+        if (listEl) {
+          listEl.innerHTML = renderChatTargetsHtml(searchEl.value);
+          bindChatClicks();
+        }
+      });
+    }
+
+    modal.querySelector('#aiw-fwd-new-chat').addEventListener('click', function() {
+      forwardToChat('');
+    });
+    modal.querySelector('#aiw-fwd-copy').addEventListener('click', async function() {
+      var ok = await copyTextSafely(text);
+      if (ok) closeInlineModal(page);
+    });
+  }
+
+  function openShareMessageModal(page, msg) {
+    if (!msg) return;
+    var text = String(msg.content || msg.error || '').trim();
+    if (!text) {
+      notifyToast('该消息暂无可分享的内容');
+      return;
+    }
+    var chatTitle = (_state.activeChat && _state.activeChat.title) || '知屿对话';
+    var roleLabel = msg.role === 'user' ? '我的提问' : ('知屿回复' + (msg.model ? (' · ' + msg.model) : ''));
+    var formattedText = '【' + chatTitle + '】\n' + roleLabel + '：\n\n' + text;
+    var canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+
+    var bodyHtml =
+      '<div class="aiw-msg-share-card">' +
+        '<div class="aiw-msg-share-meta">' + escapeHtml(chatTitle) + ' · ' + escapeHtml(roleLabel) + '</div>' +
+        '<div class="aiw-msg-share-body">' + escapeHtml(text.length > 420 ? (text.slice(0, 420) + '…') : text) + '</div>' +
+      '</div>' +
+      '<div class="aiw-picker-list" style="margin-top:10px">' +
+        '<button type="button" class="aiw-picker-item" id="aiw-share-copy">' +
+          '<span class="aiw-picker-icon"><i class="fa-regular fa-copy"></i></span>' +
+          '<div class="aiw-picker-text"><div class="aiw-picker-title">复制带来源的分享文本</div><div class="aiw-picker-desc">适合粘贴到微信、备忘录或文档</div></div>' +
+        '</button>' +
+        '<button type="button" class="aiw-picker-item" id="aiw-share-md">' +
+          '<span class="aiw-picker-icon"><i class="fa-brands fa-markdown"></i></span>' +
+          '<div class="aiw-picker-text"><div class="aiw-picker-title">导出为 Markdown (.md)</div><div class="aiw-picker-desc">保留完整排版与代码块格式</div></div>' +
+        '</button>' +
+        '<button type="button" class="aiw-picker-item" id="aiw-share-txt">' +
+          '<span class="aiw-picker-icon"><i class="fa-regular fa-file-lines"></i></span>' +
+          '<div class="aiw-picker-text"><div class="aiw-picker-title">导出为纯文本 (.txt)</div><div class="aiw-picker-desc">通用纯文本归档文件</div></div>' +
+        '</button>' +
+        (canNativeShare
+          ? '<button type="button" class="aiw-picker-item" id="aiw-share-native">' +
+              '<span class="aiw-picker-icon"><i class="fa-solid fa-share-nodes"></i></span>' +
+              '<div class="aiw-picker-text"><div class="aiw-picker-title">调用系统分享</div><div class="aiw-picker-desc">通过设备系统分享面板发送</div></div>' +
+            '</button>'
+          : '') +
+      '</div>';
+
+    var modal = showInlineModal(page, '分享消息', bodyHtml, '');
+    if (!modal) return;
+    var safeSlug = chatTitle.replace(/[\\/:*?"<>|]/g, '_').slice(0, 24) || 'zhiyu-message';
+
+    modal.querySelector('#aiw-share-copy').addEventListener('click', async function() {
+      var ok = await copyTextSafely(formattedText);
+      if (ok) closeInlineModal(page);
+    });
+    modal.querySelector('#aiw-share-md').addEventListener('click', function() {
+      var mdDoc = '# ' + chatTitle + '\n\n> ' + roleLabel + '\n\n' + text + '\n';
+      downloadWorkspaceTextFile(safeSlug + '.md', mdDoc, 'text/markdown;charset=utf-8');
+      closeInlineModal(page);
+    });
+    modal.querySelector('#aiw-share-txt').addEventListener('click', function() {
+      downloadWorkspaceTextFile(safeSlug + '.txt', formattedText, 'text/plain;charset=utf-8');
+      closeInlineModal(page);
+    });
+    var nativeBtn = modal.querySelector('#aiw-share-native');
+    if (nativeBtn) {
+      nativeBtn.addEventListener('click', async function() {
+        try {
+          await navigator.share({ title: chatTitle, text: formattedText });
+          closeInlineModal(page);
+        } catch (err) {
+          if (!err || err.name !== 'AbortError') {
+            notifyToast('系统分享不可用，已为您复制文本');
+            await copyTextSafely(formattedText);
+          }
+        }
+      });
+    }
+  }
+
+  function extractWebPreviewPayload(rawContent, isDarkTheme) {
+    var src = String(rawContent || '');
+    var htmlBlocks = [];
+    var fenceRe = /```(html|htm|svg)\s*\n([\s\S]*?)```/gi;
+    var match;
+    while ((match = fenceRe.exec(src)) !== null) {
+      if (match[2] && match[2].trim()) {
+        htmlBlocks.push(match[2].trim());
+      }
+    }
+
+    var modeLabel = 'Markdown 安全排版视图';
+    var rawSourceHtml = '';
+    var extractedCode = '';
+    if (htmlBlocks.length) {
+      modeLabel = 'HTML / SVG 安全沙箱渲染（共 ' + htmlBlocks.length + ' 段）';
+      extractedCode = htmlBlocks.join('\n\n');
+    } else if (/^\s*(?:<!doctype\s+html|<html\b|<div\b|<section\b|<main\b|<article\b|<table\b|<svg\b|<style\b)/i.test(src)) {
+      modeLabel = 'HTML 原文安全沙箱渲染';
+      extractedCode = src.trim();
+    }
+
+    var cspMeta = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; script-src \'unsafe-inline\'; img-src data: blob:; font-src data:; connect-src \'none\'; form-action \'none\'; base-uri \'none\';">';
+    var baseStyle =
+      '<style>' +
+        'html,body{margin:0;padding:14px;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.65;word-break:break-word;' +
+        (isDarkTheme ? 'background:#16171a;color:#f2f2f3;' : 'background:#ffffff;color:#1f2328;') + '}' +
+        'pre{overflow:auto;padding:10px 12px;border-radius:10px;background:' + (isDarkTheme ? '#222429' : '#f4f4f5') + ';}' +
+        'code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;}' +
+        'table{border-collapse:collapse;width:100%;margin:8px 0;}th,td{border:1px solid ' + (isDarkTheme ? 'rgba(255,255,255,.15)' : 'rgba(0,0,0,.12)') + ';padding:6px 10px;text-align:left;}' +
+        'blockquote{margin:8px 0;padding:4px 12px;border-left:3px solid #ec4899;opacity:.9;}' +
+        'img,svg{max-width:100%;height:auto;}' +
+      '</style>';
+
+    if (extractedCode) {
+      rawSourceHtml = extractedCode;
+      // 剥离原文档中可能削弱隔离策略的 meta CSP 或 base 标签
+      var cleaned = extractedCode
+        .replace(/<meta[^>]*http-equiv\s*=\s*['"]?Content-Security-Policy['"]?[^>]*>/gi, '')
+        .replace(/<base\b[^>]*>/gi, '');
+      var srcdoc = '';
+      if (/<html[\s>]/i.test(cleaned)) {
+        if (/<head[\s>]/i.test(cleaned)) {
+          srcdoc = cleaned.replace(/<head([^>]*)>/i, '<head$1>' + cspMeta);
+        } else {
+          srcdoc = cleaned.replace(/<html([^>]*)>/i, '<html$1><head>' + cspMeta + '</head>');
+        }
+      } else {
+        srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8">' + cspMeta + baseStyle + '</head><body>' + cleaned + '</body></html>';
+      }
+      return { modeLabel: modeLabel, srcdoc: srcdoc, sourceCode: rawSourceHtml };
+    }
+
+    var renderedMd = renderMarkdownHtml(src);
+    rawSourceHtml = renderedMd;
+    var mdDoc = '<!DOCTYPE html><html><head><meta charset="utf-8">' + cspMeta + baseStyle +
+      '<style>.aiw-code-copy-btn{display:none;}.aiw-code-block{margin:10px 0;border:1px solid ' + (isDarkTheme ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.09)') + ';border-radius:10px;overflow:hidden;}.aiw-code-head{padding:5px 10px;font-size:11px;opacity:.75;border-bottom:1px solid ' + (isDarkTheme ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.07)') + ';}</style>' +
+      '</head><body>' + renderedMd + '</body></html>';
+    return { modeLabel: modeLabel, srcdoc: mdDoc, sourceCode: rawSourceHtml };
+  }
+
+  function openWebViewRenderModal(page, msg) {
+    if (!msg) return;
+    var content = String(msg.content || msg.error || '').trim();
+    if (!content) {
+      notifyToast('该消息暂无可渲染的内容');
+      return;
+    }
+    var isDark = page.classList.contains('aiw-theme-dark');
+    var payload = extractWebPreviewPayload(content, isDark);
+
+    var bodyHtml =
+      '<div class="aiw-webview-banner">' +
+        '<i class="fa-solid fa-shield-halved"></i>' +
+        '<span>' + escapeHtml(payload.modeLabel) + ' · 沙箱隔离（禁止访问本地数据与网络）</span>' +
+      '</div>' +
+      '<div class="aiw-webview-tabs">' +
+        '<button type="button" class="aiw-webview-tab is-active" data-wv-tab="preview">渲染预览</button>' +
+        '<button type="button" class="aiw-webview-tab" data-wv-tab="source">HTML 源码</button>' +
+      '</div>' +
+      '<div class="aiw-webview-stage" id="aiw-wv-preview-pane">' +
+        '<iframe class="aiw-webview-iframe" id="aiw-wv-iframe" sandbox="allow-scripts" referrerpolicy="no-referrer" title="安全网页视图预览"></iframe>' +
+      '</div>' +
+      '<pre class="aiw-webview-source" id="aiw-wv-source-pane" hidden>' + escapeHtml(payload.sourceCode) + '</pre>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-wv-copy-src">复制源码</button>' +
+      '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-wv-close">关闭</button>';
+
+    var modal = showInlineModal(page, '网页视图渲染', bodyHtml, footerHtml);
+    if (!modal) return;
+    var dialogEl = modal.querySelector('.aiw-ws-modal');
+    if (dialogEl) dialogEl.classList.add('aiw-webview-modal');
+
+    var iframeEl = modal.querySelector('#aiw-wv-iframe');
+    if (iframeEl) {
+      iframeEl.srcdoc = payload.srcdoc;
+    }
+
+    var previewPane = modal.querySelector('#aiw-wv-preview-pane');
+    var sourcePane = modal.querySelector('#aiw-wv-source-pane');
+    modal.querySelectorAll('[data-wv-tab]').forEach(function(tabBtn) {
+      tabBtn.addEventListener('click', function() {
+        var tab = tabBtn.getAttribute('data-wv-tab');
+        modal.querySelectorAll('[data-wv-tab]').forEach(function(b) {
+          b.classList.toggle('is-active', b === tabBtn);
+        });
+        if (previewPane) previewPane.hidden = tab !== 'preview';
+        if (sourcePane) sourcePane.hidden = tab !== 'source';
+      });
+    });
+
+    modal.querySelector('#aiw-wv-copy-src').addEventListener('click', function() {
+      copyTextSafely(payload.sourceCode);
+    });
+    modal.querySelector('#aiw-wv-close').addEventListener('click', function() {
+      closeInlineModal(page);
+    });
+  }
+
+  function detectPreferredTranslationTarget(text) {
+    var src = String(text || '');
+    var zhCount = (src.match(/[\u4e00-\u9fff]/g) || []).length;
+    var enCount = (src.match(/[a-zA-Z]/g) || []).length;
+    if (zhCount >= 4 && zhCount >= enCount * 0.25) {
+      return TRANSLATION_TARGETS[1]; // 英文
+    }
+    return TRANSLATION_TARGETS[0]; // 简体中文
+  }
+
+  async function translateMessageToLanguage(page, msg, langCode, langLabel, langHint) {
+    if (!msg) return;
+    var text = String(msg.content || '').trim();
+    if (!text) {
+      notifyToast('该消息暂无可翻译的正文内容');
+      return;
+    }
+    if (!AI() || typeof AI().requestChatCompletion !== 'function') {
+      notifyToast('AI 引擎尚未就绪');
+      return;
+    }
+
+    var effective = await refreshEffectiveApi();
+    if (!effective || !effective.configured) {
+      var warnModal = showInlineModal(
+        page,
+        '尚未配置可用的 AI API',
+        '<p class="aiw-st-modal-msg">翻译功能需要调用模型接口，请先在弯弯机设置或「知屿专属 API」中完成配置。</p>',
+        '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-tr-noapi-cancel">取消</button>' +
+        '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-tr-noapi-go">前往配置</button>'
+      );
+      if (warnModal) {
+        warnModal.querySelector('#aiw-tr-noapi-cancel').addEventListener('click', function() { closeInlineModal(page); });
+        warnModal.querySelector('#aiw-tr-noapi-go').addEventListener('click', function() {
+          closeInlineModal(page);
+          openSettingsView(page, 'custom-api');
+        });
+      }
+      return;
+    }
+
+    _state.translatingMap[msg.id] = { lang: langCode, label: langLabel };
+    updateMainStage(page, { preserveScroll: true });
+
+    try {
+      var targetDesc = langHint ? (langLabel + ' (' + langHint + ')') : langLabel;
+      var res = await AI().requestChatCompletion({
+        apiConfig: effective,
+        model: effective.model,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content: '你是专业翻译助手。请将用户提供的全部文本准确、自然地翻译为「' + targetDesc + '」。要求：严格保留原有 Markdown 结构、代码块（代码变量名与代码本身不要篡改）、列表和换行排版；只输出翻译结果本身，不要附带任何前言、解释或额外说明。'
+          },
+          {
+            role: 'user',
+            content: text
+          }
+        ]
+      });
+      var translatedText = String((res && res.content) || '').trim();
+      if (!translatedText) {
+        throw new Error('模型未返回有效译文');
+      }
+      var liveMsg = _state.messages.find(function(m) { return m.id === msg.id; });
+      if (liveMsg) {
+        if (!liveMsg.translations || typeof liveMsg.translations !== 'object') {
+          liveMsg.translations = {};
+        }
+        liveMsg.translations[langCode] = {
+          lang: langCode,
+          langLabel: langLabel,
+          text: translatedText,
+          model: (res && res.model) || effective.model || '',
+          updatedAt: Date.now()
+        };
+        _state.activeTranslationLangMap[liveMsg.id] = langCode;
+        await persistCurrentChatMessages();
+      }
+      notifyToast('已翻译为' + langLabel + '（已保留原文）');
+    } catch (err) {
+      notifyToast('翻译失败：' + String((err && err.message) || '请稍后重试'));
+    } finally {
+      delete _state.translatingMap[msg.id];
+      updateMainStage(page, { preserveScroll: true });
+    }
+  }
+
+  function openTranslateTargetModal(page, msg) {
+    if (!msg) return;
+    if (!String(msg.content || '').trim()) {
+      notifyToast('该消息暂无可翻译的正文内容');
+      return;
+    }
+    var recommended = detectPreferredTranslationTarget(msg.content);
+    var existingMap = (msg.translations && typeof msg.translations === 'object') ? msg.translations : {};
+
+    var quickBtnsHtml = TRANSLATION_TARGETS.map(function(t) {
+      var isRec = t.lang === recommended.lang;
+      var hasCached = !!(existingMap[t.lang] && existingMap[t.lang].text);
+      return (
+        '<button type="button" class="aiw-picker-item' + (isRec ? ' is-selected' : '') + '" data-tr-lang="' + escapeHtml(t.lang) + '" data-tr-label="' + escapeHtml(t.label) + '" data-tr-hint="' + escapeHtml(t.hint) + '">' +
+          '<span class="aiw-picker-icon"><i class="fa-solid fa-language"></i></span>' +
+          '<div class="aiw-picker-text">' +
+            '<div class="aiw-picker-title">' + escapeHtml(t.label) +
+              (isRec ? ' <span class="aiw-mini-badge">推荐</span>' : '') +
+              (hasCached ? ' <span class="aiw-mini-badge">已译</span>' : '') +
+            '</div>' +
+            '<div class="aiw-picker-desc">' + (hasCached ? '点击重新翻译或刷新译文' : '翻译为 ' + escapeHtml(t.hint) + '（不覆盖原文）') + '</div>' +
+          '</div>' +
+        '</button>'
+      );
+    }).join('');
+
+    var bodyHtml =
+      '<div class="aiw-msg-op-tip">选择目标语言，译文将在原回复下方独立展示，不会覆盖原文。</div>' +
+      '<div class="aiw-model-manual-row">' +
+        '<input type="text" class="aiw-field-input" id="aiw-tr-custom-input" placeholder="或输入其他目标语言（如：俄语 / 泰语）...">' +
+        '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-tr-custom-go">翻译</button>' +
+      '</div>' +
+      '<div class="aiw-picker-list aiw-model-picker-list">' + quickBtnsHtml + '</div>';
+
+    var modal = showInlineModal(page, '翻译回复', bodyHtml, '');
+    if (!modal) return;
+
+    modal.querySelectorAll('[data-tr-lang]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var lang = btn.getAttribute('data-tr-lang');
+        var label = btn.getAttribute('data-tr-label') || lang;
+        var hint = btn.getAttribute('data-tr-hint') || label;
+        closeInlineModal(page);
+        translateMessageToLanguage(page, msg, lang, label, hint);
+      });
+    });
+
+    modal.querySelector('#aiw-tr-custom-go').addEventListener('click', function() {
+      var customEl = modal.querySelector('#aiw-tr-custom-input');
+      var customLang = String(customEl ? customEl.value : '').trim();
+      if (!customLang) {
+        notifyToast('请输入目标语言名称');
+        return;
+      }
+      closeInlineModal(page);
+      translateMessageToLanguage(page, msg, 'custom:' + customLang, customLang, customLang);
+    });
+  }
+
+  function openMessageMoreMenu(page, msg) {
+    if (!page || !msg) return;
+    var isFav = isMessageFavoritedInState(msg.id);
+    var roleText = msg.role === 'user' ? '我的消息' : '知屿回复';
+    var preview = String(msg.content || msg.error || '').replace(/\s+/g, ' ').trim();
+    if (preview.length > 72) preview = preview.slice(0, 72) + '…';
+
+    var menuItems = [
+      { act: 'copy', icon: 'fa-regular fa-copy', label: '复制' },
+      { act: 'quote', icon: 'fa-solid fa-reply', label: '引用' },
+      { act: 'forward', icon: 'fa-solid fa-share', label: '转发' },
+      { act: 'select-text', icon: 'fa-solid fa-i-cursor', label: '选择文本' },
+      { act: 'edit', icon: 'fa-regular fa-pen-to-square', label: '编辑' },
+      { act: 'delete', icon: 'fa-regular fa-trash-can', label: '删除', danger: true },
+      { act: 'regen', icon: 'fa-solid fa-rotate-right', label: '重新生成' },
+      { act: 'favorite', icon: isFav ? 'fa-solid fa-star' : 'fa-regular fa-star', label: isFav ? '取消收藏' : '添加收藏', active: isFav },
+      { act: 'share', icon: 'fa-solid fa-arrow-up-from-bracket', label: '分享' },
+      { act: 'branch', icon: 'fa-solid fa-code-branch', label: '创建分支' },
+      { act: 'web-preview', icon: 'fa-solid fa-globe', label: '网页视图渲染' }
+    ];
+
+    var gridHtml = menuItems.map(function(item) {
+      var cls = 'aiw-msg-menu-item' +
+        (item.danger ? ' is-danger' : '') +
+        (item.active ? ' is-active' : '');
+      return (
+        '<button type="button" class="' + cls + '" data-menu-act="' + escapeHtml(item.act) + '">' +
+          '<span class="aiw-msg-menu-icon"><i class="' + escapeHtml(item.icon) + '"></i></span>' +
+          '<span class="aiw-msg-menu-label">' + escapeHtml(item.label) + '</span>' +
+        '</button>'
+      );
+    }).join('');
+
+    var bodyHtml =
+      '<div class="aiw-msg-menu-preview">' +
+        '<span class="aiw-msg-menu-role">' + escapeHtml(roleText) + '</span>' +
+        '<div class="aiw-msg-menu-snippet">' + escapeHtml(preview || '（空白消息）') + '</div>' +
+      '</div>' +
+      '<div class="aiw-msg-menu-grid">' + gridHtml + '</div>';
+
+    var modal = showInlineModal(page, '消息操作', bodyHtml, '');
+    if (!modal) return;
+    var dialog = modal.querySelector('.aiw-ws-modal');
+    if (dialog) dialog.classList.add('aiw-msg-menu-dialog');
+
+    modal.querySelectorAll('[data-menu-act]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var act = btn.getAttribute('data-menu-act');
+        closeInlineModal(page);
+        if (act === 'copy') {
+          await copyTextSafely(msg.content || msg.error || '');
+        } else if (act === 'quote') {
+          quoteMessageAction(page, msg);
+        } else if (act === 'forward') {
+          await openForwardMessageModal(page, msg);
+        } else if (act === 'select-text') {
+          openSelectTextModal(page, msg);
+        } else if (act === 'edit') {
+          openEditMessageModal(page, msg);
+        } else if (act === 'delete') {
+          confirmDeleteMessage(page, msg);
+        } else if (act === 'regen') {
+          await regenerateAtMessage(page, msg.id);
+        } else if (act === 'favorite') {
+          await toggleFavoriteMessageAction(page, msg);
+        } else if (act === 'share') {
+          openShareMessageModal(page, msg);
+        } else if (act === 'branch') {
+          await branchChatFromMessage(page, msg);
+        } else if (act === 'web-preview') {
+          openWebViewRenderModal(page, msg);
+        }
+      });
+    });
   }
 
   function bindMessageListDelegation(page) {
@@ -1309,21 +2353,42 @@
       if (!targetMsg) return;
 
       if (act === 'copy') {
-        copyTextSafely(targetMsg.content || '');
+        copyTextSafely(targetMsg.content || targetMsg.error || '');
+      } else if (act === 'edit') {
+        openEditMessageModal(page, targetMsg);
       } else if (act === 'regen') {
         regenerateAtMessage(page, msgId);
+      } else if (act === 'translate') {
+        openTranslateTargetModal(page, targetMsg);
+      } else if (act === 'more') {
+        openMessageMoreMenu(page, targetMsg);
+      } else if (act === 'copy-trans') {
+        var lang = actBtn.getAttribute('data-trans-lang') || '';
+        var tObj = targetMsg.translations && targetMsg.translations[lang];
+        if (tObj && tObj.text) copyTextSafely(tObj.text);
+      } else if (act === 'hide-trans') {
+        _state.activeTranslationLangMap[targetMsg.id] = '__hidden__';
+        updateMainStage(page, { preserveScroll: true });
+      } else if (act === 'switch-trans-lang') {
+        var nextLang = actBtn.getAttribute('data-trans-lang') || '';
+        if (nextLang) {
+          _state.activeTranslationLangMap[targetMsg.id] = nextLang;
+          updateMainStage(page, { preserveScroll: true });
+        }
       }
     });
   }
 
   function updateStreamingBubbleDom(page, msg) {
     if (!page || !msg) return;
-    var row = page.querySelector('.aiw-msg-row[data-msg-id="' + msg.id + '"]');
+    var row = Array.from(page.querySelectorAll('.aiw-msg-row')).find(function(el) {
+      return el.getAttribute('data-msg-id') === msg.id;
+    });
     if (!row) {
       updateMainStage(page);
       return;
     }
-    var bubble = row.querySelector('#aiw-msg-bubble-' + msg.id);
+    var bubble = row.querySelector('.aiw-msg-bubble');
     if (bubble) {
       bubble.innerHTML = msg.content
         ? renderMarkdownHtml(msg.content)
@@ -1346,8 +2411,12 @@
     }
   }
 
-  function updateMainStage(page) {
+  function updateMainStage(page, options) {
     if (!page) return;
+    var preserveScroll = !!(options && options.preserveScroll);
+    var scrollEl = page.querySelector('#aiw-main-scroll');
+    var prevScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+
     var emptyStage = page.querySelector('#aiw-empty-stage');
     var msgList = page.querySelector('#aiw-message-list');
     var emptyTitle = page.querySelector('#aiw-empty-title');
@@ -1396,9 +2465,8 @@
       }).join('');
     }
 
-    var scrollEl = page.querySelector('#aiw-main-scroll');
     if (scrollEl) {
-      scrollEl.scrollTop = scrollEl.scrollHeight;
+      scrollEl.scrollTop = preserveScroll ? prevScrollTop : scrollEl.scrollHeight;
     }
   }
 
@@ -1465,10 +2533,17 @@
   }
 
   // ===== 核心：真实流式发送与重新生成 =====
+  function buildQuotedPromptText(userText, quoteObj) {
+    if (!quoteObj || !quoteObj.content) return userText;
+    var roleLabel = quoteObj.role === 'assistant' ? '知屿先前的回复' : '先前的消息';
+    var quotedLines = String(quoteObj.content).replace(/\r?\n/g, '\n> ');
+    return '【引用' + roleLabel + '】\n> ' + quotedLines + '\n\n' + userText;
+  }
+
   async function persistCurrentChatMessages() {
     if (!S() || !_state.activeChat) return null;
     var cleanMessages = _state.messages.map(function(m) {
-      return {
+      var item = {
         id: m.id,
         role: m.role,
         content: m.content || '',
@@ -1478,6 +2553,10 @@
         aborted: !!m.aborted,
         deepThink: !!m.deepThink
       };
+      if (m.quote && m.quote.content) item.quote = m.quote;
+      if (m.editedAt) item.editedAt = m.editedAt;
+      if (m.translations && typeof m.translations === 'object') item.translations = m.translations;
+      return item;
     });
     _state.activeChat = await S().saveChat({
       id: _state.activeChat.id,
@@ -1757,6 +2836,10 @@
     }
 
     var historyBeforeTurn = _state.messages.slice();
+    var activeQuote = _state.quotedMessage
+      ? { id: _state.quotedMessage.id, role: _state.quotedMessage.role, content: _state.quotedMessage.content }
+      : null;
+    var promptForAI = buildQuotedPromptText(text, activeQuote);
     var userMsg = {
       id: S() ? S().generateMessageId() : ('msg_' + Date.now() + '_u'),
       role: 'user',
@@ -1764,6 +2847,8 @@
       createdAt: Date.now(),
       deepThink: _state.deepThinkEnabled
     };
+    if (activeQuote) userMsg.quote = activeQuote;
+
     var assistantMsg = {
       id: S() ? S().generateMessageId() : ('msg_' + Date.now() + '_a'),
       role: 'assistant',
@@ -1775,6 +2860,8 @@
 
     _state.messages.push(userMsg);
     input.value = '';
+    _state.quotedMessage = null;
+    syncQuoteBarUI(page);
     await persistCurrentChatMessages();
 
     // 方式 A：智能语义记忆意图即时识别与落库（save / update / delete / clarify）
@@ -1853,7 +2940,7 @@
     syncComposerButtons(page);
     updateMainStage(page);
 
-    await executeStreamingTurn(page, historyBeforeTurn, text, assistantMsg, effective, {
+    await executeStreamingTurn(page, historyBeforeTurn, promptForAI, assistantMsg, effective, {
       userMsgId: userMsg.id,
       skipAutoMemory: !!(explicitRes && (explicitRes.isExplicit || explicitRes.intent === 'clarify')),
       memoryTurnNotice: memoryTurnNotice
@@ -1861,15 +2948,23 @@
   }
 
   async function regenerateAtMessage(page, msgId) {
-    if (_state.isStreaming) return;
+    if (_state.isStreaming) {
+      notifyToast('正在生成回答，请稍候或先停止');
+      return;
+    }
     var targetIdx = _state.messages.findIndex(function(m) { return m.id === msgId; });
     if (targetIdx === -1) return;
 
+    var targetMsg = _state.messages[targetIdx];
     var userIdx = -1;
-    for (var i = targetIdx - 1; i >= 0; i--) {
-      if (_state.messages[i].role === 'user') {
-        userIdx = i;
-        break;
+    if (targetMsg.role === 'user') {
+      userIdx = targetIdx;
+    } else {
+      for (var i = targetIdx - 1; i >= 0; i--) {
+        if (_state.messages[i].role === 'user') {
+          userIdx = i;
+          break;
+        }
       }
     }
     if (userIdx === -1) {
@@ -1884,7 +2979,8 @@
       return;
     }
 
-    var userPrompt = _state.messages[userIdx].content;
+    var userMsgObj = _state.messages[userIdx];
+    var userPrompt = buildQuotedPromptText(userMsgObj.content, userMsgObj.quote);
     var historyBeforeTurn = _state.messages.slice(0, userIdx);
     var assistantMsg = {
       id: S() ? S().generateMessageId() : ('msg_' + Date.now() + '_a'),
@@ -1898,8 +2994,12 @@
     _state.messages = _state.messages.slice(0, userIdx + 1);
     _state.messages.push(assistantMsg);
     updateMainStage(page);
+    await persistCurrentChatMessages();
 
-    await executeStreamingTurn(page, historyBeforeTurn, userPrompt, assistantMsg, effective, { skipAutoMemory: true });
+    await executeStreamingTurn(page, historyBeforeTurn, userPrompt, assistantMsg, effective, {
+      userMsgId: userMsgObj.id,
+      skipAutoMemory: true
+    });
   }
 
   async function startNewChat(page, silent) {
@@ -1909,12 +3009,14 @@
     _state.activeChatId = null;
     _state.activeChat = null;
     _state.messages = [];
+    _state.quotedMessage = null;
     _state.explicitNoPreset = false;
     if (!_state.general || _state.general.autoUseDefaultPreset !== false) {
       _state.activePreset = _state.defaultPreset;
     } else {
       _state.activePreset = null;
     }
+    syncQuoteBarUI(page);
     await refreshEffectiveApi();
     syncContextStrip(page);
     updateMainStage(page);
@@ -2045,6 +3147,14 @@
       syncDeepThinkUI(page);
     });
 
+    var quoteClearBtn = page.querySelector('#aiw-quote-clear');
+    if (quoteClearBtn) {
+      quoteClearBtn.addEventListener('click', function() {
+        _state.quotedMessage = null;
+        syncQuoteBarUI(page);
+      });
+    }
+
     var ATTACH_LABELS = {
       camera: '拍照',
       photos: '照片',
@@ -2134,6 +3244,7 @@
     attachAppearanceMediaListener(page);
     renderSidebarChats(page);
     syncDeepThinkUI(page);
+    syncQuoteBarUI(page);
     syncComposerButtons(page);
     syncSidebarAccountDom(page);
     syncContextStrip(page);
