@@ -365,6 +365,19 @@
   }
 
   // ===== 5. 预设与提示词中心（每个预设独立存储于 db.config: 'aiw_preset:<id>'） =====
+  function normalizeWorldBookIdList(raw) {
+    if (!Array.isArray(raw)) return [];
+    var seen = {};
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var id = String(raw[i] == null ? '' : raw[i]).trim();
+      if (!id || seen[id]) continue;
+      seen[id] = true;
+      out.push(id);
+    }
+    return out;
+  }
+
   function normalizePreset(raw, forcedId) {
     var now = Date.now();
     var id = String(forcedId || (raw && raw.id) || generatePresetId());
@@ -378,6 +391,7 @@
       replyStyle: String((raw && raw.replyStyle) || '温和自然'),
       detailLevel: ['精简', '适中', '详尽'].indexOf(raw && raw.detailLevel) !== -1 ? raw.detailLevel : '适中',
       isDefault: !!(raw && raw.isDefault),
+      worldBookIds: normalizeWorldBookIdList(raw && raw.worldBookIds),
       createdAt: Number(raw && raw.createdAt) || now,
       updatedAt: Number(raw && raw.updatedAt) || now
     };
@@ -567,7 +581,8 @@
         description: p.description,
         systemPrompt: p.systemPrompt,
         replyStyle: p.replyStyle,
-        detailLevel: p.detailLevel
+        detailLevel: p.detailLevel,
+        worldBookIds: p.worldBookIds
       }
     }, null, 2);
   }
@@ -591,7 +606,8 @@
               description: String(src.description || ''),
               systemPrompt: String(src.systemPrompt != null ? src.systemPrompt : (src.prompt || '')),
               replyStyle: String(src.replyStyle || '温和自然'),
-              detailLevel: ['精简', '适中', '详尽'].indexOf(src.detailLevel) !== -1 ? src.detailLevel : '适中'
+              detailLevel: ['精简', '适中', '详尽'].indexOf(src.detailLevel) !== -1 ? src.detailLevel : '适中',
+              worldBookIds: normalizeWorldBookIdList(src.worldBookIds)
             }
           };
         }
@@ -772,6 +788,7 @@
       systemPrompt: String(preset.systemPrompt || ''),
       replyStyle: String(preset.replyStyle || '温和自然'),
       detailLevel: ['精简', '适中', '详尽'].indexOf(preset.detailLevel) !== -1 ? preset.detailLevel : '适中',
+      worldBookIds: normalizeWorldBookIdList(preset.worldBookIds),
       capturedAt: Number(preset.capturedAt) || Date.now()
     };
   }
@@ -1735,6 +1752,7 @@
       name: name,
       description: description,
       enabled: src.enabled !== false,
+      globalEnabled: src.globalEnabled === true,
       entries: entries,
       extraFields: extraFields,
       createdAt: createdAt,
@@ -1808,7 +1826,323 @@
     var nextIds = ids.filter(function(item) { return item !== id; });
     await dbDeleteConfig(KEYS.WORLDBOOK_PREFIX + id);
     await dbPutConfig(KEYS.WORLDBOOK_IDS, nextIds);
+
+    // 同步清理所有预设中指向已删除世界书的失效绑定，不影响其他绑定
+    try {
+      var presetIds = await dbGetConfig(KEYS.PRESET_IDS);
+      if (Array.isArray(presetIds) && presetIds.length) {
+        for (var i = 0; i < presetIds.length; i++) {
+          var pid = presetIds[i];
+          if (!pid) continue;
+          var rawPreset = await dbGetConfig(KEYS.PRESET_PREFIX + pid);
+          if (!rawPreset || typeof rawPreset !== 'object') continue;
+          var oldWbIds = normalizeWorldBookIdList(rawPreset.worldBookIds);
+          if (oldWbIds.indexOf(id) !== -1) {
+            var nextPreset = normalizePreset(Object.assign({}, rawPreset, {
+              worldBookIds: oldWbIds.filter(function(wbId) { return wbId !== id; })
+            }), pid);
+            await dbPutConfig(KEYS.PRESET_PREFIX + pid, nextPreset);
+          }
+        }
+      }
+    } catch (_) {}
+
     return true;
+  }
+
+  async function setWorldBookGlobalEnabled(id, globalEnabled) {
+    if (!id) return null;
+    var existing = await getWorldBook(id);
+    if (!existing) return null;
+    var next = normalizeWorldBookRecord(Object.assign({}, existing, {
+      id: existing.id,
+      globalEnabled: globalEnabled === true,
+      createdAt: existing.createdAt,
+      updatedAt: existing.updatedAt
+    }), existing.id);
+    await dbPutConfig(KEYS.WORLDBOOK_PREFIX + next.id, next);
+    return next;
+  }
+
+  async function listGlobalWorldBooks() {
+    var list = await listWorldBooks();
+    return list.filter(function(item) {
+      return item && item.globalEnabled === true;
+    });
+  }
+
+  function resolveEffectiveWorldBooksFromData(preset, allWorldBooks) {
+    var booksList = Array.isArray(allWorldBooks) ? allWorldBooks : [];
+    var byId = {};
+    var globalBooks = [];
+    for (var i = 0; i < booksList.length; i++) {
+      var wb = booksList[i];
+      if (!wb || !wb.id) continue;
+      byId[wb.id] = wb;
+      if (wb.globalEnabled === true) {
+        globalBooks.push(wb);
+      }
+    }
+
+    var boundIds = normalizeWorldBookIdList(preset && preset.worldBookIds);
+    var presetBooks = [];
+    for (var j = 0; j < boundIds.length; j++) {
+      var matched = byId[boundIds[j]];
+      if (matched) {
+        presetBooks.push(matched);
+      }
+    }
+
+    var seen = {};
+    var mergedBooks = [];
+    for (var g = 0; g < globalBooks.length; g++) {
+      var gb = globalBooks[g];
+      if (!seen[gb.id]) {
+        seen[gb.id] = true;
+        mergedBooks.push(gb);
+      }
+    }
+    for (var p = 0; p < presetBooks.length; p++) {
+      var pb = presetBooks[p];
+      if (!seen[pb.id]) {
+        seen[pb.id] = true;
+        mergedBooks.push(pb);
+      }
+    }
+
+    return {
+      books: mergedBooks,
+      globalBooks: globalBooks,
+      presetBooks: presetBooks,
+      globalCount: globalBooks.length,
+      presetCount: presetBooks.length,
+      effectiveCount: mergedBooks.length
+    };
+  }
+
+  async function resolveEffectiveWorldBooksForPreset(presetOrId, allWorldBooksOpt) {
+    var preset = null;
+    if (typeof presetOrId === 'string' && presetOrId.trim()) {
+      preset = await getPreset(presetOrId.trim());
+    } else if (presetOrId && typeof presetOrId === 'object') {
+      preset = presetOrId;
+    }
+    var allBooks = Array.isArray(allWorldBooksOpt) ? allWorldBooksOpt : await listWorldBooks();
+    return resolveEffectiveWorldBooksFromData(preset, allBooks);
+  }
+
+  function buildWorldBookMatchHaystack(options) {
+    if (typeof options === 'string') {
+      return options.trim();
+    }
+    var opts = options && typeof options === 'object' ? options : {};
+    var parts = [];
+    var messages = Array.isArray(opts.messages) ? opts.messages : [];
+    if (messages.length) {
+      var rawDepth = opts.scanDepth;
+      var scanDepth = rawDepth === 'all' || rawDepth === 0
+        ? messages.length
+        : (Number.isFinite(Number(rawDepth)) && Number(rawDepth) > 0 ? Math.floor(Number(rawDepth)) : 6);
+      var startIdx = Math.max(0, messages.length - scanDepth);
+      for (var i = startIdx; i < messages.length; i++) {
+        var msg = messages[i];
+        var msgText = typeof msg === 'string'
+          ? msg
+          : (msg && msg.content != null ? String(msg.content) : '');
+        msgText = msgText.trim();
+        if (msgText) parts.push(msgText);
+      }
+    }
+    var directTexts = [opts.text, opts.userInput, opts.query];
+    for (var j = 0; j < directTexts.length; j++) {
+      var dt = directTexts[j] != null ? String(directTexts[j]).trim() : '';
+      if (dt) parts.push(dt);
+    }
+    return parts.join('\n').trim();
+  }
+
+  function formatMatchedWorldBookEntries(matchedEntries) {
+    var list = Array.isArray(matchedEntries) ? matchedEntries : [];
+    if (!list.length) return '';
+    var blocks = [];
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      if (!item || !item.content) continue;
+      var title = String(item.comment || '').trim();
+      var content = String(item.content || '').trim();
+      if (!content) continue;
+      blocks.push(title ? ('[' + title + ']\n' + content) : content);
+    }
+    return blocks.join('\n\n');
+  }
+
+  function matchWorldBookEntriesFromData(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var preset = opts.preset && typeof opts.preset === 'object' ? opts.preset : null;
+    var allWorldBooks = Array.isArray(opts.worldBooks) ? opts.worldBooks : [];
+
+    var effectiveInfo = Array.isArray(opts.effectiveWorldBooks)
+      ? {
+          books: opts.effectiveWorldBooks,
+          globalBooks: opts.effectiveWorldBooks.filter(function(b) { return b && b.globalEnabled === true; }),
+          presetBooks: opts.effectiveWorldBooks.filter(function(b) { return b && b.globalEnabled !== true; })
+        }
+      : resolveEffectiveWorldBooksFromData(preset, allWorldBooks);
+
+    var globalIdSet = {};
+    var presetIdSet = {};
+    var rawGlobal = Array.isArray(effectiveInfo.globalBooks) ? effectiveInfo.globalBooks : [];
+    var rawPreset = Array.isArray(effectiveInfo.presetBooks) ? effectiveInfo.presetBooks : [];
+    for (var gi = 0; gi < rawGlobal.length; gi++) {
+      if (rawGlobal[gi] && rawGlobal[gi].id) globalIdSet[rawGlobal[gi].id] = true;
+    }
+    for (var pi = 0; pi < rawPreset.length; pi++) {
+      if (rawPreset[pi] && rawPreset[pi].id) presetIdSet[rawPreset[pi].id] = true;
+    }
+
+    // 仅保留已启用且去重后的有效世界书
+    var enabledBooks = [];
+    var seenBookIds = {};
+    var enabledGlobalCount = 0;
+    var enabledPresetCount = 0;
+    var rawBooks = Array.isArray(effectiveInfo.books) ? effectiveInfo.books : [];
+    for (var bi = 0; bi < rawBooks.length; bi++) {
+      var wb = rawBooks[bi];
+      if (!wb || typeof wb !== 'object' || !wb.id) continue;
+      if (wb.enabled === false) continue;
+      if (seenBookIds[wb.id]) continue;
+      seenBookIds[wb.id] = true;
+      enabledBooks.push(wb);
+      if (globalIdSet[wb.id]) enabledGlobalCount++;
+      if (presetIdSet[wb.id]) enabledPresetCount++;
+    }
+
+    var haystack = buildWorldBookMatchHaystack(opts);
+    var haystackLower = haystack.toLowerCase();
+
+    var seenEntryKeys = {};
+    var rawMatched = [];
+    var seq = 0;
+
+    for (var i = 0; i < enabledBooks.length; i++) {
+      var book = enabledBooks[i];
+      var isInGlobal = !!globalIdSet[book.id];
+      var isInPreset = !!presetIdSet[book.id];
+      var bookSource = (isInGlobal && isInPreset) ? 'both' : (isInGlobal ? 'global' : 'preset');
+      var entries = Array.isArray(book.entries) ? book.entries : [];
+
+      for (var ei = 0; ei < entries.length; ei++) {
+        var rawEntry = entries[ei];
+        if (!rawEntry || typeof rawEntry !== 'object') continue;
+        var entry = normalizeWorldBookEntry(rawEntry, ei);
+
+        // 仅匹配已启用且正文非空的词条
+        if (entry.disable === true) continue;
+        var trimmedContent = String(entry.content || '').trim();
+        if (!trimmedContent) continue;
+
+        // 防止同一词条重复匹配
+        var entryDedupKey = book.id + '::' + (entry.id || ('uid_' + entry.uid));
+        if (seenEntryKeys[entryDedupKey]) continue;
+
+        var matched = false;
+        var triggerType = 'keyword';
+        var matchedKeywords = [];
+
+        if (entry.constant === true) {
+          matched = true;
+          triggerType = 'constant';
+        } else if (haystackLower) {
+          var keywords = normalizeWorldBookKeywords(entry.key);
+          for (var ki = 0; ki < keywords.length; ki++) {
+            var kw = keywords[ki];
+            if (!kw) continue;
+            if (haystackLower.indexOf(kw.toLowerCase()) !== -1) {
+              matchedKeywords.push(kw);
+            }
+          }
+          if (matchedKeywords.length > 0) {
+            matched = true;
+            triggerType = 'keyword';
+          }
+        }
+
+        if (!matched) continue;
+
+        seenEntryKeys[entryDedupKey] = true;
+        rawMatched.push({
+          id: entry.id,
+          uid: entry.uid,
+          bookId: book.id,
+          bookName: book.name || '未命名世界书',
+          bookSource: bookSource,
+          comment: entry.comment || '',
+          content: trimmedContent,
+          order: Number.isFinite(Number(entry.order)) ? Math.round(Number(entry.order)) : 100,
+          constant: entry.constant === true,
+          triggerType: triggerType,
+          matchedKeywords: matchedKeywords,
+          _seq: seq++
+        });
+      }
+    }
+
+    var sortDesc = opts.sortDirection === 'desc';
+    rawMatched.sort(function(a, b) {
+      var diff = sortDesc ? (b.order - a.order) : (a.order - b.order);
+      if (diff !== 0) return diff;
+      return a._seq - b._seq;
+    });
+
+    var constantCount = 0;
+    var keywordCount = 0;
+    var matchedEntries = rawMatched.map(function(item) {
+      if (item.triggerType === 'constant') constantCount++;
+      else keywordCount++;
+      return {
+        id: item.id,
+        uid: item.uid,
+        bookId: item.bookId,
+        bookName: item.bookName,
+        bookSource: item.bookSource,
+        comment: item.comment,
+        content: item.content,
+        order: item.order,
+        constant: item.constant,
+        triggerType: item.triggerType,
+        matchedKeywords: item.matchedKeywords.slice()
+      };
+    });
+
+    return {
+      presetId: preset ? String(preset.id || '') : '',
+      presetName: preset ? String(preset.name || '') : '',
+      effectiveBooks: enabledBooks,
+      effectiveBookIds: enabledBooks.map(function(b) { return b.id; }),
+      effectiveBookCount: enabledBooks.length,
+      globalBookCount: enabledGlobalCount,
+      presetBookCount: enabledPresetCount,
+      matchedEntries: matchedEntries,
+      matchedCount: matchedEntries.length,
+      constantCount: constantCount,
+      keywordCount: keywordCount,
+      formattedText: formatMatchedWorldBookEntries(matchedEntries)
+    };
+  }
+
+  async function matchWorldBookEntries(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var preset = null;
+    if (opts.preset && typeof opts.preset === 'object') {
+      preset = opts.preset;
+    } else if (typeof opts.presetId === 'string' && opts.presetId.trim()) {
+      preset = await getPreset(opts.presetId.trim());
+    }
+    var worldBooks = Array.isArray(opts.worldBooks) ? opts.worldBooks : await listWorldBooks();
+    return matchWorldBookEntriesFromData(Object.assign({}, opts, {
+      preset: preset,
+      worldBooks: worldBooks
+    }));
   }
 
   async function createWorldBookEntry(bookId, data) {
@@ -1879,6 +2213,7 @@
         name: norm.name,
         description: norm.description,
         enabled: norm.enabled !== false,
+        globalEnabled: norm.globalEnabled === true,
         entries: norm.entries.map(function(entry, idx) {
           return normalizeWorldBookEntry(entry, idx);
         })
@@ -1950,6 +2285,7 @@
         name: bookName.slice(0, 80),
         description: String(wb.description || '').replace(/\r\n/g, '\n').trim().slice(0, 500),
         enabled: wb.enabled !== false,
+        globalEnabled: wb.globalEnabled === true,
         entries: normalizedEntries,
         extraFields: wb.extraFields && typeof wb.extraFields === 'object' && !Array.isArray(wb.extraFields)
           ? deepClone(wb.extraFields)
@@ -1968,6 +2304,7 @@
       name: parsed.book.name,
       description: parsed.book.description,
       enabled: parsed.book.enabled,
+      globalEnabled: parsed.book.globalEnabled === true,
       entries: parsed.book.entries,
       extraFields: parsed.book.extraFields
     });
@@ -2877,10 +3214,19 @@
     updateMemoryTask: updateMemoryTask,
     clearFinishedMemoryTasks: clearFinishedMemoryTasks,
     listWorldBooks: listWorldBooks,
+    listGlobalWorldBooks: listGlobalWorldBooks,
     getWorldBook: getWorldBook,
     createWorldBook: createWorldBook,
     updateWorldBook: updateWorldBook,
+    setWorldBookGlobalEnabled: setWorldBookGlobalEnabled,
     deleteWorldBook: deleteWorldBook,
+    normalizeWorldBookIdList: normalizeWorldBookIdList,
+    resolveEffectiveWorldBooksFromData: resolveEffectiveWorldBooksFromData,
+    resolveEffectiveWorldBooksForPreset: resolveEffectiveWorldBooksForPreset,
+    buildWorldBookMatchHaystack: buildWorldBookMatchHaystack,
+    formatMatchedWorldBookEntries: formatMatchedWorldBookEntries,
+    matchWorldBookEntriesFromData: matchWorldBookEntriesFromData,
+    matchWorldBookEntries: matchWorldBookEntries,
     normalizeWorldBookKeywords: normalizeWorldBookKeywords,
     createWorldBookEntry: createWorldBookEntry,
     updateWorldBookEntry: updateWorldBookEntry,

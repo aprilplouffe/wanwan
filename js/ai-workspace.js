@@ -37,6 +37,9 @@
     selectedModel: '',
     activePreset: null,
     presets: [],
+    worldbooks: [],
+    effectiveWorldBooks: [],
+    effectiveWorldBooksInfo: null,
     personalization: null,
     effectiveApi: null,
     isStreaming: false,
@@ -373,6 +376,30 @@
     return _state.defaultPreset || (_state.presets && _state.presets[0]) || null;
   }
 
+  function resolveLatestPresetForWorldBooks() {
+    var current = resolveEffectivePresetForState();
+    if (!current) return null;
+    if (current.id && Array.isArray(_state.presets) && _state.presets.length) {
+      var latest = _state.presets.find(function(p) { return p && p.id === current.id; });
+      if (latest) return latest;
+    }
+    return current;
+  }
+
+  function syncEffectiveWorldBooksForState() {
+    var preset = resolveLatestPresetForWorldBooks();
+    var allBooks = Array.isArray(_state.worldbooks) ? _state.worldbooks : [];
+    var info;
+    if (S() && typeof S().resolveEffectiveWorldBooksFromData === 'function') {
+      info = S().resolveEffectiveWorldBooksFromData(preset, allBooks);
+    } else {
+      info = { books: [], globalBooks: [], presetBooks: [], globalCount: 0, presetCount: 0, effectiveCount: 0 };
+    }
+    _state.effectiveWorldBooksInfo = info;
+    _state.effectiveWorldBooks = info.books || [];
+    return info;
+  }
+
   async function refreshEffectiveApi() {
     if (!AI() || typeof AI().resolveEffectiveApiConfig !== 'function') {
       _state.effectiveApi = null;
@@ -397,7 +424,8 @@
           S().getPersonalization(),
           S().listPresets(),
           S().getSelectedModel(),
-          S().listChats()
+          S().listChats(),
+          typeof S().listWorldBooks === 'function' ? S().listWorldBooks() : Promise.resolve([])
         ]);
         _state.userProfile = results[0];
         _state.appearance = results[1];
@@ -406,10 +434,12 @@
         _state.presets = results[4] || [];
         _state.selectedModel = results[5] || '';
         _state.chats = results[6] || [];
+        _state.worldbooks = results[7] || [];
         _state.defaultPreset = _state.presets.find(function(p) { return p.isDefault; }) || _state.presets[0] || null;
         if (!_state.activePreset && (!_state.general || _state.general.autoUseDefaultPreset !== false)) {
           _state.activePreset = _state.defaultPreset;
         }
+        syncEffectiveWorldBooksForState();
         await refreshEffectiveApi();
         return;
       } catch (_) {}
@@ -688,15 +718,27 @@
         if (Array.isArray(nextState.presets)) {
           _state.presets = nextState.presets;
           _state.defaultPreset = nextState.presets.find(function(p) { return p.isDefault; }) || nextState.presets[0] || null;
+          if (_state.activePreset && _state.activePreset.id) {
+            var refreshedActive = nextState.presets.find(function(p) { return p && p.id === _state.activePreset.id; });
+            if (refreshedActive) _state.activePreset = refreshedActive;
+          }
           if (!_state.activeChat) {
             _state.activePreset = (!_state.general || _state.general.autoUseDefaultPreset !== false)
               ? _state.defaultPreset
               : null;
           }
         }
+        if (Array.isArray(nextState.worldbooks)) {
+          _state.worldbooks = nextState.worldbooks;
+        }
       }
       if (S()) {
         _state.selectedModel = await S().getSelectedModel();
+        if (!nextState || !Array.isArray(nextState.worldbooks)) {
+          if (typeof S().listWorldBooks === 'function') {
+            _state.worldbooks = await S().listWorldBooks();
+          }
+        }
       }
       await refreshEffectiveApi();
       applyWorkspaceAppearance(page, _state.appearance);
@@ -728,8 +770,15 @@
     }
 
     var preset = resolveEffectivePresetForState();
+    var wbInfo = syncEffectiveWorldBooksForState();
     if (presetLabel) {
-      presetLabel.textContent = preset ? preset.name : '自由对话（无预设）';
+      var baseLabel = preset ? preset.name : '自由对话（无预设）';
+      presetLabel.textContent = baseLabel;
+      if (wbInfo && wbInfo.effectiveCount > 0) {
+        presetLabel.title = baseLabel + '（当前生效世界书：' + wbInfo.effectiveCount + ' 本）';
+      } else {
+        presetLabel.title = baseLabel;
+      }
     }
   }
 
@@ -859,6 +908,9 @@
     if (S()) {
       _state.presets = await S().listPresets();
       _state.defaultPreset = _state.presets.find(function(p) { return p.isDefault; }) || _state.presets[0] || null;
+      if (typeof S().listWorldBooks === 'function') {
+        _state.worldbooks = await S().listWorldBooks();
+      }
     }
     var currentPreset = resolveEffectivePresetForState();
     var currentId = currentPreset ? currentPreset.id : '';
@@ -866,6 +918,12 @@
 
     var itemsHtml = list.map(function(p) {
       var active = p.id === currentId ? ' is-selected' : '';
+      var wbInfo = (S() && typeof S().resolveEffectiveWorldBooksFromData === 'function')
+        ? S().resolveEffectiveWorldBooksFromData(p, _state.worldbooks)
+        : { presetCount: 0, effectiveCount: 0 };
+      var wbBadge = wbInfo.presetCount > 0
+        ? (' <span class="aiw-mini-badge">世界书 ' + wbInfo.presetCount + '</span>')
+        : '';
       return (
         '<button type="button" class="aiw-picker-item' + active + '" data-pick-preset="' + escapeHtml(p.id) + '">' +
           '<span class="aiw-picker-icon">' +
@@ -874,7 +932,7 @@
               : '<i class="' + escapeHtml(p.avatarValue || 'fa-solid fa-wand-magic-sparkles') + '"></i>') +
           '</span>' +
           '<div class="aiw-picker-text">' +
-            '<div class="aiw-picker-title">' + escapeHtml(p.name) + (p.isDefault ? ' <span class="aiw-mini-badge">默认</span>' : '') + '</div>' +
+            '<div class="aiw-picker-title">' + escapeHtml(p.name) + (p.isDefault ? ' <span class="aiw-mini-badge">默认</span>' : '') + wbBadge + '</div>' +
             '<div class="aiw-picker-desc">' + escapeHtml(p.description || ('风格：' + (p.replyStyle || '温和自然'))) + '</div>' +
           '</div>' +
           '<span class="aiw-picker-check">' + (p.id === currentId ? '<i class="fa-solid fa-check"></i>' : '') + '</span>' +
@@ -923,9 +981,17 @@
         }
 
         syncContextStrip(page);
+        var wbInfo = _state.effectiveWorldBooksInfo;
         if (_state.messages.length === 0) updateMainStage(page);
         closeInlineModal(page);
-        notifyToast(chosen ? ('已切换预设：' + chosen.name) : '已切换为自由对话');
+        if (chosen) {
+          var wbSuffix = wbInfo && wbInfo.effectiveCount > 0
+            ? ('（已关联 ' + wbInfo.effectiveCount + ' 本世界书）')
+            : '';
+          notifyToast('已切换预设：' + chosen.name + wbSuffix);
+        } else {
+          notifyToast('已切换为自由对话');
+        }
       });
     });
   }
@@ -1474,6 +1540,23 @@
       }
     }
 
+    var matchedWorldBookEntries = [];
+    if (AI() && typeof AI().matchWorldBooksForReply === 'function') {
+      try {
+        var presetForWorldBook = resolveLatestPresetForWorldBooks();
+        var wbMatchRes = await AI().matchWorldBooksForReply({
+          preset: presetForWorldBook,
+          messages: historyBeforeTurn,
+          userInput: userText
+        });
+        if (wbMatchRes && Array.isArray(wbMatchRes.matchedEntries)) {
+          matchedWorldBookEntries = wbMatchRes.matchedEntries;
+        }
+      } catch (wbErr) {
+        console.warn('[AiWorkspace] worldbook match skipped:', wbErr);
+      }
+    }
+
     var composed = AI().composeMessages({
       historyMessages: memContext.useShortTermHistory ? historyBeforeTurn : [],
       shortTermSummary: memContext.shortTermSummary || '',
@@ -1482,6 +1565,7 @@
       userContent: userText,
       personalization: personalization,
       preset: preset,
+      worldBookEntries: matchedWorldBookEntries,
       memories: memContext.memories || [],
       crossChatContexts: memContext.crossChatContexts || [],
       deepThink: _state.deepThinkEnabled,

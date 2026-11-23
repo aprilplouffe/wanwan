@@ -4255,5 +4255,194 @@
   color: var(--aiw-hint);
 }
 
+/* ===== 6-W2a：全局世界书标识与开关行样式（兼容浅色/深色模式） ===== */
+.aiw-preset-card.is-wb-global {
+  border-color: var(--aiw-pink-border);
+}
+
+.aiw-wbe-badge.is-global {
+  gap: 4px;
+  color: var(--aiw-pink-deep);
+  border-color: var(--aiw-pink-border);
+  background: var(--aiw-pink-soft);
+}
+
+.aiw-wbe-badge.is-global i {
+  font-size: 9.5px;
+}
+
+.aiw-preset-tag.is-wb-global-tag {
+  color: var(--aiw-pink-deep);
+  border-color: var(--aiw-pink-border);
+  background: var(--aiw-pink-soft);
+}
+
+.aiw-wb-global-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--aiw-border);
+  background: var(--aiw-surface);
+  cursor: default;
+}
+
+.aiw-preset-card.is-wb-global .aiw-wb-global-row {
+  border-color: var(--aiw-pink-border);
+  background: var(--aiw-pink-soft);
+}
+
+.aiw-wb-global-info {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.aiw-wb-global-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--aiw-text);
+  line-height: 1.3;
+}
+
+.aiw-preset-card.is-wb-global .aiw-wb-global-label {
+  color: var(--aiw-pink-deep);
+}
+
+.aiw-wb-global-hint {
+  font-size: 11.5px;
+  color: var(--aiw-hint);
+  line-height: 1.35;
+}
+
+/* ===== 6-W2b：预设绑定世界书多选列表样式（兼容浅色/深色模式） ===== */
+.aiw-preset-tag.is-wb-bound-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--aiw-pink-deep);
+  border-color: var(--aiw-pink-border);
+  background: var(--aiw-pink-soft);
+}
+
+.aiw-preset-tag.is-wb-bound-tag i {
+  font-size: 10px;
+}
+
+.aiw-pe-wb-note {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--aiw-hint);
+  margin: 6px 0 10px;
+}
+
+.aiw-pe-wb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.aiw-pe-wb-item {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--aiw-border);
+  background: var(--aiw-surface);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.aiw-pe-wb-item.is-checked {
+  border-color: var(--aiw-pink-deep);
+  background: var(--aiw-pink-soft);
+}
+
+.aiw-pe-wb-checkbox {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.aiw-pe-wb-check-box {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border-radius: 6px;
+  border: 1.5px solid var(--aiw-border);
+  background: var(--aiw-card);
+  color: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.aiw-pe-wb-item.is-checked .aiw-pe-wb-check-box {
+  border-color: var(--aiw-pink-deep);
+  background: var(--aiw-pink-deep);
+  color: #ffffff;
+}
+
+.aiw-pe-wb-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-pe-wb-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aiw-pe-wb-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--aiw-text);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.aiw-pe-wb-item.is-checked .aiw-pe-wb-name {
+  color: var(--aiw-pink-deep);
+}
+
+.aiw-pe-wb-sub {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--aiw-hint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aiw-pe-wb-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px dashed var(--aiw-border);
+  background: var(--aiw-surface);
+  color: var(--aiw-hint);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+
+
 
 

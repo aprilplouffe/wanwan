@@ -319,11 +319,136 @@
     };
   }
 
-  // ===== 提示词组装引擎（严格顺序：1.基础系统规则 -> 2.个性化设置 -> 3.当前预设 -> 4.相关长期记忆 -> 5.跨窗口历史参考 -> 6.当前对话摘要 -> 7.近期原始消息 -> 8.当前用户输入） =====
+  // ===== 世界书注入长度上限与格式化（防止长文档导致过多 Token 消耗） =====
+  var WORLDBOOK_MAX_TOTAL_CHARS = 6000;
+  var WORLDBOOK_MAX_SINGLE_ENTRY_CHARS = 3500;
+
+  function safeSlicePromptText(text, maxLen) {
+    var src = String(text || '');
+    if (maxLen <= 0) return '';
+    if (src.length <= maxLen) return src;
+    var cut = maxLen;
+    // 避免截断 UTF-16 代理对
+    var lastCode = src.charCodeAt(cut - 1);
+    if (lastCode >= 0xD800 && lastCode <= 0xDBFF) {
+      cut--;
+    }
+    var head = src.slice(0, cut);
+    var minBoundary = Math.floor(cut * 0.78);
+    var lastNewline = head.lastIndexOf('\n');
+    if (lastNewline >= minBoundary) {
+      head = head.slice(0, lastNewline);
+    }
+    return head.trimEnd();
+  }
+
+  function buildWorldBookPromptSection(worldBookEntries, options) {
+    var list = Array.isArray(worldBookEntries) ? worldBookEntries : [];
+    if (!list.length) return '';
+
+    var opts = options && typeof options === 'object' ? options : {};
+    var maxTotal = (Number.isFinite(Number(opts.maxTotalChars)) && Number(opts.maxTotalChars) > 0)
+      ? Math.floor(Number(opts.maxTotalChars))
+      : WORLDBOOK_MAX_TOTAL_CHARS;
+
+    // 预去重并保留原始优先级顺序
+    var uniqueEntries = [];
+    var seenKeys = {};
+    var seenContentKeys = {};
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      if (!item || typeof item !== 'object') continue;
+      var content = String(item.content || '').replace(/\r\n?/g, '\n').trim();
+      if (!content) continue;
+      var key = (item.bookId ? String(item.bookId) : '') + '::' + (item.id ? String(item.id) : ('uid_' + (item.uid != null ? item.uid : i)));
+      if (seenKeys[key]) continue;
+      var title = String(item.comment || '').trim();
+      var contentKey = title + '\u0000' + content;
+      if (seenContentKeys[contentKey]) continue;
+      seenKeys[key] = true;
+      seenContentKeys[contentKey] = true;
+      uniqueEntries.push({
+        bookName: String(item.bookName || '').trim(),
+        comment: title,
+        content: content
+      });
+    }
+
+    if (!uniqueEntries.length) return '';
+
+    var defaultSingleLimit = uniqueEntries.length > 1
+      ? Math.min(WORLDBOOK_MAX_SINGLE_ENTRY_CHARS, maxTotal)
+      : maxTotal;
+    var singleLimit = (Number.isFinite(Number(opts.maxSingleEntryChars)) && Number(opts.maxSingleEntryChars) > 0)
+      ? Math.min(Math.floor(Number(opts.maxSingleEntryChars)), maxTotal)
+      : defaultSingleLimit;
+
+    var blocks = [];
+    var usedChars = 0;
+    var truncatedAny = false;
+    var omittedCount = 0;
+    var truncTag = '…（超出长度上限，已截断）';
+
+    for (var j = 0; j < uniqueEntries.length; j++) {
+      var entry = uniqueEntries[j];
+      var remaining = maxTotal - usedChars;
+      if (remaining < 80) {
+        omittedCount = uniqueEntries.length - j;
+        truncatedAny = true;
+        break;
+      }
+
+      var headerParts = [];
+      if (entry.comment) headerParts.push('[' + entry.comment + ']');
+      if (entry.bookName) headerParts.push('（世界书：' + entry.bookName + '）');
+      var headerLine = headerParts.length ? ('- ' + headerParts.join('')) : '- [世界书设定]';
+      var sepCost = blocks.length > 0 ? 2 : 0;
+      var overhead = sepCost + headerLine.length + 1;
+      var allowedContentChars = Math.min(singleLimit, remaining - overhead);
+
+      if (allowedContentChars < 40) {
+        omittedCount = uniqueEntries.length - j;
+        truncatedAny = true;
+        break;
+      }
+
+      var bodyText = entry.content;
+      if (bodyText.length > allowedContentChars) {
+        var sliceBudget = Math.max(20, allowedContentChars - truncTag.length);
+        bodyText = safeSlicePromptText(bodyText, sliceBudget) + truncTag;
+        truncatedAny = true;
+      }
+
+      var blockText = headerLine + '\n' + bodyText;
+      blocks.push(blockText);
+      usedChars += sepCost + blockText.length;
+    }
+
+    if (!blocks.length) return '';
+
+    var footerNote = '';
+    if (omittedCount > 0) {
+      footerNote = '\n\n（注：为控制上下文长度，另有 ' + omittedCount + ' 条较低优先级世界书词条未注入）';
+    } else if (truncatedAny) {
+      footerNote = '\n\n（注：部分较长世界书设定已按长度上限截断）';
+    }
+
+    return (
+      '【世界书背景设定（静态设定参考，非真实发生的对话）】\n' +
+      '以下内容为当前生效的世界书设定资料（已按优先级排序），仅用于提供世界观、人物、地点与规则等背景参考，切勿将其误认为用户刚刚说过的话或已经真实发生过的对话事件；若与系统规则或用户当前明确指令冲突，以系统规则和用户当前指令为准：\n' +
+      blocks.join('\n\n') +
+      footerNote
+    );
+  }
+
+  // ===== 提示词组装引擎（严格顺序：1.基础系统规则 -> 2.个性化设置 -> 3.当前预设 -> 3.5.世界书背景设定 -> 4.相关长期记忆 -> 5.跨窗口历史参考 -> 6.当前对话摘要 -> 7.近期原始消息 -> 8.当前用户输入） =====
   function composeSystemPrompt(options) {
     var opts = options && typeof options === 'object' ? options : {};
     var personalization = opts.personalization;
     var preset = opts.preset;
+    var worldBookEntries = Array.isArray(opts.worldBookEntries)
+      ? opts.worldBookEntries
+      : (opts.worldBookMatch && Array.isArray(opts.worldBookMatch.matchedEntries) ? opts.worldBookMatch.matchedEntries : []);
     var shortTermSummary = String(opts.shortTermSummary || '').trim();
     var memories = Array.isArray(opts.memories) ? opts.memories : [];
     var crossChatContexts = Array.isArray(opts.crossChatContexts) ? opts.crossChatContexts : [];
@@ -367,6 +492,17 @@
       }
       if (prLines.length > 0) {
         sections.push('【当前预设指令】\n' + prLines.join('\n'));
+      }
+    }
+
+    // 3.5. 当前生效的世界书背景设定（仅在命中词条时注入，作为静态背景设定，与真实聊天消息严格隔离）
+    if (worldBookEntries.length > 0) {
+      var worldBookSection = buildWorldBookPromptSection(worldBookEntries, {
+        maxTotalChars: opts.worldBookMaxChars,
+        maxSingleEntryChars: opts.worldBookMaxSingleEntryChars
+      });
+      if (worldBookSection) {
+        sections.push(worldBookSection);
       }
     }
 
@@ -781,6 +917,27 @@
     };
   }
 
+  async function matchWorldBooksForReply(options) {
+    var store = S();
+    if (!store || typeof store.matchWorldBookEntries !== 'function') {
+      return {
+        presetId: '',
+        presetName: '',
+        effectiveBooks: [],
+        effectiveBookIds: [],
+        effectiveBookCount: 0,
+        globalBookCount: 0,
+        presetBookCount: 0,
+        matchedEntries: [],
+        matchedCount: 0,
+        constantCount: 0,
+        keywordCount: 0,
+        formattedText: ''
+      };
+    }
+    return await store.matchWorldBookEntries(options || {});
+  }
+
   global.AiWorkspaceAI = {
     normalizeBaseUrl: normalizeBaseUrl,
     normalizeTemperature: normalizeTemperature,
@@ -794,6 +951,10 @@
     getSanitizedApiSummary: getSanitizedApiSummary,
     fetchModels: fetchModels,
     testConnection: testConnection,
+    WORLDBOOK_MAX_TOTAL_CHARS: WORLDBOOK_MAX_TOTAL_CHARS,
+    WORLDBOOK_MAX_SINGLE_ENTRY_CHARS: WORLDBOOK_MAX_SINGLE_ENTRY_CHARS,
+    matchWorldBooksForReply: matchWorldBooksForReply,
+    buildWorldBookPromptSection: buildWorldBookPromptSection,
     composeSystemPrompt: composeSystemPrompt,
     composeMessages: composeMessages,
     streamChatCompletion: streamChatCompletion,
