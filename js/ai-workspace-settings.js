@@ -4628,7 +4628,7 @@
         '<div class="aiw-preset-empty">' +
           '<div class="aiw-preset-empty-icon"><i class="fa-solid fa-book-open"></i></div>' +
           '<div class="aiw-preset-empty-title">还没有世界书</div>' +
-          '<div class="aiw-preset-empty-sub">创建专属设定集，或导入知屿世界书 JSON 文件</div>' +
+          '<div class="aiw-preset-empty-sub">创建专属设定集，或导入知屿世界书 JSON / TXT / DOC / DOCX 文件</div>' +
           '<div style="display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;">' +
             '<button type="button" class="aiw-st-btn-secondary" id="aiw-wb-empty-import"><i class="fa-solid fa-file-import"></i> 导入世界书</button>' +
             '<button type="button" class="aiw-st-btn-primary" id="aiw-wb-empty-create">新建世界书</button>' +
@@ -4646,7 +4646,7 @@
       '</div>' +
 
       '<div class="aiw-st-scroll">' +
-        '<input type="file" id="aiw-wb-import-file" accept=".json,application/json" style="display:none;">' +
+        '<input type="file" id="aiw-wb-import-file" accept=".json,.txt,.docx,.doc,application/json,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword" style="display:none;">' +
         '<div class="aiw-pr-toolbar">' +
           '<span class="aiw-pr-count">共 ' + escapeHtml(String(list.length)) + ' 本世界书（独立持久化）</span>' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
@@ -4795,23 +4795,65 @@
         importFileInput.value = '';
         if (!file) return;
         var store = S();
-        if (!store || typeof store.importWorldBookFromJson !== 'function') {
+        if (!store) {
+          notifyToast('当前无法导入世界书');
+          return;
+        }
+        var fileName = String(file.name || '').trim();
+        var fileMime = String(file.type || '').toLowerCase();
+        var isDocxFile = /\.docx$/i.test(fileName) || fileMime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        var isDocFile = !isDocxFile && (/\.doc$/i.test(fileName) || fileMime === 'application/msword');
+        var isTxtFile = !isDocxFile && !isDocFile && (/\.txt$/i.test(fileName) || (fileMime === 'text/plain' && !/\.json$/i.test(fileName)));
+
+        if (isDocxFile && typeof store.importWorldBookFromDocx !== 'function') {
+          notifyToast('当前无法导入 DOCX 世界书');
+          return;
+        }
+        if (isDocFile && typeof store.importWorldBookFromDoc !== 'function') {
+          notifyToast('当前无法导入 DOC 世界书');
+          return;
+        }
+        if (isTxtFile && typeof store.importWorldBookFromTxt !== 'function') {
+          notifyToast('当前无法导入 TXT 世界书');
+          return;
+        }
+        if (!isDocxFile && !isDocFile && !isTxtFile && typeof store.importWorldBookFromJson !== 'function') {
           notifyToast('当前无法导入世界书');
           return;
         }
         try {
-          var rawText = '';
-          if (typeof file.text === 'function') {
-            rawText = await file.text();
+          var res;
+          if (isDocxFile || isDocFile) {
+            var buf;
+            if (typeof file.arrayBuffer === 'function') {
+              buf = await file.arrayBuffer();
+            } else {
+              buf = await new Promise(function(resolve, reject) {
+                var reader = new FileReader();
+                reader.onload = function() { resolve(reader.result); };
+                reader.onerror = function() { reject(new Error('文件读取失败')); };
+                reader.readAsArrayBuffer(file);
+              });
+            }
+            res = isDocxFile
+              ? await store.importWorldBookFromDocx(buf, fileName)
+              : await store.importWorldBookFromDoc(buf, fileName);
           } else {
-            rawText = await new Promise(function(resolve, reject) {
-              var reader = new FileReader();
-              reader.onload = function() { resolve(String(reader.result || '')); };
-              reader.onerror = function() { reject(new Error('文件读取失败')); };
-              reader.readAsText(file, 'utf-8');
-            });
+            var rawText = '';
+            if (typeof file.text === 'function') {
+              rawText = await file.text();
+            } else {
+              rawText = await new Promise(function(resolve, reject) {
+                var reader = new FileReader();
+                reader.onload = function() { resolve(String(reader.result || '')); };
+                reader.onerror = function() { reject(new Error('文件读取失败')); };
+                reader.readAsText(file, 'utf-8');
+              });
+            }
+            res = isTxtFile
+              ? await store.importWorldBookFromTxt(rawText, fileName)
+              : await store.importWorldBookFromJson(rawText);
           }
-          var res = await store.importWorldBookFromJson(rawText);
           if (!res || !res.ok) {
             notifyToast((res && res.error) || '导入失败：文件格式无效');
             return;

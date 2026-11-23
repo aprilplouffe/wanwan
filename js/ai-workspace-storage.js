@@ -1978,6 +1978,800 @@
     };
   }
 
+  async function importWorldBookFromTxt(rawText, filename) {
+    var content = String(rawText == null ? '' : rawText)
+      .replace(/^\uFEFF/, '')
+      .replace(/\r\n?/g, '\n')
+      .trim();
+    if (!content) {
+      return { ok: false, error: '导入失败：TXT 文件内容为空' };
+    }
+    var rawFilename = String(filename || '').split(/[\\/]/).pop() || '';
+    var bookName = rawFilename.replace(/\.txt$/i, '').trim().slice(0, 80) || '未命名世界书';
+    var now = Date.now();
+    var entry = normalizeWorldBookEntry({
+      id: generateWorldBookEntryId(),
+      uid: 0,
+      comment: '正文',
+      content: content,
+      disable: false,
+      constant: true,
+      key: [],
+      order: 100,
+      createdAt: now,
+      updatedAt: now
+    }, 0);
+    var created = await createWorldBook({
+      id: generateWorldBookId(),
+      name: bookName,
+      description: '',
+      enabled: true,
+      entries: [entry],
+      extraFields: {}
+    });
+    return {
+      ok: true,
+      book: created,
+      entryCount: Array.isArray(created.entries) ? created.entries.length : 0
+    };
+  }
+
+  function decodeXmlEntities(str) {
+    return String(str || '')
+      .replace(/&#x([0-9a-fA-F]+);/g, function(_, hex) {
+        var code = parseInt(hex, 16);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+      })
+      .replace(/&#(\d+);/g, function(_, dec) {
+        var code = parseInt(dec, 10);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+      })
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, '\'')
+      .replace(/&amp;/g, '&');
+  }
+
+  function extractTextFromWordXml(xmlStr) {
+    var src = String(xmlStr || '');
+    if (!src.trim()) return '';
+
+    if (typeof global.DOMParser === 'function') {
+      try {
+        var parser = new global.DOMParser();
+        var doc = parser.parseFromString(src, 'application/xml');
+        var parseErr = doc && doc.getElementsByTagName ? doc.getElementsByTagName('parsererror') : null;
+        if (parseErr && parseErr.length > 0) {
+          throw new Error('XML_PARSE_ERROR');
+        }
+        var getLocal = function(node) {
+          return String((node && (node.localName || node.nodeName)) || '').replace(/^.*:/, '').toLowerCase();
+        };
+        var collectParagraphText = function(pNode) {
+          var buf = '';
+          var walkInline = function(node) {
+            if (!node || node.nodeType !== 1) return;
+            var tag = getLocal(node);
+            if (tag === 'del' || tag === 'instrtext' || tag === 'fallback' || tag === 'ppr' || tag === 'rpr') {
+              return;
+            }
+            if (tag === 't') {
+              buf += String(node.textContent || '');
+              return;
+            }
+            if (tag === 'br' || tag === 'cr') {
+              buf += '\n';
+              return;
+            }
+            if (tag === 'tab') {
+              buf += '\t';
+              return;
+            }
+            var children = node.childNodes || [];
+            for (var i = 0; i < children.length; i++) {
+              walkInline(children[i]);
+            }
+          };
+          walkInline(pNode);
+          return buf.replace(/\r\n?/g, '\n');
+        };
+
+        var lines = [];
+        var walkBlocks = function(container) {
+          if (!container || !container.childNodes) return;
+          for (var i = 0; i < container.childNodes.length; i++) {
+            var child = container.childNodes[i];
+            if (!child || child.nodeType !== 1) continue;
+            var tag = getLocal(child);
+            if (tag === 'del' || tag === 'fallback' || tag === 'sectpr' || tag === 'tblpr' || tag === 'tblgrid') {
+              continue;
+            }
+            if (tag === 'p') {
+              lines.push(collectParagraphText(child));
+            } else if (tag === 'tbl') {
+              var rows = child.childNodes || [];
+              for (var r = 0; r < rows.length; r++) {
+                var rowNode = rows[r];
+                if (!rowNode || rowNode.nodeType !== 1 || getLocal(rowNode) !== 'tr') continue;
+                var cellTexts = [];
+                var cells = rowNode.childNodes || [];
+                for (var c = 0; c < cells.length; c++) {
+                  var cellNode = cells[c];
+                  if (!cellNode || cellNode.nodeType !== 1 || getLocal(cellNode) !== 'tc') continue;
+                  var cellParas = [];
+                  var cellChildren = cellNode.childNodes || [];
+                  for (var cp = 0; cp < cellChildren.length; cp++) {
+                    var cc = cellChildren[cp];
+                    if (cc && cc.nodeType === 1 && getLocal(cc) === 'p') {
+                      var pt = collectParagraphText(cc).trim();
+                      if (pt) cellParas.push(pt);
+                    }
+                  }
+                  if (cellParas.length) cellTexts.push(cellParas.join('\n'));
+                }
+                if (cellTexts.length) lines.push(cellTexts.join('\t'));
+              }
+            } else {
+              walkBlocks(child);
+            }
+          }
+        };
+
+        var bodyNodes = doc.getElementsByTagName ? doc.getElementsByTagName('w:body') : null;
+        var rootEl = (bodyNodes && bodyNodes.length > 0) ? bodyNodes[0] : doc.documentElement;
+        if (rootEl) {
+          walkBlocks(rootEl);
+          return lines
+            .join('\n')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+        }
+      } catch (err) {
+        if (err && err.message === 'XML_PARSE_ERROR') {
+          throw err;
+        }
+      }
+    }
+
+    // 兜底 XML 段落提取（无 DOMParser 环境）
+    var cleaned = src
+      .replace(/<w:del\b[\s\S]*?<\/w:del>/gi, '')
+      .replace(/<w:instrText\b[\s\S]*?<\/w:instrText>/gi, '');
+    var pMatches = cleaned.match(/<w:p\b[\s\S]*?<\/w:p>/gi) || [];
+    var fallbackLines = [];
+    for (var idx = 0; idx < pMatches.length; idx++) {
+      var pXml = pMatches[idx]
+        .replace(/<w:(?:br|cr)\b[^>]*\/>/gi, '\n')
+        .replace(/<w:tab\b[^>]*\/>/gi, '\t');
+      var pieces = [];
+      var tokenRe = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>|(\n|\t)/gi;
+      var m;
+      while ((m = tokenRe.exec(pXml)) !== null) {
+        if (m[1] !== undefined) {
+          pieces.push(decodeXmlEntities(m[1]));
+        } else if (m[2] !== undefined) {
+          pieces.push(m[2]);
+        }
+      }
+      fallbackLines.push(pieces.join(''));
+    }
+    return fallbackLines
+      .join('\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  async function importWorldBookFromDocx(arrayBuffer, filename) {
+    var JSZipCtor = global.JSZip;
+    if (typeof JSZipCtor !== 'function') {
+      return { ok: false, error: '导入失败：未检测到 DOCX 解压组件，请刷新页面后重试' };
+    }
+    if (!arrayBuffer || (arrayBuffer.byteLength !== undefined && arrayBuffer.byteLength === 0)) {
+      return { ok: false, error: '导入失败：DOCX 文件为空' };
+    }
+    var zip;
+    try {
+      zip = await JSZipCtor.loadAsync(arrayBuffer);
+    } catch (_) {
+      return { ok: false, error: '导入失败：无法解析该 DOCX 文件，请确认文件未损坏' };
+    }
+    var docEntry = zip.file('word/document.xml');
+    if (!docEntry && zip.files) {
+      var zipKeys = Object.keys(zip.files);
+      for (var i = 0; i < zipKeys.length; i++) {
+        if (String(zipKeys[i]).toLowerCase() === 'word/document.xml') {
+          docEntry = zip.files[zipKeys[i]];
+          break;
+        }
+      }
+    }
+    if (!docEntry) {
+      return { ok: false, error: '导入失败：DOCX 文件缺少正文内容（word/document.xml）' };
+    }
+    var xmlText = '';
+    try {
+      xmlText = await docEntry.async('string');
+    } catch (_) {
+      return { ok: false, error: '导入失败：读取 DOCX 正文失败' };
+    }
+    var extractedText = '';
+    try {
+      extractedText = extractTextFromWordXml(xmlText);
+    } catch (_) {
+      return { ok: false, error: '导入失败：DOCX 文档结构损坏，无法提取正文' };
+    }
+    if (!extractedText) {
+      return { ok: false, error: '导入失败：DOCX 文档中没有可提取的正文内容' };
+    }
+
+    var rawFilename = String(filename || '').split(/[\\/]/).pop() || '';
+    var bookName = rawFilename.replace(/\.docx$/i, '').trim().slice(0, 80) || '未命名世界书';
+    var now = Date.now();
+    var entry = normalizeWorldBookEntry({
+      id: generateWorldBookEntryId(),
+      uid: 0,
+      comment: '正文',
+      content: extractedText,
+      disable: false,
+      constant: true,
+      key: [],
+      order: 100,
+      createdAt: now,
+      updatedAt: now
+    }, 0);
+    var created = await createWorldBook({
+      id: generateWorldBookId(),
+      name: bookName,
+      description: '',
+      enabled: true,
+      entries: [entry],
+      extraFields: {}
+    });
+    return {
+      ok: true,
+      book: created,
+      entryCount: Array.isArray(created.entries) ? created.entries.length : 0
+    };
+  }
+
+  var CP1252_HIGH_MAP = {
+    0x80: 0x20AC, 0x82: 0x201A, 0x83: 0x0192, 0x84: 0x201E, 0x85: 0x2026,
+    0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02C6, 0x89: 0x2030, 0x8A: 0x0160,
+    0x8B: 0x2039, 0x8C: 0x0152, 0x8E: 0x017D, 0x91: 0x2018, 0x92: 0x2019,
+    0x93: 0x201C, 0x94: 0x201D, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
+    0x98: 0x02DC, 0x99: 0x2122, 0x9A: 0x0161, 0x9B: 0x203A, 0x9C: 0x0153,
+    0x9E: 0x017E, 0x9F: 0x0178
+  };
+
+  function decodeCp1252Bytes(bytes, start, length) {
+    var end = Math.min(bytes.length, start + length);
+    var out = '';
+    for (var i = start; i < end; i++) {
+      var b = bytes[i];
+      out += String.fromCharCode(CP1252_HIGH_MAP[b] || b);
+    }
+    return out;
+  }
+
+  function decodeUtf16LeBytes(bytes, start, byteLength) {
+    var end = Math.min(bytes.length, start + byteLength);
+    var chunks = [];
+    var buf = '';
+    for (var i = start; i + 1 < end; i += 2) {
+      var code = bytes[i] | (bytes[i + 1] << 8);
+      buf += String.fromCharCode(code);
+      if (buf.length >= 4096) {
+        chunks.push(buf);
+        buf = '';
+      }
+    }
+    if (buf) chunks.push(buf);
+    return chunks.join('');
+  }
+
+  function cleanMsDocExtractedText(rawText) {
+    var src = String(rawText || '');
+    // 处理 Word 域代码：\x13（开始）... \x14（分隔）... \x15（结束），仅保留可见显示文本
+    var out = '';
+    var stack = [];
+    for (var i = 0; i < src.length; i++) {
+      var ch = src[i];
+      var code = src.charCodeAt(i);
+      if (code === 0x13) {
+        stack.push({ visible: false });
+        continue;
+      }
+      if (code === 0x14) {
+        if (stack.length) stack[stack.length - 1].visible = true;
+        continue;
+      }
+      if (code === 0x15) {
+        if (stack.length) stack.pop();
+        continue;
+      }
+      var inHiddenInstr = false;
+      for (var s = 0; s < stack.length; s++) {
+        if (!stack[s].visible) {
+          inHiddenInstr = true;
+          break;
+        }
+      }
+      if (!inHiddenInstr) out += ch;
+    }
+
+    return out
+      .replace(/\r\n/g, '\n')
+      .replace(/\x07\x07/g, '\n')
+      .replace(/\x07/g, '\t')
+      .replace(/\r/g, '\n')
+      .replace(/\x0B/g, '\n')
+      .replace(/\x0C/g, '\n\n')
+      .replace(/[\x00-\x08\x0E-\x1F\x7F]/g, '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function parseOle2Streams(bytes) {
+    if (!bytes || bytes.length < 512) {
+      return { ok: false, error: '导入失败：DOC 文件损坏或长度不足' };
+    }
+    var sig = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    for (var si = 0; si < 8; si++) {
+      if (bytes[si] !== sig[si]) {
+        return { ok: false, error: 'NOT_OLE2' };
+      }
+    }
+    var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    var sectorShift = view.getUint16(0x1E, true);
+    var miniSectorShift = view.getUint16(0x20, true);
+    if (sectorShift < 7 || sectorShift > 16 || miniSectorShift < 4 || miniSectorShift > sectorShift) {
+      return { ok: false, error: '导入失败：DOC 文件头参数无效' };
+    }
+    var sectorSize = 1 << sectorShift;
+    var miniSectorSize = 1 << miniSectorShift;
+    var firstDirSector = view.getUint32(0x30, true);
+    var miniCutoff = view.getUint32(0x38, true);
+    var firstMiniFatSector = view.getUint32(0x3C, true);
+    var numMiniFatSectors = view.getUint32(0x40, true);
+    var firstDifatSector = view.getUint32(0x44, true);
+    var numDifatSectors = view.getUint32(0x48, true);
+    var ENDOFCHAIN = 0xFFFFFFFE;
+    var FREESECT = 0xFFFFFFFF;
+    var MAXREGSECT = 0xFFFFFFFA;
+
+    var sectorOffset = function(secId) {
+      return (secId + 1) * sectorSize;
+    };
+
+    var fatSectorIds = [];
+    for (var d = 0; d < 109; d++) {
+      var sid = view.getUint32(0x4C + d * 4, true);
+      if (sid <= MAXREGSECT) fatSectorIds.push(sid);
+    }
+    var curDifat = firstDifatSector;
+    var difatGuard = 0;
+    var entriesPerDifat = (sectorSize / 4) - 1;
+    while (curDifat <= MAXREGSECT && difatGuard < numDifatSectors + 64) {
+      difatGuard++;
+      var doff = sectorOffset(curDifat);
+      if (doff + sectorSize > bytes.length) break;
+      for (var j = 0; j < entriesPerDifat; j++) {
+        var fsid = view.getUint32(doff + j * 4, true);
+        if (fsid <= MAXREGSECT) fatSectorIds.push(fsid);
+      }
+      curDifat = view.getUint32(doff + entriesPerDifat * 4, true);
+    }
+
+    var fat = [];
+    var intsPerSector = sectorSize / 4;
+    for (var fi = 0; fi < fatSectorIds.length; fi++) {
+      var foff = sectorOffset(fatSectorIds[fi]);
+      if (foff + sectorSize > bytes.length) continue;
+      for (var k = 0; k < intsPerSector; k++) {
+        fat.push(view.getUint32(foff + k * 4, true));
+      }
+    }
+
+    var readChain = function(startSec, maxBytes) {
+      if (startSec > MAXREGSECT) return new Uint8Array(0);
+      var chunks = [];
+      var total = 0;
+      var cur = startSec;
+      var seen = {};
+      var limit = typeof maxBytes === 'number' && maxBytes >= 0 ? maxBytes : bytes.length;
+      while (cur <= MAXREGSECT && !seen[cur] && total < limit) {
+        seen[cur] = true;
+        var off = sectorOffset(cur);
+        if (off >= bytes.length) break;
+        var take = Math.min(sectorSize, bytes.length - off, limit - total);
+        chunks.push(bytes.subarray(off, off + take));
+        total += take;
+        cur = cur < fat.length ? fat[cur] : ENDOFCHAIN;
+      }
+      var merged = new Uint8Array(total);
+      var pos = 0;
+      for (var ci = 0; ci < chunks.length; ci++) {
+        merged.set(chunks[ci], pos);
+        pos += chunks[ci].length;
+      }
+      return merged;
+    };
+
+    var dirBytes = readChain(firstDirSector, bytes.length);
+    if (dirBytes.length < 128) {
+      return { ok: false, error: '导入失败：DOC 目录结构损坏' };
+    }
+    var dirView = new DataView(dirBytes.buffer, dirBytes.byteOffset, dirBytes.byteLength);
+    var dirEntries = [];
+    var rootEntry = null;
+    for (var off = 0; off + 128 <= dirBytes.length; off += 128) {
+      var nameLen = dirView.getUint16(off + 0x40, true);
+      var objType = dirBytes[off + 0x42];
+      if (objType === 0 || nameLen < 2 || nameLen > 64) continue;
+      var name = decodeUtf16LeBytes(dirBytes, off, nameLen - 2);
+      var startSector = dirView.getUint32(off + 0x74, true);
+      var streamSize = dirView.getUint32(off + 0x78, true);
+      var item = { name: name, type: objType, startSector: startSector, size: streamSize };
+      dirEntries.push(item);
+      if (objType === 5 && !rootEntry) rootEntry = item;
+    }
+
+    var miniFat = [];
+    if (firstMiniFatSector <= MAXREGSECT && numMiniFatSectors > 0) {
+      var mfBytes = readChain(firstMiniFatSector, numMiniFatSectors * sectorSize);
+      var mfView = new DataView(mfBytes.buffer, mfBytes.byteOffset, mfBytes.byteLength);
+      for (var mi = 0; mi + 4 <= mfBytes.length; mi += 4) {
+        miniFat.push(mfView.getUint32(mi, true));
+      }
+    }
+    var miniStream = (rootEntry && rootEntry.startSector <= MAXREGSECT && rootEntry.size > 0)
+      ? readChain(rootEntry.startSector, rootEntry.size)
+      : new Uint8Array(0);
+
+    var readMiniChain = function(startSec, size) {
+      if (startSec > MAXREGSECT || !miniStream.length || !size) return new Uint8Array(0);
+      var merged = new Uint8Array(size);
+      var pos = 0;
+      var cur = startSec;
+      var seen = {};
+      while (cur <= MAXREGSECT && !seen[cur] && pos < size) {
+        seen[cur] = true;
+        var moff = cur * miniSectorSize;
+        if (moff >= miniStream.length) break;
+        var take = Math.min(miniSectorSize, miniStream.length - moff, size - pos);
+        merged.set(miniStream.subarray(moff, moff + take), pos);
+        pos += take;
+        cur = cur < miniFat.length ? miniFat[cur] : ENDOFCHAIN;
+        if (cur === FREESECT) break;
+      }
+      return pos < size ? merged.subarray(0, pos) : merged;
+    };
+
+    var streams = {};
+    for (var ei = 0; ei < dirEntries.length; ei++) {
+      var de = dirEntries[ei];
+      if (de.type !== 2) continue;
+      streams[de.name] = de.size < miniCutoff
+        ? readMiniChain(de.startSector, de.size)
+        : readChain(de.startSector, de.size);
+    }
+    return { ok: true, streams: streams };
+  }
+
+  function extractTextFromOle2Doc(bytes) {
+    var ole = parseOle2Streams(bytes);
+    if (!ole.ok) return ole;
+    var wordDoc = ole.streams.WordDocument;
+    if (!wordDoc || wordDoc.length < 0x1B0) {
+      return { ok: false, error: '导入失败：该文件不是有效的 Word .doc 文档（缺少 WordDocument 流）' };
+    }
+    var wdView = new DataView(wordDoc.buffer, wordDoc.byteOffset, wordDoc.byteLength);
+    var flags = wdView.getUint16(0x0A, true);
+    if (flags & 0x0100) {
+      return { ok: false, error: '导入失败：该 .doc 文档已加密，无法直接提取正文' };
+    }
+    var useTable1 = !!(flags & 0x0200);
+    var tableStream = ole.streams[useTable1 ? '1Table' : '0Table'] || ole.streams['1Table'] || ole.streams['0Table'];
+    var ccpText = wdView.getUint32(0x4C, true);
+
+    if (tableStream && wordDoc.length >= 0x1AA) {
+      var fcClx = wdView.getUint32(0x01A2, true);
+      var lcbClx = wdView.getUint32(0x01A6, true);
+      if (lcbClx > 0 && fcClx + lcbClx <= tableStream.length) {
+        var tView = new DataView(tableStream.buffer, tableStream.byteOffset, tableStream.byteLength);
+        var pos = fcClx;
+        var clxEnd = fcClx + lcbClx;
+        while (pos < clxEnd && tableStream[pos] === 0x01) {
+          if (pos + 3 > clxEnd) break;
+          var cbGrpprl = tView.getUint16(pos + 1, true);
+          pos += 3 + cbGrpprl;
+        }
+        if (pos + 5 <= clxEnd && tableStream[pos] === 0x02) {
+          var plcSize = tView.getUint32(pos + 1, true);
+          var plcStart = pos + 5;
+          if (plcSize >= 16 && plcStart + plcSize <= tableStream.length) {
+            var pieceCount = Math.floor((plcSize - 4) / 12);
+            var pcdBase = plcStart + (pieceCount + 1) * 4;
+            var parts = [];
+            for (var pi = 0; pi < pieceCount; pi++) {
+              var cpStart = tView.getUint32(plcStart + pi * 4, true);
+              var cpEnd = tView.getUint32(plcStart + (pi + 1) * 4, true);
+              if (ccpText > 0 && cpStart >= ccpText) break;
+              var effEnd = (ccpText > 0 && cpEnd > ccpText) ? ccpText : cpEnd;
+              if (effEnd <= cpStart) continue;
+              var charCount = effEnd - cpStart;
+              var pcdOff = pcdBase + pi * 8;
+              if (pcdOff + 8 > tableStream.length) break;
+              var fcRaw = tView.getUint32(pcdOff + 2, true);
+              var isCompressed = !!(fcRaw & 0x40000000);
+              var fcMasked = fcRaw & 0x3FFFFFFF;
+              if (isCompressed) {
+                var byteOff = fcMasked >>> 1;
+                if (byteOff < wordDoc.length) {
+                  parts.push(decodeCp1252Bytes(wordDoc, byteOff, charCount));
+                }
+              } else {
+                var uOff = fcMasked;
+                if (uOff < wordDoc.length) {
+                  parts.push(decodeUtf16LeBytes(wordDoc, uOff, charCount * 2));
+                }
+              }
+            }
+            var pieceText = cleanMsDocExtractedText(parts.join(''));
+            if (pieceText) {
+              return { ok: true, text: pieceText };
+            }
+          }
+        }
+      }
+    }
+
+    // Word 6.0 / 95 简单文档兜底（无 Piece Table 时按 fcMin..fcMac 读取）
+    var fcMin = wdView.getUint32(0x18, true);
+    var fcMac = wdView.getUint32(0x1C, true);
+    if (fcMac > fcMin && fcMac <= wordDoc.length) {
+      var legacyRaw = decodeCp1252Bytes(wordDoc, fcMin, Math.min(fcMac - fcMin, 2 * 1024 * 1024));
+      var legacyText = cleanMsDocExtractedText(legacyRaw);
+      if (legacyText) {
+        return { ok: true, text: legacyText };
+      }
+    }
+
+    return { ok: false, error: '导入失败：DOC 文档中未提取到有效正文内容' };
+  }
+
+  function decodeBytesSmart(bytes) {
+    if (typeof global.TextDecoder === 'function') {
+      try {
+        var utf8 = new global.TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        if (utf8) return utf8;
+      } catch (_) {}
+      try {
+        var gbk = new global.TextDecoder('gb18030').decode(bytes);
+        if (gbk) return gbk;
+      } catch (_) {}
+      try {
+        return new global.TextDecoder('utf-8').decode(bytes);
+      } catch (_) {}
+    }
+    return decodeCp1252Bytes(bytes, 0, bytes.length);
+  }
+
+  function extractTextFromRtf(rtfText) {
+    var src = String(rtfText || '');
+    var skipDestinations = {
+      fonttbl: true, colortbl: true, stylesheet: true, info: true, pict: true,
+      object: true, header: true, footer: true, headerl: true, headerr: true,
+      footerl: true, footerr: true, listtable: true, listoverridetable: true,
+      revtbl: true, rsidtbl: true, mmathPr: true, generator: true, datafield: true,
+      fldinst: true, themedata: true, colorschememapping: true, latentstyles: true
+    };
+    var stack = [{ uc: 1, skip: false }];
+    var out = '';
+    var hexRun = [];
+    var flushHex = function() {
+      if (!hexRun.length) return;
+      var arr = new Uint8Array(hexRun);
+      hexRun = [];
+      if (typeof global.TextDecoder === 'function') {
+        try {
+          out += new global.TextDecoder('gb18030').decode(arr);
+          return;
+        } catch (_) {}
+      }
+      out += decodeCp1252Bytes(arr, 0, arr.length);
+    };
+
+    var i = 0;
+    while (i < src.length) {
+      var ch = src[i];
+      var top = stack[stack.length - 1];
+      if (ch === '{') {
+        flushHex();
+        stack.push({ uc: top.uc, skip: top.skip });
+        i++;
+        continue;
+      }
+      if (ch === '}') {
+        flushHex();
+        if (stack.length > 1) stack.pop();
+        i++;
+        continue;
+      }
+      if (ch === '\r' || ch === '\n') {
+        i++;
+        continue;
+      }
+      if (ch === '\\') {
+        i++;
+        if (i >= src.length) break;
+        var next = src[i];
+        if (next === '\\' || next === '{' || next === '}') {
+          flushHex();
+          if (!top.skip) out += next;
+          i++;
+          continue;
+        }
+        if (next === '~') {
+          flushHex();
+          if (!top.skip) out += ' ';
+          i++;
+          continue;
+        }
+        if (next === '*' && i + 1 < src.length) {
+          flushHex();
+          top.skip = true;
+          i++;
+          continue;
+        }
+        if (next === '\'') {
+          var hexStr = src.slice(i + 1, i + 3);
+          var byteVal = parseInt(hexStr, 16);
+          if (!top.skip && Number.isFinite(byteVal)) {
+            hexRun.push(byteVal);
+          }
+          i += 3;
+          continue;
+        }
+        flushHex();
+        var wordMatch = /^([a-zA-Z]+)(-?\d+)? ?/.exec(src.slice(i, i + 40));
+        if (wordMatch) {
+          var word = wordMatch[1];
+          var param = wordMatch[2] !== undefined ? parseInt(wordMatch[2], 10) : null;
+          i += wordMatch[0].length;
+          if (skipDestinations[word]) {
+            top.skip = true;
+          } else if (word === 'uc' && param !== null) {
+            top.uc = Math.max(0, param);
+          } else if (word === 'u' && param !== null) {
+            var codePoint = param < 0 ? param + 65536 : param;
+            if (!top.skip) out += String.fromCharCode(codePoint);
+            // 跳过紧随其后的 uc 个替代字符
+            var skipChars = top.uc;
+            while (skipChars > 0 && i < src.length) {
+              if (src[i] === '\\' && src[i + 1] === '\'') {
+                i += 4;
+              } else {
+                i++;
+              }
+              skipChars--;
+            }
+          } else if (!top.skip) {
+            if (word === 'par' || word === 'line') out += '\n';
+            else if (word === 'tab') out += '\t';
+            else if (word === 'emdash') out += '—';
+            else if (word === 'endash') out += '–';
+            else if (word === 'lquote') out += '‘';
+            else if (word === 'rquote') out += '’';
+            else if (word === 'ldblquote') out += '“';
+            else if (word === 'rdblquote') out += '”';
+          }
+        } else {
+          i++;
+        }
+        continue;
+      }
+      flushHex();
+      if (!top.skip) out += ch;
+      i++;
+    }
+    flushHex();
+    return out
+      .replace(/\r\n?/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function extractTextFromHtmlDoc(htmlStr) {
+    var cleaned = String(htmlStr || '')
+      .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+      .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+      .replace(/<head\b[\s\S]*?<\/head>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(?:p|div|li|h[1-6]|tr|section|article|blockquote)>/gi, '\n')
+      .replace(/<\/(?:td|th)>/gi, '\t')
+      .replace(/<[^>]+>/g, '');
+    return decodeXmlEntities(cleaned)
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/\r\n?/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  async function importWorldBookFromDoc(arrayBuffer, filename) {
+    if (!arrayBuffer || (arrayBuffer.byteLength !== undefined && arrayBuffer.byteLength === 0)) {
+      return { ok: false, error: '导入失败：DOC 文件为空' };
+    }
+    var bytes = arrayBuffer instanceof Uint8Array
+      ? arrayBuffer
+      : new Uint8Array(arrayBuffer);
+
+    // 1) 兼容扩展名为 .doc 但实际内容为 ZIP/.docx 的文档
+    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04) {
+      var zipRes = await importWorldBookFromDocx(arrayBuffer, String(filename || '').replace(/\.doc$/i, '.docx'));
+      return zipRes;
+    }
+
+    var extractedText = '';
+    // 2) 标准 Word 97-2003 OLE2 二进制 .doc
+    if (bytes.length >= 8 && bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0) {
+      var oleRes = extractTextFromOle2Doc(bytes);
+      if (!oleRes.ok) {
+        return oleRes;
+      }
+      extractedText = oleRes.text;
+    } else {
+      // 3) 兼容常见以 .doc 后缀保存的 RTF 或 HTML 文档
+      var headAscii = decodeCp1252Bytes(bytes, 0, Math.min(bytes.length, 512)).trim();
+      if (/^\{\\rtf/i.test(headAscii)) {
+        extractedText = extractTextFromRtf(decodeCp1252Bytes(bytes, 0, bytes.length));
+      } else if (/^<(?:!doctype|html|head|body|meta|\?xml)/i.test(headAscii) || /<html\b/i.test(headAscii)) {
+        extractedText = extractTextFromHtmlDoc(decodeBytesSmart(bytes));
+      } else {
+        return { ok: false, error: '导入失败：无法识别该 .doc 文件格式，请确认文件未损坏' };
+      }
+    }
+
+    if (!extractedText) {
+      return { ok: false, error: '导入失败：DOC 文档中没有可提取的正文内容' };
+    }
+
+    var rawFilename = String(filename || '').split(/[\\/]/).pop() || '';
+    var bookName = rawFilename.replace(/\.doc$/i, '').trim().slice(0, 80) || '未命名世界书';
+    var now = Date.now();
+    var entry = normalizeWorldBookEntry({
+      id: generateWorldBookEntryId(),
+      uid: 0,
+      comment: '正文',
+      content: extractedText,
+      disable: false,
+      constant: true,
+      key: [],
+      order: 100,
+      createdAt: now,
+      updatedAt: now
+    }, 0);
+    var created = await createWorldBook({
+      id: generateWorldBookId(),
+      name: bookName,
+      description: '',
+      enabled: true,
+      entries: [entry],
+      extraFields: {}
+    });
+    return {
+      ok: true,
+      book: created,
+      entryCount: Array.isArray(created.entries) ? created.entries.length : 0
+    };
+  }
+
   async function buildAllWorldBooksZipBlob(booksInput) {
     var JSZipCtor = global.JSZip;
     if (typeof JSZipCtor !== 'function') {
@@ -2095,6 +2889,9 @@
     buildWorldBookExportJson: buildWorldBookExportJson,
     parseWorldBookImportJson: parseWorldBookImportJson,
     importWorldBookFromJson: importWorldBookFromJson,
+    importWorldBookFromTxt: importWorldBookFromTxt,
+    importWorldBookFromDocx: importWorldBookFromDocx,
+    importWorldBookFromDoc: importWorldBookFromDoc,
     buildAllWorldBooksZipBlob: buildAllWorldBooksZipBlob
   };
 })(typeof window !== 'undefined' ? window : globalThis);
