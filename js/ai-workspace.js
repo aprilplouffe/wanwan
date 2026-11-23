@@ -738,6 +738,9 @@
         if (Array.isArray(nextState.worldbooks)) {
           _state.worldbooks = nextState.worldbooks;
         }
+        if (Array.isArray(nextState.chats)) {
+          _state.chats = nextState.chats;
+        }
       }
       if (S()) {
         _state.selectedModel = await S().getSelectedModel();
@@ -746,10 +749,36 @@
             _state.worldbooks = await S().listWorldBooks();
           }
         }
+        if (!nextState || !Array.isArray(nextState.chats)) {
+          if (typeof S().listChats === 'function') {
+            _state.chats = await S().listChats();
+          }
+        }
+        if (_state.activeChatId) {
+          var refreshedActiveChat = typeof S().getChat === 'function' ? await S().getChat(_state.activeChatId) : null;
+          if (refreshedActiveChat) {
+            _state.activeChat = refreshedActiveChat;
+            _state.messages = Array.isArray(refreshedActiveChat.messages) ? refreshedActiveChat.messages.slice() : [];
+            if (refreshedActiveChat.presetId || refreshedActiveChat.presetSnapshot) {
+              _state.explicitNoPreset = false;
+              _state.activePreset = (_state.presets || []).find(function(p) { return p && p.id === refreshedActiveChat.presetId; }) || refreshedActiveChat.presetSnapshot || null;
+            }
+          } else {
+            _state.activeChatId = null;
+            _state.activeChat = null;
+            _state.messages = [];
+            _state.explicitNoPreset = false;
+            _state.activePreset = (!_state.general || _state.general.autoUseDefaultPreset !== false)
+              ? _state.defaultPreset
+              : null;
+          }
+        }
       }
       await refreshEffectiveApi();
       applyWorkspaceAppearance(page, _state.appearance);
       syncSidebarAccountDom(page);
+      syncSidebarMemoryBadge(page);
+      renderSidebarChats(page);
       syncContextStrip(page);
       updateMainStage(page);
     }, {

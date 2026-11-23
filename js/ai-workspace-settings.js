@@ -159,7 +159,7 @@
       setTimeout(function() {
         a.remove();
         URL.revokeObjectURL(url);
-      }, 400);
+      }, 1500);
       notifyToast('已开始导出文件：' + filename);
       return true;
     } catch (_) {
@@ -271,7 +271,8 @@
         effectiveApi: _ctx.effectiveApi,
         memorySettings: _ctx.memorySettings,
         memories: _ctx.memories,
-        worldbooks: _ctx.worldbooks
+        worldbooks: _ctx.worldbooks,
+        chats: _ctx.chats
       });
     }
   }
@@ -1480,19 +1481,97 @@
         '<div class="aiw-st-card">' +
           '<button type="button" class="aiw-st-row" id="aiw-gen-export-all">' +
             '<span class="aiw-st-row-icon"><i class="fa-solid fa-download"></i></span>' +
-            '<span class="aiw-st-row-label">导出知屿配置与预设备份</span>' +
+            '<div class="aiw-st-row-col">' +
+              '<div class="aiw-st-row-label">导出知屿完整备份</div>' +
+              '<div class="aiw-st-row-desc">包含全部对话与消息、记忆数据、预设、世界书及其关联、个性化、接口与模型配置及常规设置</div>' +
+            '</div>' +
             '<span class="aiw-st-row-arrow"><i class="fa-solid fa-angle-right"></i></span>' +
           '</button>' +
+          '<button type="button" class="aiw-st-row" id="aiw-gen-import-backup">' +
+            '<span class="aiw-st-row-icon"><i class="fa-solid fa-file-import"></i></span>' +
+            '<div class="aiw-st-row-col">' +
+              '<div class="aiw-st-row-label">导入知屿备份</div>' +
+              '<div class="aiw-st-row-desc">支持 JSON 文件恢复（合并去重或覆盖恢复，兼容旧版备份，不影响弯弯机其他应用）</div>' +
+            '</div>' +
+            '<span class="aiw-st-row-arrow"><i class="fa-solid fa-angle-right"></i></span>' +
+          '</button>' +
+          '<input type="file" id="aiw-gen-import-file" accept=".json,application/json" style="display:none">' +
         '</div>' +
 
-        '<div class="aiw-st-footnote">知屿配置与预设保存在本地 WanWanDB 数据库中，不修改主数据库结构，也不影响原有弯弯机数据。</div>' +
+        '<div class="aiw-st-footnote">知屿完整备份包含对话记录、记忆、世界书及接口密钥等本地数据，保存在本地 WanWanDB 数据库中且不影响弯弯机其他应用，导出与恢复前请确认文件来源可靠。</div>' +
       '</div>'
     );
+  }
+
+  function formatBackupExportTime(raw) {
+    if (!raw) return '未知时间';
+    var d = new Date(raw);
+    if (isNaN(d.getTime())) return String(raw);
+    return d.getFullYear() + '-' +
+      String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0') + ' ' +
+      String(d.getHours()).padStart(2, '0') + ':' +
+      String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function readFileAsUtf8Text(file) {
+    if (file && typeof file.text === 'function') {
+      return file.text();
+    }
+    return new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function() {
+        resolve(typeof reader.result === 'string' ? reader.result : '');
+      };
+      reader.onerror = function() {
+        reject(reader.error || new Error('读取文件失败'));
+      };
+      reader.readAsText(file, 'utf-8');
+    });
+  }
+
+  function buildBackupTagsHtml(summary) {
+    var tags = [];
+    if (summary.hasProfile) tags.push('账号资料');
+    if (summary.hasPersonalization) tags.push('个性化');
+    if (summary.hasAppearance) tags.push('外观设置');
+    if (summary.hasGeneral) tags.push('常规设置');
+    if (summary.hasApiConfig) tags.push('接口与模型配置');
+    if (!tags.length) return '';
+    return '<div class="aiw-bk-tags">' + tags.map(function(t) {
+      return '<span class="aiw-bk-tag">' + escapeHtml(t) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  function formatBackupImportToast(res) {
+    var s = (res && res.stats) || {};
+    if (res && res.mode === 'overwrite') {
+      return '已完成覆盖恢复（' +
+        (s.chatsAdded || 0) + ' 个对话 / ' +
+        (s.memoriesAdded || 0) + ' 条记忆 / ' +
+        (s.presetsAdded || 0) + ' 个预设 / ' +
+        (s.worldbooksAdded || 0) + ' 本世界书）';
+    }
+    var parts = [];
+    if (s.chatsAdded) parts.push('新增对话 ' + s.chatsAdded);
+    if (s.chatsMerged) parts.push('合并对话 ' + s.chatsMerged);
+    if (s.messagesAdded) parts.push('新增消息 ' + s.messagesAdded);
+    if (s.memoriesAdded) parts.push('新增记忆 ' + s.memoriesAdded);
+    if (s.presetsAdded) parts.push('新增预设 ' + s.presetsAdded);
+    if (s.worldbooksAdded) parts.push('新增世界书 ' + s.worldbooksAdded);
+    return parts.length
+      ? ('已完成合并导入（' + parts.join('，') + '）')
+      : '已完成合并导入（已自动去重，无新增重复项）';
   }
 
   function bindGeneralEvents(layer) {
     var enterEl = layer.querySelector('#aiw-gen-enter');
     var autoPresetEl = layer.querySelector('#aiw-gen-autopreset');
+    var exportAllBtn = layer.querySelector('#aiw-gen-export-all');
+    var importBackupBtn = layer.querySelector('#aiw-gen-import-backup');
+    var importFileInput = layer.querySelector('#aiw-gen-import-file');
+    var isExportingBackup = false;
+    var isImportingBackup = false;
 
     enterEl.addEventListener('change', async function() {
       _ctx.general = await S().saveGeneralSettings({ enterToSend: enterEl.checked });
@@ -1506,19 +1585,184 @@
       notifyToast(autoPresetEl.checked ? '新对话将显示默认预设' : '已关闭新对话默认预设展示');
     });
 
-    layer.querySelector('#aiw-gen-export-all').addEventListener('click', function() {
-      var bundle = JSON.stringify({
-        format: 'wanwan-aiw-backup',
-        version: 1,
-        exportedAt: new Date().toISOString(),
-        profile: _ctx.profile,
-        personalization: _ctx.personalization,
-        appearance: _ctx.appearance,
-        general: _ctx.general,
-        presets: _ctx.presets
-      }, null, 2);
-      downloadTextFile('zhiyu-settings-backup.json', bundle, 'application/json;charset=utf-8');
+    exportAllBtn.addEventListener('click', async function() {
+      if (isExportingBackup || isImportingBackup) return;
+      var store = S();
+      if (!store || typeof store.buildFullBackupJson !== 'function') {
+        notifyToast('知屿存储模块尚未就绪，请稍后重试');
+        return;
+      }
+      isExportingBackup = true;
+      exportAllBtn.disabled = true;
+      try {
+        var result = await store.buildFullBackupJson();
+        var now = new Date();
+        var dateStr = now.getFullYear() + '-' +
+          String(now.getMonth() + 1).padStart(2, '0') + '-' +
+          String(now.getDate()).padStart(2, '0');
+        var filename = 'zhiyu-full-backup-' + dateStr + '.json';
+        var ok = downloadTextFile(filename, result.json, 'application/json;charset=utf-8');
+        if (ok && result.payload && result.payload.counts) {
+          var c = result.payload.counts;
+          notifyToast('已导出知屿完整备份（' + c.chats + ' 个对话 / ' + c.memories + ' 条记忆 / ' + c.worldbooks + ' 本世界书）');
+        }
+      } catch (err) {
+        console.warn('[AiWorkspaceSettings] export full backup failed:', err);
+        notifyToast('导出知屿完整备份失败，请稍后重试');
+      } finally {
+        isExportingBackup = false;
+        exportAllBtn.disabled = false;
+      }
     });
+
+    async function executeBackupImport(rawText, mode) {
+      if (isImportingBackup) return false;
+      var store = S();
+      if (!store || typeof store.importBackupFromJson !== 'function') {
+        notifyToast('知屿存储模块尚未就绪，请稍后重试');
+        return false;
+      }
+      isImportingBackup = true;
+      if (importBackupBtn) importBackupBtn.disabled = true;
+      try {
+        var res = await store.importBackupFromJson(rawText, { mode: mode });
+        if (!res || !res.ok) {
+          notifyToast((res && res.error) || '导入知屿备份失败，原数据已保留');
+          return false;
+        }
+        await refreshAllData();
+        var chatIds = (_ctx.chats || []).map(function(c) { return c && c.id; }).filter(Boolean);
+        if (_ctx.activeChatId && chatIds.indexOf(_ctx.activeChatId) === -1) {
+          _ctx.activeChatId = '';
+        }
+        if (_ctx.recentSelectedChatId && chatIds.indexOf(_ctx.recentSelectedChatId) === -1) {
+          _ctx.recentSelectedChatId = _ctx.activeChatId || '';
+        }
+        if (_ctx.summarySelectedChatId && chatIds.indexOf(_ctx.summarySelectedChatId) === -1) {
+          _ctx.summarySelectedChatId = _ctx.activeChatId || '';
+        }
+        clearExpiredArchivePreviewState();
+        closeModalOverlay();
+        notifyWorkspaceStateChanged();
+        renderCurrentView();
+        notifyToast(formatBackupImportToast(res));
+        return true;
+      } catch (err) {
+        console.warn('[AiWorkspaceSettings] import backup failed:', err);
+        notifyToast('导入知屿备份失败，原数据未受影响');
+        return false;
+      } finally {
+        isImportingBackup = false;
+        var curBtn = getLayer() && getLayer().querySelector('#aiw-gen-import-backup');
+        if (curBtn) curBtn.disabled = false;
+      }
+    }
+
+    function openImportBackupModeModal(fileName, rawText, parsed) {
+      var sum = parsed.summary || {};
+      var versionText = parsed.isLegacyBackup ? 'v1 旧版备份' : ('v' + parsed.version + ' 完整备份');
+      var countParts = [
+        '对话 ' + (sum.chatsCount || 0) + ' 个（' + (sum.messagesCount || 0) + ' 条消息）',
+        '记忆 ' + (sum.memoriesCount || 0) + ' 条',
+        '预设 ' + (sum.presetsCount || 0) + ' 个',
+        '世界书 ' + (sum.worldbooksCount || 0) + ' 本（' + (sum.worldbookEntriesCount || 0) + ' 条词条）'
+      ];
+      var legacyNoteHtml = parsed.isLegacyBackup
+        ? '<div class="aiw-bk-legacy-note">检测到旧版（v1）知屿备份，仅包含资料、个性化、外观、常规设置与预设，不含对话/记忆/世界书/接口配置。若选择「覆盖恢复」，将会清空当前未包含的对话、记忆、世界书与专属接口配置；如需保留现有记录请选择「合并导入」。</div>'
+        : '';
+
+      var bodyHtml =
+        '<div class="aiw-bk-summary">' +
+          '<div class="aiw-bk-meta-row">' +
+            '<span class="aiw-bk-filename" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span>' +
+            '<span>' + escapeHtml(versionText) + '</span>' +
+          '</div>' +
+          '<div class="aiw-bk-meta-row">' +
+            '<span>导出时间</span>' +
+            '<span>' + escapeHtml(formatBackupExportTime(parsed.exportedAt)) + '</span>' +
+          '</div>' +
+          '<div class="aiw-bk-counts">' + escapeHtml(countParts.join(' · ')) + '</div>' +
+          buildBackupTagsHtml(sum) +
+        '</div>' +
+        legacyNoteHtml +
+        '<div class="aiw-bk-modes">' +
+          '<div class="aiw-bk-mode-item"><strong>合并导入</strong>：保留现有知屿数据，将备份中的对话、消息、记忆、预设与世界书（含关联）合并进来并自动去重；未配置的设置项会由备份补全。</div>' +
+          '<div class="aiw-bk-mode-item is-warn"><strong>覆盖恢复</strong>：清空并替换当前全部知屿本地数据（对话、记忆、预设、世界书、设置与专属接口），不影响弯弯机其他应用。</div>' +
+        '</div>';
+
+      var footerHtml =
+        '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-imp-bk-cancel">取消</button>' +
+        '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-imp-bk-merge">合并导入</button>' +
+        '<button type="button" class="aiw-st-btn-danger aiw-st-btn-sm" id="aiw-imp-bk-overwrite">覆盖恢复</button>';
+
+      var modal = showCustomModal('导入知屿备份', bodyHtml, footerHtml);
+      if (!modal) return;
+      var footEl = modal.querySelector('.aiw-st-modal-foot');
+      if (footEl) footEl.classList.add('aiw-bk-modal-foot');
+
+      var cancelBtn = modal.querySelector('#aiw-imp-bk-cancel');
+      var mergeBtn = modal.querySelector('#aiw-imp-bk-merge');
+      var overwriteBtn = modal.querySelector('#aiw-imp-bk-overwrite');
+
+      if (cancelBtn) cancelBtn.addEventListener('click', closeModalOverlay);
+
+      if (mergeBtn) {
+        mergeBtn.addEventListener('click', async function() {
+          mergeBtn.disabled = true;
+          if (overwriteBtn) overwriteBtn.disabled = true;
+          mergeBtn.textContent = '导入中...';
+          var ok = await executeBackupImport(rawText, 'merge');
+          if (!ok && modal.parentNode) {
+            mergeBtn.disabled = false;
+            if (overwriteBtn) overwriteBtn.disabled = false;
+            mergeBtn.textContent = '合并导入';
+          }
+        });
+      }
+
+      if (overwriteBtn) {
+        overwriteBtn.addEventListener('click', function() {
+          var warnText = '确定要使用「' + fileName + '」覆盖当前全部知屿数据吗？此操作会替换知屿现有的对话记录、记忆、预设、世界书及配置（不影响弯弯机其他应用的数据），且覆盖后无法撤销。';
+          if (parsed.isLegacyBackup) {
+            warnText = '当前选择的是旧版（v1）备份，不包含对话、记忆、世界书和接口配置。覆盖恢复将清空这些现有知屿数据，仅恢复旧版设置与预设（不影响弯弯机其他应用）。确定继续吗？';
+          }
+          showConfirmModal('确认覆盖恢复', warnText, '确认覆盖恢复', true, async function() {
+            await executeBackupImport(rawText, 'overwrite');
+          });
+        });
+      }
+    }
+
+    if (importBackupBtn && importFileInput) {
+      importBackupBtn.addEventListener('click', function() {
+        if (isExportingBackup || isImportingBackup) return;
+        importFileInput.value = '';
+        importFileInput.click();
+      });
+
+      importFileInput.addEventListener('change', async function() {
+        var file = importFileInput.files && importFileInput.files[0];
+        importFileInput.value = '';
+        if (!file) return;
+        var store = S();
+        if (!store || typeof store.parseFullBackupJson !== 'function') {
+          notifyToast('知屿存储模块尚未就绪，请稍后重试');
+          return;
+        }
+        try {
+          var rawText = await readFileAsUtf8Text(file);
+          var parsed = store.parseFullBackupJson(rawText);
+          if (!parsed || !parsed.ok) {
+            notifyToast((parsed && parsed.error) || '备份文件校验失败，原数据未更改');
+            return;
+          }
+          openImportBackupModeModal(file.name || 'backup.json', rawText, parsed);
+        } catch (err) {
+          console.warn('[AiWorkspaceSettings] read backup file failed:', err);
+          notifyToast('读取备份文件失败，请确认选择的是有效的 JSON 文件');
+        }
+      });
+    }
   }
 
   // ===== 视图 6：知屿专属 API 配置 =====
