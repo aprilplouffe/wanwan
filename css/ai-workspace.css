@@ -4131,5 +4131,129 @@
   color: var(--aiw-sub);
 }
 
+/* ===== 6-W1d：世界书词条状态与触发设置样式（兼容浅色/深色模式） ===== */
+.aiw-wbe-card-head {
+  align-items: flex-start;
+}
+
+.aiw-wbe-card-switch {
+  flex-shrink: 0;
+  margin-left: 6px;
+}
+
+.aiw-preset-card.is-wbe-disabled .aiw-preset-meta,
+.aiw-preset-card.is-wbe-disabled .aiw-preset-tags {
+  opacity: 0.62;
+}
+
+.aiw-wbe-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  line-height: 1.25;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--aiw-border);
+  background: var(--aiw-surface-2);
+  color: var(--aiw-sub);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.aiw-wbe-badge.is-enabled {
+  color: #059669;
+  border-color: rgba(5, 150, 105, 0.28);
+  background: rgba(5, 150, 105, 0.09);
+}
+
+.aiw-wbe-badge.is-disabled {
+  color: var(--aiw-hint);
+}
+
+.aiw-wbe-badge.is-constant {
+  color: var(--aiw-pink-deep);
+  border-color: var(--aiw-pink-border);
+  background: var(--aiw-pink-soft);
+}
+
+.aiw-wbe-badge.is-keyword {
+  color: var(--aiw-sub);
+}
+
+.aiw-wbe-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--aiw-border);
+  background: var(--aiw-surface);
+}
+
+.aiw-wbe-switch-col {
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-wbe-switch-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--aiw-text);
+  line-height: 1.35;
+}
+
+.aiw-wbe-switch-desc {
+  font-size: 11.5px;
+  color: var(--aiw-hint);
+  margin-top: 2px;
+}
+
+.aiw-wbe-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.aiw-wbe-mode-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--aiw-border);
+  background: var(--aiw-surface);
+  cursor: pointer;
+}
+
+.aiw-wbe-mode-card input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.aiw-wbe-mode-card.is-active {
+  border-color: var(--aiw-pink-deep);
+  background: var(--aiw-pink-soft);
+}
+
+.aiw-wbe-mode-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--aiw-text);
+}
+
+.aiw-wbe-mode-card.is-active .aiw-wbe-mode-title {
+  color: var(--aiw-pink-deep);
+}
+
+.aiw-wbe-mode-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--aiw-hint);
+}
+
 
 

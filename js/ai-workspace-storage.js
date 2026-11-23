@@ -23,7 +23,9 @@
     MEMORY_IDS: 'aiw_memory_ids',
     MEMORY_PREFIX: 'aiw_memory:',
     MEMORY_TASKS: 'aiw_memory_tasks',
-    DELETED_MEMORY_SIGS: 'aiw_deleted_memory_sigs'
+    DELETED_MEMORY_SIGS: 'aiw_deleted_memory_sigs',
+    WORLDBOOK_IDS: 'aiw_worldbook_ids',
+    WORLDBOOK_PREFIX: 'aiw_worldbook:'
   };
 
   var MEMORY_STRATEGY_PRESETS = {
@@ -1634,6 +1636,383 @@
     return active;
   }
 
+  // ===== 9. 世界书持久化存储（独立隔离于记忆、摘要、预设及主库其他模块） =====
+  function generateWorldBookId() {
+    return 'wb_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+  }
+
+  function generateWorldBookEntryId() {
+    return 'wbe_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+  }
+
+  function getNextWorldBookEntryUid(entries) {
+    var list = Array.isArray(entries) ? entries : [];
+    var used = {};
+    for (var i = 0; i < list.length; i++) {
+      var u = list[i] && Number(list[i].uid);
+      if (Number.isInteger(u) && u >= 0) used[u] = true;
+    }
+    var next = 0;
+    while (used[next]) next++;
+    return next;
+  }
+
+  function normalizeWorldBookKeywords(raw) {
+    var list = [];
+    if (Array.isArray(raw)) {
+      list = raw;
+    } else if (typeof raw === 'string') {
+      list = raw.split(/[\n,，、]+/);
+    }
+    var seen = {};
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var item = String(list[i] == null ? '' : list[i]).trim();
+      if (!item || seen[item]) continue;
+      seen[item] = true;
+      out.push(item);
+    }
+    return out;
+  }
+
+  function normalizeWorldBookEntry(raw, fallbackUid) {
+    var src = raw && typeof raw === 'object' ? deepClone(raw) : {};
+    var now = Date.now();
+    var id = String(src.id || generateWorldBookEntryId()).trim();
+    var uidNum = Number(src.uid);
+    var uid = (Number.isInteger(uidNum) && uidNum >= 0) ? uidNum : (Number.isInteger(fallbackUid) && fallbackUid >= 0 ? fallbackUid : 0);
+    var comment = String(src.comment != null ? src.comment : (src.name != null ? src.name : '')).trim().slice(0, 120);
+    var content = String(src.content != null ? src.content : '').replace(/\r\n/g, '\n');
+    var disable = typeof src.disable === 'boolean'
+      ? src.disable
+      : (typeof src.enabled === 'boolean' ? !src.enabled : false);
+    var constant = src.constant === true;
+    var key = normalizeWorldBookKeywords(src.key !== undefined ? src.key : src.keys);
+    var rawOrder = src.order !== undefined ? src.order : src.insertion_order;
+    var orderNum = (rawOrder !== '' && rawOrder !== null && rawOrder !== undefined) ? Number(rawOrder) : NaN;
+    var order = Number.isFinite(orderNum) ? Math.round(orderNum) : 100;
+    var createdAt = Number(src.createdAt) || now;
+    var updatedAt = Number(src.updatedAt) || createdAt;
+    return Object.assign(src, {
+      id: id,
+      uid: uid,
+      comment: comment,
+      content: content,
+      disable: disable,
+      constant: constant,
+      key: key,
+      order: order,
+      createdAt: createdAt,
+      updatedAt: updatedAt
+    });
+  }
+
+  function normalizeWorldBookRecord(raw, fallbackId) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var now = Date.now();
+    var id = String(src.id || fallbackId || generateWorldBookId()).trim();
+    var name = String(src.name || '').trim().slice(0, 80) || '未命名世界书';
+    var description = String(src.description || '').replace(/\r\n/g, '\n').trim().slice(0, 500);
+    var rawEntries = Array.isArray(src.entries) ? src.entries : [];
+    var seenIds = {};
+    var entries = [];
+    for (var i = 0; i < rawEntries.length; i++) {
+      if (!rawEntries[i] || typeof rawEntries[i] !== 'object') continue;
+      var normEntry = normalizeWorldBookEntry(rawEntries[i], i);
+      if (seenIds[normEntry.id]) {
+        normEntry.id = generateWorldBookEntryId();
+      }
+      seenIds[normEntry.id] = true;
+      entries.push(normEntry);
+    }
+    var extraFields = src.extraFields && typeof src.extraFields === 'object' && !Array.isArray(src.extraFields)
+      ? deepClone(src.extraFields)
+      : {};
+    var createdAt = Number(src.createdAt) || now;
+    var updatedAt = Number(src.updatedAt) || createdAt;
+    return {
+      id: id,
+      name: name,
+      description: description,
+      enabled: src.enabled !== false,
+      entries: entries,
+      extraFields: extraFields,
+      createdAt: createdAt,
+      updatedAt: updatedAt
+    };
+  }
+
+  async function listWorldBooks() {
+    var ids = await dbGetConfig(KEYS.WORLDBOOK_IDS);
+    if (!Array.isArray(ids)) ids = [];
+    var items = [];
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      if (!id) continue;
+      var raw = await dbGetConfig(KEYS.WORLDBOOK_PREFIX + id);
+      if (raw && typeof raw === 'object') {
+        items.push(normalizeWorldBookRecord(raw, id));
+      }
+    }
+    items.sort(function(a, b) {
+      return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+    });
+    return items;
+  }
+
+  async function getWorldBook(id) {
+    if (!id) return null;
+    var raw = await dbGetConfig(KEYS.WORLDBOOK_PREFIX + id);
+    if (!raw || typeof raw !== 'object') return null;
+    return normalizeWorldBookRecord(raw, id);
+  }
+
+  async function createWorldBook(data) {
+    var ids = await dbGetConfig(KEYS.WORLDBOOK_IDS);
+    if (!Array.isArray(ids)) ids = [];
+    var now = Date.now();
+    var src = data && typeof data === 'object' ? data : {};
+    var record = normalizeWorldBookRecord(Object.assign({}, src, {
+      id: src.id || generateWorldBookId(),
+      entries: Array.isArray(src.entries) ? src.entries : [],
+      createdAt: Number(src.createdAt) || now,
+      updatedAt: Number(src.updatedAt) || now
+    }));
+    await dbPutConfig(KEYS.WORLDBOOK_PREFIX + record.id, record);
+    if (ids.indexOf(record.id) === -1) {
+      ids.unshift(record.id);
+      await dbPutConfig(KEYS.WORLDBOOK_IDS, ids);
+    }
+    return record;
+  }
+
+  async function updateWorldBook(id, patch) {
+    if (!id) return null;
+    var existing = await getWorldBook(id);
+    if (!existing) return null;
+    var p = patch && typeof patch === 'object' ? patch : {};
+    var merged = Object.assign({}, existing, p, {
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now()
+    });
+    var next = normalizeWorldBookRecord(merged, existing.id);
+    await dbPutConfig(KEYS.WORLDBOOK_PREFIX + next.id, next);
+    return next;
+  }
+
+  async function deleteWorldBook(id) {
+    if (!id) return false;
+    var ids = await dbGetConfig(KEYS.WORLDBOOK_IDS);
+    if (!Array.isArray(ids)) ids = [];
+    var nextIds = ids.filter(function(item) { return item !== id; });
+    await dbDeleteConfig(KEYS.WORLDBOOK_PREFIX + id);
+    await dbPutConfig(KEYS.WORLDBOOK_IDS, nextIds);
+    return true;
+  }
+
+  async function createWorldBookEntry(bookId, data) {
+    if (!bookId) return null;
+    var book = await getWorldBook(bookId);
+    if (!book) return null;
+    var entries = Array.isArray(book.entries) ? book.entries.slice() : [];
+    var src = data && typeof data === 'object' ? data : {};
+    var now = Date.now();
+    var nextUid = getNextWorldBookEntryUid(entries);
+    var entry = normalizeWorldBookEntry(Object.assign({}, src, {
+      id: src.id || generateWorldBookEntryId(),
+      uid: (src.uid != null && Number.isInteger(Number(src.uid)) && Number(src.uid) >= 0) ? Number(src.uid) : nextUid,
+      createdAt: Number(src.createdAt) || now,
+      updatedAt: Number(src.updatedAt) || now
+    }), nextUid);
+    entries.unshift(entry);
+    var updatedBook = await updateWorldBook(bookId, { entries: entries });
+    return { book: updatedBook, entry: entry };
+  }
+
+  async function updateWorldBookEntry(bookId, entryId, patch) {
+    if (!bookId || !entryId) return null;
+    var book = await getWorldBook(bookId);
+    if (!book) return null;
+    var entries = Array.isArray(book.entries) ? book.entries.slice() : [];
+    var idx = entries.findIndex(function(item) { return item && item.id === entryId; });
+    if (idx === -1) return null;
+    var existing = entries[idx];
+    var p = patch && typeof patch === 'object' ? patch : {};
+    var nextEntry = normalizeWorldBookEntry(Object.assign({}, existing, p, {
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now()
+    }), existing.uid);
+    entries[idx] = nextEntry;
+    var updatedBook = await updateWorldBook(bookId, { entries: entries });
+    return { book: updatedBook, entry: nextEntry };
+  }
+
+  async function deleteWorldBookEntry(bookId, entryId) {
+    if (!bookId || !entryId) return null;
+    var book = await getWorldBook(bookId);
+    if (!book) return null;
+    var entries = Array.isArray(book.entries) ? book.entries : [];
+    var nextEntries = entries.filter(function(item) { return item && item.id !== entryId; });
+    if (nextEntries.length === entries.length) return null;
+    return await updateWorldBook(bookId, { entries: nextEntries });
+  }
+
+  function buildWorldBookExportFilename(book) {
+    var rawName = String((book && book.name) || '').trim();
+    var safeName = rawName
+      .replace(/[\\/:*?"<>|\r\n\t]+/g, '_')
+      .replace(/^\.+|\.+$/g, '')
+      .trim()
+      .slice(0, 64);
+    return (safeName || '世界书') + '.json';
+  }
+
+  function buildWorldBookExportJson(book) {
+    var norm = normalizeWorldBookRecord(book || {});
+    var payload = {
+      format: 'zhiyu_worldbook',
+      version: 1,
+      exportedAt: Date.now(),
+      worldbook: {
+        name: norm.name,
+        description: norm.description,
+        enabled: norm.enabled !== false,
+        entries: norm.entries.map(function(entry, idx) {
+          return normalizeWorldBookEntry(entry, idx);
+        })
+      }
+    };
+    return JSON.stringify(payload, null, 2);
+  }
+
+  function stripUnsafeJsonKeys(val) {
+    if (Array.isArray(val)) {
+      return val.map(stripUnsafeJsonKeys);
+    }
+    if (val && typeof val === 'object') {
+      var out = {};
+      var keys = Object.keys(val);
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+        out[k] = stripUnsafeJsonKeys(val[k]);
+      }
+      return out;
+    }
+    return val;
+  }
+
+  function parseWorldBookImportJson(rawText) {
+    var text = String(rawText == null ? '' : rawText).trim();
+    if (!text) {
+      return { ok: false, error: '导入失败：文件内容为空' };
+    }
+    var parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {
+      return { ok: false, error: '导入失败：JSON 文件格式无效' };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, error: '导入失败：文件内容不是有效的 JSON 对象' };
+    }
+    var safeParsed = stripUnsafeJsonKeys(parsed);
+    if (safeParsed.format !== 'zhiyu_worldbook' || Number(safeParsed.version) !== 1) {
+      return { ok: false, error: '导入失败：仅支持知屿世界书 JSON 格式（zhiyu_worldbook v1）' };
+    }
+    var wb = safeParsed.worldbook;
+    if (!wb || typeof wb !== 'object' || Array.isArray(wb)) {
+      return { ok: false, error: '导入失败：缺少有效的 worldbook 数据结构' };
+    }
+    var bookName = String(wb.name || '').trim();
+    if (!bookName) {
+      return { ok: false, error: '导入失败：世界书名称缺失' };
+    }
+    if (!Array.isArray(wb.entries)) {
+      return { ok: false, error: '导入失败：词条列表格式无效' };
+    }
+    var normalizedEntries = [];
+    for (var i = 0; i < wb.entries.length; i++) {
+      var rawEntry = wb.entries[i];
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+        return { ok: false, error: '导入失败：第 ' + (i + 1) + ' 条词条格式无效' };
+      }
+      var clonedEntry = Object.assign({}, rawEntry, {
+        id: generateWorldBookEntryId()
+      });
+      normalizedEntries.push(normalizeWorldBookEntry(clonedEntry, i));
+    }
+    return {
+      ok: true,
+      book: {
+        name: bookName.slice(0, 80),
+        description: String(wb.description || '').replace(/\r\n/g, '\n').trim().slice(0, 500),
+        enabled: wb.enabled !== false,
+        entries: normalizedEntries,
+        extraFields: wb.extraFields && typeof wb.extraFields === 'object' && !Array.isArray(wb.extraFields)
+          ? deepClone(wb.extraFields)
+          : {}
+      }
+    };
+  }
+
+  async function importWorldBookFromJson(rawText) {
+    var parsed = parseWorldBookImportJson(rawText);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    var created = await createWorldBook({
+      id: generateWorldBookId(),
+      name: parsed.book.name,
+      description: parsed.book.description,
+      enabled: parsed.book.enabled,
+      entries: parsed.book.entries,
+      extraFields: parsed.book.extraFields
+    });
+    return {
+      ok: true,
+      book: created,
+      entryCount: Array.isArray(created.entries) ? created.entries.length : 0
+    };
+  }
+
+  async function buildAllWorldBooksZipBlob(booksInput) {
+    var JSZipCtor = global.JSZip;
+    if (typeof JSZipCtor !== 'function') {
+      throw new Error('未检测到 ZIP 打包组件');
+    }
+    var list = Array.isArray(booksInput) ? booksInput : await listWorldBooks();
+    var zip = new JSZipCtor();
+    var usedLowerNames = {};
+    var filenames = [];
+
+    for (var i = 0; i < list.length; i++) {
+      var book = list[i];
+      if (!book || typeof book !== 'object') continue;
+      var baseFilename = buildWorldBookExportFilename(book);
+      var stem = baseFilename.replace(/\.json$/i, '') || '世界书';
+      var candidate = stem + '.json';
+      var suffix = 2;
+      while (usedLowerNames[candidate.toLowerCase()]) {
+        candidate = stem + ' (' + suffix + ').json';
+        suffix++;
+      }
+      usedLowerNames[candidate.toLowerCase()] = true;
+      var jsonStr = buildWorldBookExportJson(book);
+      zip.file(candidate, jsonStr);
+      filenames.push(candidate);
+    }
+
+    var blob = await zip.generateAsync({ type: 'blob' });
+    return {
+      blob: blob,
+      count: filenames.length,
+      filenames: filenames
+    };
+  }
+
   global.AiWorkspaceStorage = {
     KEYS: KEYS,
     ACCENT_PRESETS: ACCENT_PRESETS,
@@ -1702,6 +2081,20 @@
     saveMemoryTasks: saveMemoryTasks,
     enqueueMemoryTask: enqueueMemoryTask,
     updateMemoryTask: updateMemoryTask,
-    clearFinishedMemoryTasks: clearFinishedMemoryTasks
+    clearFinishedMemoryTasks: clearFinishedMemoryTasks,
+    listWorldBooks: listWorldBooks,
+    getWorldBook: getWorldBook,
+    createWorldBook: createWorldBook,
+    updateWorldBook: updateWorldBook,
+    deleteWorldBook: deleteWorldBook,
+    normalizeWorldBookKeywords: normalizeWorldBookKeywords,
+    createWorldBookEntry: createWorldBookEntry,
+    updateWorldBookEntry: updateWorldBookEntry,
+    deleteWorldBookEntry: deleteWorldBookEntry,
+    buildWorldBookExportFilename: buildWorldBookExportFilename,
+    buildWorldBookExportJson: buildWorldBookExportJson,
+    parseWorldBookImportJson: parseWorldBookImportJson,
+    importWorldBookFromJson: importWorldBookFromJson,
+    buildAllWorldBooksZipBlob: buildAllWorldBooksZipBlob
   };
 })(typeof window !== 'undefined' ? window : globalThis);

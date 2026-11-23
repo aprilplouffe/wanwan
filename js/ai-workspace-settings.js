@@ -67,6 +67,8 @@
     },
     memories: [],
     memoryTasks: [],
+    worldbooks: [],
+    activeWorldBookId: '',
     chats: [],
     activeChatId: '',
     recentSelectedChatId: '',
@@ -166,6 +168,27 @@
     }
   }
 
+  function downloadBlobFile(filename, blob, successMsg) {
+    try {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() {
+        a.remove();
+        URL.revokeObjectURL(url);
+      }, 600);
+      notifyToast(successMsg || ('已开始导出文件：' + filename));
+      return true;
+    } catch (_) {
+      notifyToast('当前环境不支持直接下载压缩包，请稍后重试');
+      return false;
+    }
+  }
+
   function formatPresetAvatarHtml(preset, sizeClass) {
     var cls = 'aiw-preset-avatar' + (sizeClass ? ' ' + sizeClass : '');
     if (preset && preset.avatarType === 'image' && preset.avatarValue) {
@@ -215,7 +238,8 @@
       typeof store.listChats === 'function' ? store.listChats() : Promise.resolve([]),
       typeof store.getSummaryApiConfig === 'function'
         ? store.getSummaryApiConfig()
-        : Promise.resolve({ baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false })
+        : Promise.resolve({ baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false }),
+      typeof store.listWorldBooks === 'function' ? store.listWorldBooks() : Promise.resolve([])
     ]);
     _ctx.profile = results[0];
     _ctx.personalization = results[1];
@@ -229,6 +253,7 @@
     _ctx.memoryTasks = results[8] || [];
     _ctx.chats = results[9] || [];
     _ctx.summaryApiConfig = results[10] || { baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false };
+    _ctx.worldbooks = results[11] || [];
     if (AI() && typeof AI().resolveEffectiveApiConfig === 'function') {
       _ctx.effectiveApi = await AI().resolveEffectiveApiConfig();
     }
@@ -336,6 +361,8 @@
     var memCount = (_ctx.memories || []).length;
     var anyMemoryActive = !!(memSettings.shortTermContext || memSettings.crossChatMemory || memSettings.useMemory || memSettings.autoMemory);
     var memorySummary = anyMemoryActive ? (memCount + ' 条') : '已关闭';
+    var wbCount = (_ctx.worldbooks || []).length;
+    var wbSummary = wbCount ? (wbCount + ' 本') : '暂无';
 
     return (
       '<div class="aiw-st-topbar">' +
@@ -383,6 +410,7 @@
           '<button type="button" class="aiw-st-row" data-st-nav="worldbooks">' +
             '<span class="aiw-st-row-icon"><i class="fa-solid fa-book-open"></i></span>' +
             '<span class="aiw-st-row-label">世界书</span>' +
+            '<span class="aiw-st-row-val">' + escapeHtml(wbSummary) + '</span>' +
             '<span class="aiw-st-row-arrow"><i class="fa-solid fa-angle-right"></i></span>' +
           '</button>' +
           '<button type="button" class="aiw-st-row" data-st-nav="memory">' +
@@ -4557,24 +4585,649 @@
     renderCurrentView();
   }
 
-  // ===== 视图 4B：世界书管理（基础入口与空状态） =====
+  // ===== 视图 4B：世界书管理（创建、列表展示、修改名称与简介、删除确认） =====
   function renderWorldBooksHtml() {
+    var list = Array.isArray(_ctx.worldbooks) ? _ctx.worldbooks : [];
+
+    var cardsHtml = list.length
+      ? list.map(function(wb) {
+          var entryCount = Array.isArray(wb.entries) ? wb.entries.length : 0;
+          var descText = String(wb.description || '').trim() || '暂无简介';
+          return (
+            '<div class="aiw-preset-card" data-wb-card="' + escapeHtml(wb.id) + '" style="cursor:pointer;">' +
+              '<div class="aiw-preset-top" data-wb-open="' + escapeHtml(wb.id) + '">' +
+                '<span class="aiw-preset-avatar"><i class="fa-solid fa-book-open"></i></span>' +
+                '<div class="aiw-preset-meta">' +
+                  '<div class="aiw-preset-title-row">' +
+                    '<span class="aiw-preset-name">' + escapeHtml(wb.name || '未命名世界书') + '</span>' +
+                  '</div>' +
+                  '<div class="aiw-preset-desc">' + escapeHtml(descText) + '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="aiw-preset-tags" data-wb-open="' + escapeHtml(wb.id) + '">' +
+                '<span class="aiw-preset-tag">词条：' + escapeHtml(String(entryCount)) + ' 条</span>' +
+              '</div>' +
+              '<div class="aiw-preset-actions">' +
+                '<button type="button" class="aiw-preset-act" data-wb-act="entries" data-wb-id="' + escapeHtml(wb.id) + '">' +
+                  '<i class="fa-solid fa-list-ul"></i> 词条管理' +
+                '</button>' +
+                '<button type="button" class="aiw-preset-act" data-wb-act="edit" data-wb-id="' + escapeHtml(wb.id) + '">' +
+                  '<i class="fa-regular fa-pen-to-square"></i> 编辑信息' +
+                '</button>' +
+                '<button type="button" class="aiw-preset-act" data-wb-act="export" data-wb-id="' + escapeHtml(wb.id) + '">' +
+                  '<i class="fa-solid fa-arrow-up-from-bracket"></i> 导出' +
+                '</button>' +
+                '<button type="button" class="aiw-preset-act is-danger" data-wb-act="delete" data-wb-id="' + escapeHtml(wb.id) + '">' +
+                  '<i class="fa-regular fa-trash-can"></i> 删除' +
+                '</button>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('')
+      : (
+        '<div class="aiw-preset-empty">' +
+          '<div class="aiw-preset-empty-icon"><i class="fa-solid fa-book-open"></i></div>' +
+          '<div class="aiw-preset-empty-title">还没有世界书</div>' +
+          '<div class="aiw-preset-empty-sub">创建专属设定集，或导入知屿世界书 JSON 文件</div>' +
+          '<div style="display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;">' +
+            '<button type="button" class="aiw-st-btn-secondary" id="aiw-wb-empty-import"><i class="fa-solid fa-file-import"></i> 导入世界书</button>' +
+            '<button type="button" class="aiw-st-btn-primary" id="aiw-wb-empty-create">新建世界书</button>' +
+          '</div>' +
+        '</div>'
+      );
+
     return (
       '<div class="aiw-st-topbar">' +
         '<button type="button" class="aiw-circle-btn" id="aiw-st-sub-back" aria-label="返回设置">' +
           '<i class="fa-solid fa-arrow-left"></i>' +
         '</button>' +
         '<div class="aiw-st-topbar-title">世界书</div>' +
-        '<div class="aiw-st-topbar-spacer"></div>' +
+        '<button type="button" class="aiw-st-top-action" id="aiw-wb-new-btn"><i class="fa-solid fa-plus"></i> 新建世界书</button>' +
       '</div>' +
 
       '<div class="aiw-st-scroll">' +
-        '<div class="aiw-preset-empty">' +
-          '<div class="aiw-preset-empty-icon"><i class="fa-solid fa-book-open"></i></div>' +
-          '<div class="aiw-preset-empty-title">还没有世界书</div>' +
+        '<input type="file" id="aiw-wb-import-file" accept=".json,application/json" style="display:none;">' +
+        '<div class="aiw-pr-toolbar">' +
+          '<span class="aiw-pr-count">共 ' + escapeHtml(String(list.length)) + ' 本世界书（独立持久化）</span>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-wb-import-btn">' +
+              '<i class="fa-solid fa-file-import"></i> 导入世界书' +
+            '</button>' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-wb-export-all-btn">' +
+              '<i class="fa-solid fa-file-zipper"></i> 导出全部' +
+            '</button>' +
+          '</div>' +
         '</div>' +
+        '<div class="aiw-preset-list">' + cardsHtml + '</div>' +
       '</div>'
     );
+  }
+
+  function openWorldBookMetaModal(existingBook) {
+    var isEdit = !!(existingBook && existingBook.id);
+    var initName = isEdit ? String(existingBook.name || '') : '';
+    var initDesc = isEdit ? String(existingBook.description || '') : '';
+
+    var bodyHtml =
+      '<div class="aiw-field-group">' +
+        '<label class="aiw-field-label" for="aiw-wb-name-input">世界书名称</label>' +
+        '<input type="text" class="aiw-field-input" id="aiw-wb-name-input" maxlength="80" placeholder="例如：浮光城设定集" value="' + escapeHtml(initName) + '">' +
+      '</div>' +
+      '<div class="aiw-field-group" style="margin-top:12px;">' +
+        '<label class="aiw-field-label" for="aiw-wb-desc-input">简介（可选）</label>' +
+        '<textarea class="aiw-field-textarea" id="aiw-wb-desc-input" rows="3" maxlength="500" placeholder="简要说明这本世界书的背景、人物或适用场景...">' + escapeHtml(initDesc) + '</textarea>' +
+      '</div>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-wb-modal-cancel">取消</button>' +
+      '<button type="button" class="aiw-st-btn-primary" id="aiw-wb-modal-save">' + (isEdit ? '保存修改' : '创建') + '</button>';
+
+    var modal = showCustomModal(isEdit ? '修改世界书' : '新建世界书', bodyHtml, footerHtml);
+    if (!modal) return;
+
+    var nameInput = modal.querySelector('#aiw-wb-name-input');
+    var descInput = modal.querySelector('#aiw-wb-desc-input');
+    if (nameInput) {
+      setTimeout(function() { nameInput.focus(); }, 60);
+    }
+
+    var cancelBtn = modal.querySelector('#aiw-wb-modal-cancel');
+    if (cancelBtn) cancelBtn.addEventListener('click', closeModalOverlay);
+
+    var saveBtn = modal.querySelector('#aiw-wb-modal-save');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', async function() {
+        var nameVal = nameInput ? String(nameInput.value || '').trim() : '';
+        var descVal = descInput ? String(descInput.value || '').trim() : '';
+        if (!nameVal) {
+          notifyToast('请输入世界书名称');
+          if (nameInput) nameInput.focus();
+          return;
+        }
+        var store = S();
+        if (!store) return;
+        try {
+          if (isEdit && typeof store.updateWorldBook === 'function') {
+            await store.updateWorldBook(existingBook.id, {
+              name: nameVal,
+              description: descVal
+            });
+          } else if (typeof store.createWorldBook === 'function') {
+            await store.createWorldBook({
+              name: nameVal,
+              description: descVal
+            });
+          }
+          _ctx.worldbooks = typeof store.listWorldBooks === 'function' ? await store.listWorldBooks() : [];
+          closeModalOverlay();
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast(isEdit ? '已更新世界书信息' : '已创建世界书');
+        } catch (_) {
+          notifyToast(isEdit ? '保存世界书失败，请稍后重试' : '创建世界书失败，请稍后重试');
+        }
+      });
+    }
+  }
+
+  function bindWorldBooksEvents(layer) {
+    var newBtn = layer.querySelector('#aiw-wb-new-btn');
+    var emptyCreateBtn = layer.querySelector('#aiw-wb-empty-create');
+    var importBtn = layer.querySelector('#aiw-wb-import-btn');
+    var emptyImportBtn = layer.querySelector('#aiw-wb-empty-import');
+    var importFileInput = layer.querySelector('#aiw-wb-import-file');
+    var exportAllBtn = layer.querySelector('#aiw-wb-export-all-btn');
+
+    if (newBtn) {
+      newBtn.addEventListener('click', function() {
+        openWorldBookMetaModal(null);
+      });
+    }
+    if (emptyCreateBtn) {
+      emptyCreateBtn.addEventListener('click', function() {
+        openWorldBookMetaModal(null);
+      });
+    }
+
+    if (exportAllBtn) {
+      exportAllBtn.addEventListener('click', async function() {
+        var store = S();
+        if (!store || typeof store.buildAllWorldBooksZipBlob !== 'function') {
+          notifyToast('当前无法导出全部世界书');
+          return;
+        }
+        try {
+          var latestBooks = typeof store.listWorldBooks === 'function'
+            ? await store.listWorldBooks()
+            : (Array.isArray(_ctx.worldbooks) ? _ctx.worldbooks : []);
+          if (!latestBooks || !latestBooks.length) {
+            notifyToast('暂无可导出的世界书');
+            return;
+          }
+          var result = await store.buildAllWorldBooksZipBlob(latestBooks);
+          if (!result || !result.count || !result.blob) {
+            notifyToast('暂无可导出的世界书');
+            return;
+          }
+          var now = new Date();
+          var y = String(now.getFullYear());
+          var m = String(now.getMonth() + 1).padStart(2, '0');
+          var d = String(now.getDate()).padStart(2, '0');
+          var zipName = '知屿世界书-' + y + m + d + '.zip';
+          downloadBlobFile(zipName, result.blob, '已导出全部 ' + result.count + ' 本世界书：' + zipName);
+        } catch (_) {
+          notifyToast('导出全部世界书失败，请稍后重试');
+        }
+      });
+    }
+
+    function triggerImportPicker() {
+      if (!importFileInput) return;
+      importFileInput.value = '';
+      importFileInput.click();
+    }
+    if (importBtn) importBtn.addEventListener('click', triggerImportPicker);
+    if (emptyImportBtn) emptyImportBtn.addEventListener('click', triggerImportPicker);
+
+    if (importFileInput) {
+      importFileInput.addEventListener('change', async function() {
+        var file = importFileInput.files && importFileInput.files[0];
+        importFileInput.value = '';
+        if (!file) return;
+        var store = S();
+        if (!store || typeof store.importWorldBookFromJson !== 'function') {
+          notifyToast('当前无法导入世界书');
+          return;
+        }
+        try {
+          var rawText = '';
+          if (typeof file.text === 'function') {
+            rawText = await file.text();
+          } else {
+            rawText = await new Promise(function(resolve, reject) {
+              var reader = new FileReader();
+              reader.onload = function() { resolve(String(reader.result || '')); };
+              reader.onerror = function() { reject(new Error('文件读取失败')); };
+              reader.readAsText(file, 'utf-8');
+            });
+          }
+          var res = await store.importWorldBookFromJson(rawText);
+          if (!res || !res.ok) {
+            notifyToast((res && res.error) || '导入失败：文件格式无效');
+            return;
+          }
+          _ctx.worldbooks = typeof store.listWorldBooks === 'function' ? await store.listWorldBooks() : [];
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast('已导入世界书「' + (res.book && res.book.name ? res.book.name : '未命名世界书') + '」（共 ' + (res.entryCount || 0) + ' 条词条）');
+        } catch (_) {
+          notifyToast('导入世界书失败，请检查文件后重试');
+        }
+      });
+    }
+
+    layer.querySelectorAll('[data-wb-open]').forEach(function(el) {
+      el.addEventListener('click', function() {
+        var id = el.getAttribute('data-wb-open');
+        if (!id) return;
+        _ctx.activeWorldBookId = id;
+        pushView('worldbook-entries');
+      });
+    });
+
+    layer.querySelectorAll('[data-wb-act]').forEach(function(btn) {
+      btn.addEventListener('click', async function(e) {
+        if (e && e.stopPropagation) e.stopPropagation();
+        var act = btn.getAttribute('data-wb-act');
+        var id = btn.getAttribute('data-wb-id');
+        var book = (_ctx.worldbooks || []).find(function(item) { return item && item.id === id; });
+        if (!book) return;
+
+        if (act === 'entries') {
+          _ctx.activeWorldBookId = book.id;
+          pushView('worldbook-entries');
+        } else if (act === 'edit') {
+          openWorldBookMetaModal(book);
+        } else if (act === 'export') {
+          var store = S();
+          if (!store || typeof store.buildWorldBookExportJson !== 'function') {
+            notifyToast('当前无法导出世界书');
+            return;
+          }
+          try {
+            var latestBook = (typeof store.getWorldBook === 'function' ? await store.getWorldBook(book.id) : null) || book;
+            var jsonStr = store.buildWorldBookExportJson(latestBook);
+            var filename = typeof store.buildWorldBookExportFilename === 'function'
+              ? store.buildWorldBookExportFilename(latestBook)
+              : ((latestBook.name || '世界书') + '.json');
+            downloadTextFile(filename, jsonStr, 'application/json;charset=utf-8');
+          } catch (_) {
+            notifyToast('导出世界书失败，请稍后重试');
+          }
+        } else if (act === 'delete') {
+          showConfirmModal(
+            '删除世界书',
+            '确定要删除世界书「' + (book.name || '未命名世界书') + '」吗？删除后将无法恢复。',
+            '确认删除',
+            true,
+            async function() {
+              var store = S();
+              if (!store || typeof store.deleteWorldBook !== 'function') return;
+              try {
+                await store.deleteWorldBook(book.id);
+                if (_ctx.activeWorldBookId === book.id) _ctx.activeWorldBookId = '';
+                _ctx.worldbooks = typeof store.listWorldBooks === 'function' ? await store.listWorldBooks() : [];
+                notifyWorkspaceStateChanged();
+                renderCurrentView();
+                notifyToast('已删除世界书');
+              } catch (_) {
+                notifyToast('删除世界书失败，请稍后重试');
+              }
+            }
+          );
+        }
+      });
+    });
+  }
+
+  // ===== 视图 4C：世界书词条管理 =====
+  function getActiveWorldBook() {
+    var list = Array.isArray(_ctx.worldbooks) ? _ctx.worldbooks : [];
+    return list.find(function(item) { return item && item.id === _ctx.activeWorldBookId; }) || null;
+  }
+
+  function renderWorldBookEntriesHtml() {
+    var book = getActiveWorldBook();
+    if (!book) {
+      return (
+        '<div class="aiw-st-topbar">' +
+          '<button type="button" class="aiw-circle-btn" id="aiw-st-sub-back" aria-label="返回世界书列表">' +
+            '<i class="fa-solid fa-arrow-left"></i>' +
+          '</button>' +
+          '<div class="aiw-st-topbar-title">词条管理</div>' +
+          '<div class="aiw-st-topbar-spacer"></div>' +
+        '</div>' +
+        '<div class="aiw-st-scroll">' +
+          '<div class="aiw-preset-empty">' +
+            '<div class="aiw-preset-empty-icon"><i class="fa-solid fa-book-open"></i></div>' +
+            '<div class="aiw-preset-empty-title">未找到该世界书</div>' +
+            '<div class="aiw-preset-empty-sub">请返回世界书列表重新选择</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    var entries = Array.isArray(book.entries) ? book.entries : [];
+    var enabledCount = entries.filter(function(item) { return item && item.disable !== true; }).length;
+    var cardsHtml = entries.length
+      ? entries.map(function(entry) {
+          var titleText = String(entry.comment || entry.name || '').trim() || '未命名词条';
+          var contentText = String(entry.content || '').trim();
+          var previewText = contentText
+            ? (contentText.length > 140 ? contentText.slice(0, 140) + '…' : contentText)
+            : '暂无词条内容';
+          var isEnabled = entry.disable !== true;
+          var isConstant = entry.constant === true;
+          var keys = Array.isArray(entry.key) ? entry.key.filter(Boolean) : [];
+          var orderVal = Number.isFinite(Number(entry.order)) ? Math.round(Number(entry.order)) : 100;
+          var keysPreview = keys.length
+            ? (keys.slice(0, 3).join('、') + (keys.length > 3 ? (' 等 ' + keys.length + ' 个') : ''))
+            : '未设置关键词';
+          return (
+            '<div class="aiw-preset-card' + (isEnabled ? '' : ' is-wbe-disabled') + '" data-wbe-card="' + escapeHtml(entry.id) + '">' +
+              '<div class="aiw-preset-top aiw-wbe-card-head">' +
+                '<span class="aiw-preset-avatar"><i class="fa-regular fa-file-lines"></i></span>' +
+                '<div class="aiw-preset-meta">' +
+                  '<div class="aiw-preset-title-row">' +
+                    '<span class="aiw-preset-name">' + escapeHtml(titleText) + '</span>' +
+                    '<span class="aiw-wbe-badge ' + (isEnabled ? 'is-enabled' : 'is-disabled') + '">' + (isEnabled ? '已启用' : '已停用') + '</span>' +
+                    '<span class="aiw-wbe-badge ' + (isConstant ? 'is-constant' : 'is-keyword') + '">' + (isConstant ? '常驻触发' : '关键词触发') + '</span>' +
+                  '</div>' +
+                  '<div class="aiw-preset-desc">' + escapeHtml(previewText) + '</div>' +
+                '</div>' +
+                '<label class="aiw-switch aiw-wbe-card-switch" title="' + (isEnabled ? '已启用，点击停用' : '已停用，点击启用') + '">' +
+                  '<input type="checkbox" data-wbe-toggle="' + escapeHtml(entry.id) + '"' + (isEnabled ? ' checked' : '') + '>' +
+                  '<span class="aiw-switch-track"></span>' +
+                '</label>' +
+              '</div>' +
+              '<div class="aiw-preset-tags">' +
+                '<span class="aiw-preset-tag">优先级：' + escapeHtml(String(orderVal)) + '</span>' +
+                (!isConstant ? '<span class="aiw-preset-tag">关键词：' + escapeHtml(keysPreview) + '</span>' : '') +
+                '<span class="aiw-preset-tag">内容：' + escapeHtml(String(contentText.length)) + ' 字</span>' +
+              '</div>' +
+              '<div class="aiw-preset-actions">' +
+                '<button type="button" class="aiw-preset-act" data-wbe-act="edit" data-wbe-id="' + escapeHtml(entry.id) + '">' +
+                  '<i class="fa-regular fa-pen-to-square"></i> 编辑' +
+                '</button>' +
+                '<button type="button" class="aiw-preset-act is-danger" data-wbe-act="delete" data-wbe-id="' + escapeHtml(entry.id) + '">' +
+                  '<i class="fa-regular fa-trash-can"></i> 删除' +
+                '</button>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('')
+      : (
+        '<div class="aiw-preset-empty">' +
+          '<div class="aiw-preset-empty-icon"><i class="fa-regular fa-file-lines"></i></div>' +
+          '<div class="aiw-preset-empty-title">还没有词条</div>' +
+          '<div class="aiw-preset-empty-sub">为「' + escapeHtml(book.name || '未命名世界书') + '」添加人物、地点、规则或背景词条</div>' +
+          '<button type="button" class="aiw-st-btn-primary" id="aiw-wbe-empty-create">新建词条</button>' +
+        '</div>'
+      );
+
+    return (
+      '<div class="aiw-st-topbar">' +
+        '<button type="button" class="aiw-circle-btn" id="aiw-st-sub-back" aria-label="返回世界书列表">' +
+          '<i class="fa-solid fa-arrow-left"></i>' +
+        '</button>' +
+        '<div class="aiw-st-topbar-title">' + escapeHtml(book.name || '世界书') + '</div>' +
+        '<button type="button" class="aiw-st-top-action" id="aiw-wbe-new-btn"><i class="fa-solid fa-plus"></i> 新建词条</button>' +
+      '</div>' +
+
+      '<div class="aiw-st-scroll">' +
+        '<div class="aiw-pr-toolbar">' +
+          '<span class="aiw-pr-count">共 ' + escapeHtml(String(entries.length)) + ' 条词条 · 已启用 ' + escapeHtml(String(enabledCount)) + ' 条' + (book.description ? (' · ' + escapeHtml(book.description.slice(0, 20)) + (book.description.length > 20 ? '…' : '')) : '') + '</span>' +
+        '</div>' +
+        '<div class="aiw-preset-list">' + cardsHtml + '</div>' +
+      '</div>'
+    );
+  }
+
+  function parseKeywordsInput(rawText) {
+    if (S() && typeof S().normalizeWorldBookKeywords === 'function') {
+      return S().normalizeWorldBookKeywords(rawText);
+    }
+    var parts = String(rawText || '').split(/[\n,，、]+/);
+    var seen = {};
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var k = parts[i].trim();
+      if (!k || seen[k]) continue;
+      seen[k] = true;
+      out.push(k);
+    }
+    return out;
+  }
+
+  function openWorldBookEntryModal(book, existingEntry) {
+    if (!book || !book.id) return;
+    var isEdit = !!(existingEntry && existingEntry.id);
+    var initName = isEdit ? String(existingEntry.comment || existingEntry.name || '') : '';
+    var initContent = isEdit ? String(existingEntry.content || '') : '';
+    var initEnabled = isEdit ? (existingEntry.disable !== true) : true;
+    var initConstant = isEdit ? (existingEntry.constant === true) : false;
+    var initKeys = isEdit && Array.isArray(existingEntry.key) ? existingEntry.key.join(', ') : '';
+    var initOrder = isEdit && Number.isFinite(Number(existingEntry.order)) ? Math.round(Number(existingEntry.order)) : 100;
+
+    var bodyHtml =
+      '<div class="aiw-field-group">' +
+        '<label class="aiw-field-label" for="aiw-wbe-name-input">词条名称</label>' +
+        '<input type="text" class="aiw-field-input" id="aiw-wbe-name-input" maxlength="120" placeholder="例如：银月议会" value="' + escapeHtml(initName) + '">' +
+      '</div>' +
+
+      '<div class="aiw-wbe-switch-row">' +
+        '<div class="aiw-wbe-switch-col">' +
+          '<div class="aiw-wbe-switch-title">启用词条</div>' +
+          '<div class="aiw-wbe-switch-desc">关闭后保留内容，但不参与触发</div>' +
+        '</div>' +
+        '<label class="aiw-switch">' +
+          '<input type="checkbox" id="aiw-wbe-enabled-toggle"' + (initEnabled ? ' checked' : '') + '>' +
+          '<span class="aiw-switch-track"></span>' +
+        '</label>' +
+      '</div>' +
+
+      '<div class="aiw-field-group" style="margin-top:12px;">' +
+        '<div class="aiw-field-label">触发方式</div>' +
+        '<div class="aiw-wbe-mode-grid" role="radiogroup" aria-label="触发方式">' +
+          '<label class="aiw-wbe-mode-card' + (!initConstant ? ' is-active' : '') + '">' +
+            '<input type="radio" name="aiw-wbe-trigger-mode" value="keyword"' + (!initConstant ? ' checked' : '') + '>' +
+            '<span class="aiw-wbe-mode-title">关键词触发</span>' +
+            '<span class="aiw-wbe-mode-desc">命中关键词时生效</span>' +
+          '</label>' +
+          '<label class="aiw-wbe-mode-card' + (initConstant ? ' is-active' : '') + '">' +
+            '<input type="radio" name="aiw-wbe-trigger-mode" value="constant"' + (initConstant ? ' checked' : '') + '>' +
+            '<span class="aiw-wbe-mode-title">常驻触发</span>' +
+            '<span class="aiw-wbe-mode-desc">始终生效，无需关键词</span>' +
+          '</label>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="aiw-field-group" id="aiw-wbe-keywords-group" style="margin-top:12px;' + (initConstant ? 'display:none;' : '') + '">' +
+        '<label class="aiw-field-label" for="aiw-wbe-keywords-input">关键词</label>' +
+        '<input type="text" class="aiw-field-input" id="aiw-wbe-keywords-input" placeholder="多个关键词用逗号分隔，例如：银月议会, 白塔" value="' + escapeHtml(initKeys) + '">' +
+        '<div class="aiw-ss-field-hint">支持中英文逗号或顿号分隔多个关键词</div>' +
+      '</div>' +
+
+      '<div class="aiw-field-group" style="margin-top:12px;">' +
+        '<label class="aiw-field-label" for="aiw-wbe-order-input">触发优先级</label>' +
+        '<input type="number" inputmode="numeric" class="aiw-field-input" id="aiw-wbe-order-input" placeholder="100" value="' + escapeHtml(String(initOrder)) + '">' +
+        '<div class="aiw-ss-field-hint">数字优先级，默认 100</div>' +
+      '</div>' +
+
+      '<div class="aiw-field-group" style="margin-top:12px;">' +
+        '<label class="aiw-field-label" for="aiw-wbe-content-input">词条内容</label>' +
+        '<textarea class="aiw-field-textarea" id="aiw-wbe-content-input" rows="5" placeholder="输入该词条的详细设定、背景说明或人物资料...">' + escapeHtml(initContent) + '</textarea>' +
+      '</div>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-wbe-modal-cancel">取消</button>' +
+      '<button type="button" class="aiw-st-btn-primary" id="aiw-wbe-modal-save">' + (isEdit ? '保存修改' : '保存词条') + '</button>';
+
+    var modal = showCustomModal(isEdit ? '编辑词条' : '新建词条', bodyHtml, footerHtml);
+    if (!modal) return;
+
+    var nameInput = modal.querySelector('#aiw-wbe-name-input');
+    var enabledToggle = modal.querySelector('#aiw-wbe-enabled-toggle');
+    var keywordsGroup = modal.querySelector('#aiw-wbe-keywords-group');
+    var keywordsInput = modal.querySelector('#aiw-wbe-keywords-input');
+    var orderInput = modal.querySelector('#aiw-wbe-order-input');
+    var contentInput = modal.querySelector('#aiw-wbe-content-input');
+    var modeRadios = modal.querySelectorAll('input[name="aiw-wbe-trigger-mode"]');
+
+    if (nameInput) {
+      setTimeout(function() { nameInput.focus(); }, 60);
+    }
+
+    modeRadios.forEach(function(radio) {
+      radio.addEventListener('change', function() {
+        var isConst = radio.value === 'constant' && radio.checked;
+        modal.querySelectorAll('.aiw-wbe-mode-card').forEach(function(card) {
+          var r = card.querySelector('input[type="radio"]');
+          card.classList.toggle('is-active', !!(r && r.checked));
+        });
+        if (keywordsGroup) {
+          keywordsGroup.style.display = isConst ? 'none' : '';
+        }
+      });
+    });
+
+    var cancelBtn = modal.querySelector('#aiw-wbe-modal-cancel');
+    if (cancelBtn) cancelBtn.addEventListener('click', closeModalOverlay);
+
+    var saveBtn = modal.querySelector('#aiw-wbe-modal-save');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', async function() {
+        var nameVal = nameInput ? String(nameInput.value || '').trim() : '';
+        var contentVal = contentInput ? String(contentInput.value || '').replace(/\r\n/g, '\n').trim() : '';
+        var isEnabledVal = enabledToggle ? !!enabledToggle.checked : true;
+        var checkedModeEl = modal.querySelector('input[name="aiw-wbe-trigger-mode"]:checked');
+        var isConstantVal = !!(checkedModeEl && checkedModeEl.value === 'constant');
+        var keywordsVal = parseKeywordsInput(keywordsInput ? keywordsInput.value : '');
+        var rawOrderStr = orderInput ? String(orderInput.value || '').trim() : '';
+        var orderVal = rawOrderStr === '' ? 100 : Number(rawOrderStr);
+
+        if (!nameVal) {
+          notifyToast('请输入词条名称');
+          if (nameInput) nameInput.focus();
+          return;
+        }
+        if (!Number.isFinite(orderVal)) {
+          notifyToast('触发优先级必须为有效数字');
+          if (orderInput) orderInput.focus();
+          return;
+        }
+        if (!contentVal) {
+          notifyToast('请输入词条内容');
+          if (contentInput) contentInput.focus();
+          return;
+        }
+        var store = S();
+        if (!store) return;
+        var payload = {
+          comment: nameVal,
+          content: contentVal,
+          disable: !isEnabledVal,
+          constant: isConstantVal,
+          key: keywordsVal,
+          order: Math.round(orderVal)
+        };
+        try {
+          if (isEdit && typeof store.updateWorldBookEntry === 'function') {
+            await store.updateWorldBookEntry(book.id, existingEntry.id, payload);
+          } else if (typeof store.createWorldBookEntry === 'function') {
+            await store.createWorldBookEntry(book.id, payload);
+          }
+          _ctx.worldbooks = typeof store.listWorldBooks === 'function' ? await store.listWorldBooks() : [];
+          closeModalOverlay();
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast(isEdit ? '已保存词条修改' : '已新建词条');
+        } catch (_) {
+          notifyToast(isEdit ? '保存词条失败，请稍后重试' : '新建词条失败，请稍后重试');
+        }
+      });
+    }
+  }
+
+  function bindWorldBookEntriesEvents(layer) {
+    var book = getActiveWorldBook();
+    if (!book) return;
+
+    var newBtn = layer.querySelector('#aiw-wbe-new-btn');
+    var emptyCreateBtn = layer.querySelector('#aiw-wbe-empty-create');
+    if (newBtn) {
+      newBtn.addEventListener('click', function() {
+        openWorldBookEntryModal(book, null);
+      });
+    }
+    if (emptyCreateBtn) {
+      emptyCreateBtn.addEventListener('click', function() {
+        openWorldBookEntryModal(book, null);
+      });
+    }
+
+    layer.querySelectorAll('[data-wbe-toggle]').forEach(function(input) {
+      input.addEventListener('change', async function() {
+        var entryId = input.getAttribute('data-wbe-toggle');
+        var nextEnabled = !!input.checked;
+        var store = S();
+        if (!store || typeof store.updateWorldBookEntry !== 'function') return;
+        try {
+          await store.updateWorldBookEntry(book.id, entryId, { disable: !nextEnabled });
+          _ctx.worldbooks = typeof store.listWorldBooks === 'function' ? await store.listWorldBooks() : [];
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast(nextEnabled ? '已启用词条' : '已停用词条');
+        } catch (_) {
+          input.checked = !nextEnabled;
+          notifyToast('更新词条状态失败，请稍后重试');
+        }
+      });
+    });
+
+    layer.querySelectorAll('[data-wbe-act]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var act = btn.getAttribute('data-wbe-act');
+        var entryId = btn.getAttribute('data-wbe-id');
+        var entries = Array.isArray(book.entries) ? book.entries : [];
+        var entry = entries.find(function(item) { return item && item.id === entryId; });
+        if (!entry) return;
+
+        if (act === 'edit') {
+          openWorldBookEntryModal(book, entry);
+        } else if (act === 'delete') {
+          showConfirmModal(
+            '删除词条',
+            '确定要删除词条「' + (entry.comment || entry.name || '未命名词条') + '」吗？删除后将无法恢复。',
+            '确认删除',
+            true,
+            async function() {
+              var store = S();
+              if (!store || typeof store.deleteWorldBookEntry !== 'function') return;
+              try {
+                await store.deleteWorldBookEntry(book.id, entry.id);
+                _ctx.worldbooks = typeof store.listWorldBooks === 'function' ? await store.listWorldBooks() : [];
+                notifyWorkspaceStateChanged();
+                renderCurrentView();
+                notifyToast('已删除词条');
+              } catch (_) {
+                notifyToast('删除词条失败，请稍后重试');
+              }
+            }
+          );
+        }
+      });
+    });
   }
 
   function renderCurrentView() {
@@ -4599,6 +5252,10 @@
       bindPresetEditorEvents(layer);
     } else if (view === 'worldbooks') {
       layer.innerHTML = renderWorldBooksHtml();
+      bindWorldBooksEvents(layer);
+    } else if (view === 'worldbook-entries') {
+      layer.innerHTML = renderWorldBookEntriesHtml();
+      bindWorldBookEntriesEvents(layer);
     } else if (view === 'memory') {
       layer.innerHTML = renderMemoryPageHtml();
       bindMemoryPageEvents(layer);
