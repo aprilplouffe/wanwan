@@ -25,7 +25,8 @@
     MEMORY_TASKS: 'aiw_memory_tasks',
     DELETED_MEMORY_SIGS: 'aiw_deleted_memory_sigs',
     WORLDBOOK_IDS: 'aiw_worldbook_ids',
-    WORLDBOOK_PREFIX: 'aiw_worldbook:'
+    WORLDBOOK_PREFIX: 'aiw_worldbook:',
+    FAVORITES: 'aiw_favorites'
   };
 
   var MEMORY_STRATEGY_PRESETS = {
@@ -804,10 +805,45 @@
     return clean.slice(0, 22) + '…';
   }
 
+  function normalizeMessageQuote(rawQuote) {
+    if (!rawQuote || typeof rawQuote !== 'object') return null;
+    var qContent = String(rawQuote.content == null ? '' : rawQuote.content).trim();
+    if (!qContent) return null;
+    return {
+      id: String(rawQuote.id || '').trim(),
+      role: rawQuote.role === 'assistant' ? 'assistant' : 'user',
+      content: qContent.slice(0, 600)
+    };
+  }
+
+  function normalizeMessageTranslations(rawTrans) {
+    if (!rawTrans || typeof rawTrans !== 'object' || Array.isArray(rawTrans)) return null;
+    var out = {};
+    var keys = Object.keys(rawTrans);
+    var count = 0;
+    for (var i = 0; i < keys.length && count < 12; i++) {
+      var k = String(keys[i] || '').trim();
+      if (!k || k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      var item = rawTrans[k];
+      if (!item || typeof item !== 'object') continue;
+      var text = String(item.text == null ? '' : item.text).trim();
+      if (!text) continue;
+      out[k] = {
+        lang: String(item.lang || k).trim() || k,
+        langLabel: String(item.langLabel || k).trim() || k,
+        text: text,
+        model: item.model ? String(item.model).trim() : '',
+        updatedAt: Number(item.updatedAt) || 0
+      };
+      count++;
+    }
+    return count > 0 ? out : null;
+  }
+
   function normalizeChatMessage(raw) {
     var src = raw && typeof raw === 'object' ? raw : {};
     var role = src.role === 'assistant' || src.role === 'system' ? src.role : 'user';
-    return {
+    var msg = {
       id: String(src.id || generateMessageId()),
       role: role,
       content: String(src.content == null ? '' : src.content),
@@ -817,6 +853,13 @@
       aborted: !!src.aborted,
       deepThink: !!src.deepThink
     };
+    var quote = normalizeMessageQuote(src.quote);
+    if (quote) msg.quote = quote;
+    var editedAt = Number(src.editedAt);
+    if (Number.isFinite(editedAt) && editedAt > 0) msg.editedAt = editedAt;
+    var translations = normalizeMessageTranslations(src.translations);
+    if (translations) msg.translations = translations;
+    return msg;
   }
 
   function normalizeSummarySegment(raw, idx) {
@@ -861,6 +904,8 @@
       presetId: String(src.presetId || '').trim(),
       presetSnapshot: src.presetSnapshot ? buildPresetSnapshot(src.presetSnapshot) : null,
       projectId: String(src.projectId || '').trim(),
+      branchedFromChatId: String(src.branchedFromChatId || '').trim(),
+      branchedFromMessageId: String(src.branchedFromMessageId || '').trim(),
       summary: String(src.summary || '').trim(),
       summaryLegacyBase: String(src.summaryLegacyBase || '').trim(),
       summarySegments: segments,
@@ -972,6 +1017,176 @@
         return String(m.content || '').toLowerCase().indexOf(q) !== -1;
       });
     });
+  }
+
+  // ===== 9.5 独立消息收藏存储（aiw_favorites，持久化并纳入知屿完整备份） =====
+  function generateFavoriteId() {
+    return 'fav_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  }
+
+  function normalizeFavoriteRecord(raw) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var role = src.role === 'user' ? 'user' : 'assistant';
+    return {
+      id: String(src.id || generateFavoriteId()).trim(),
+      chatId: String(src.chatId || '').trim(),
+      chatTitle: String(src.chatTitle || '未命名对话').trim() || '未命名对话',
+      messageId: String(src.messageId || '').trim(),
+      role: role,
+      content: String(src.content == null ? '' : src.content),
+      model: String(src.model || '').trim(),
+      messageCreatedAt: Number(src.messageCreatedAt) || 0,
+      createdAt: Number(src.createdAt) || Date.now()
+    };
+  }
+
+  function buildFavoriteLookupKey(chatId, messageId, role, content) {
+    var cid = String(chatId || '').trim();
+    var mid = String(messageId || '').trim();
+    if (cid && mid) return 'cm:' + cid + '::' + mid;
+    if (mid) return 'm:' + mid;
+    return 'rc:' + (role === 'user' ? 'user' : 'assistant') + '::' + String(content || '').trim();
+  }
+
+  async function listFavorites() {
+    var raw = await dbGetConfig(KEYS.FAVORITES);
+    if (!Array.isArray(raw)) return [];
+    var seen = {};
+    var items = [];
+    for (var i = 0; i < raw.length; i++) {
+      if (!raw[i] || typeof raw[i] !== 'object') continue;
+      var norm = normalizeFavoriteRecord(raw[i]);
+      if (!norm.content.trim()) continue;
+      var k = buildFavoriteLookupKey(norm.chatId, norm.messageId, norm.role, norm.content);
+      if (seen[k]) continue;
+      seen[k] = true;
+      items.push(norm);
+    }
+    items.sort(function(a, b) {
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+    return items;
+  }
+
+  async function saveFavoritesList(list) {
+    var arr = Array.isArray(list) ? list : [];
+    await dbPutConfig(KEYS.FAVORITES, arr);
+    return arr;
+  }
+
+  async function isMessageFavorited(chatId, messageId) {
+    var cid = String(chatId || '').trim();
+    var mid = String(messageId || '').trim();
+    if (!mid) return false;
+    var list = await listFavorites();
+    return list.some(function(item) {
+      if (cid && item.chatId) {
+        return item.chatId === cid && item.messageId === mid;
+      }
+      return item.messageId === mid;
+    });
+  }
+
+  async function addFavorite(data) {
+    var norm = normalizeFavoriteRecord(data);
+    if (!norm.content.trim()) return { added: false, item: null, favorites: await listFavorites() };
+    var list = await listFavorites();
+    var targetKey = buildFavoriteLookupKey(norm.chatId, norm.messageId, norm.role, norm.content);
+    var existing = list.find(function(it) {
+      return buildFavoriteLookupKey(it.chatId, it.messageId, it.role, it.content) === targetKey;
+    });
+    if (existing) {
+      return { added: false, item: existing, favorites: list };
+    }
+    list.unshift(norm);
+    await saveFavoritesList(list);
+    return { added: true, item: norm, favorites: list };
+  }
+
+  async function removeFavoriteById(favId) {
+    var cleanId = String(favId || '').trim();
+    if (!cleanId) return { removed: false, favorites: await listFavorites() };
+    var list = await listFavorites();
+    var next = list.filter(function(it) { return it.id !== cleanId; });
+    if (next.length !== list.length) {
+      await saveFavoritesList(next);
+      return { removed: true, favorites: next };
+    }
+    return { removed: false, favorites: list };
+  }
+
+  async function removeFavoriteByMessage(chatId, messageId) {
+    var cid = String(chatId || '').trim();
+    var mid = String(messageId || '').trim();
+    if (!mid) return { removed: false, favorites: await listFavorites() };
+    var list = await listFavorites();
+    var next = list.filter(function(it) {
+      if (cid && it.chatId) {
+        return !(it.chatId === cid && it.messageId === mid);
+      }
+      return it.messageId !== mid;
+    });
+    if (next.length !== list.length) {
+      await saveFavoritesList(next);
+      return { removed: true, favorites: next };
+    }
+    return { removed: false, favorites: list };
+  }
+
+  async function toggleMessageFavorite(data) {
+    var norm = normalizeFavoriteRecord(data);
+    var list = await listFavorites();
+    var targetKey = buildFavoriteLookupKey(norm.chatId, norm.messageId, norm.role, norm.content);
+    var idx = list.findIndex(function(it) {
+      if (norm.messageId && it.messageId === norm.messageId && (!norm.chatId || !it.chatId || it.chatId === norm.chatId)) {
+        return true;
+      }
+      return buildFavoriteLookupKey(it.chatId, it.messageId, it.role, it.content) === targetKey;
+    });
+    if (idx !== -1) {
+      list.splice(idx, 1);
+      await saveFavoritesList(list);
+      return { favorited: false, item: null, favorites: list };
+    }
+    if (!norm.content.trim()) {
+      return { favorited: false, item: null, favorites: list };
+    }
+    list.unshift(norm);
+    await saveFavoritesList(list);
+    return { favorited: true, item: norm, favorites: list };
+  }
+
+  async function searchFavorites(query) {
+    var list = await listFavorites();
+    var q = String(query || '').trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(function(item) {
+      return (item.content || '').toLowerCase().indexOf(q) !== -1 ||
+        (item.chatTitle || '').toLowerCase().indexOf(q) !== -1 ||
+        (item.model || '').toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  async function syncFavoriteMessageContent(chatId, messageId, nextContent, nextChatTitle) {
+    var mid = String(messageId || '').trim();
+    if (!mid) return false;
+    var cid = String(chatId || '').trim();
+    var list = await listFavorites();
+    var changed = false;
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      if (it.messageId === mid && (!cid || !it.chatId || it.chatId === cid)) {
+        if (nextContent !== undefined && nextContent !== null) {
+          it.content = String(nextContent);
+        }
+        if (nextChatTitle) {
+          it.chatTitle = String(nextChatTitle);
+        }
+        changed = true;
+      }
+    }
+    if (changed) await saveFavoritesList(list);
+    return changed;
   }
 
   // ===== 10. 独立长期记忆存储（aiw_memory_ids / aiw_memory:<id>，绝不混入 db.memories） =====
@@ -3167,6 +3382,1430 @@
     };
   }
 
+  // ===== 12. 知屿完整备份导出（汇总全部知屿数据，绝不混入或读取其他无关应用数据） =====
+  async function buildFullBackupPayload() {
+    var results = await Promise.all([
+      getProfile(),
+      getPersonalization(),
+      getAppearance(),
+      getGeneralSettings(),
+      listPresets(),
+      listWorldBooks(),
+      listChats(),
+      getMemorySettings(),
+      listMemories(),
+      listMemoryTasks(),
+      listDeletedMemorySignatures(),
+      getCustomApiConfig(),
+      getSummaryApiConfig(),
+      getSelectedModel(),
+      dbGetConfig(KEYS.DEFAULT_PRESET_ID),
+      dbGetConfig(KEYS.PRESET_IDS),
+      dbGetConfig(KEYS.PRESETS_INIT),
+      dbGetConfig(KEYS.WORLDBOOK_IDS),
+      dbGetConfig(KEYS.CHAT_IDS),
+      dbGetConfig(KEYS.MEMORY_IDS),
+      dbGetConfig(KEYS.SELECTED_MODEL),
+      listFavorites()
+    ]);
+
+    var profile = results[0];
+    var personalization = results[1];
+    var appearance = results[2];
+    var general = results[3];
+    var presets = Array.isArray(results[4]) ? results[4] : [];
+    var worldbooks = Array.isArray(results[5]) ? results[5] : [];
+    var chats = Array.isArray(results[6]) ? results[6] : [];
+    var memorySettings = results[7];
+    var memories = Array.isArray(results[8]) ? results[8] : [];
+    var memoryTasks = Array.isArray(results[9]) ? results[9] : [];
+    var deletedSignatures = Array.isArray(results[10]) ? results[10] : [];
+    var customApi = results[11];
+    var summaryApi = results[12];
+    var selectedModel = results[13];
+    var rawDefaultPresetId = results[14];
+    var rawPresetIds = results[15];
+    var rawPresetsInit = results[16];
+    var rawWorldbookIds = results[17];
+    var rawChatIds = results[18];
+    var rawMemoryIds = results[19];
+    var rawSelectedModel = results[20];
+    var favorites = Array.isArray(results[21]) ? results[21] : [];
+
+    var defaultPreset = presets.find(function(p) { return p && p.isDefault; }) || null;
+    var defaultPresetId = String(rawDefaultPresetId || (defaultPreset && defaultPreset.id) || '').trim();
+
+    var globalWorldBookIds = [];
+    var enabledGlobalWorldBookIds = [];
+    var worldbookEntryCount = 0;
+    for (var wi = 0; wi < worldbooks.length; wi++) {
+      var wb = worldbooks[wi];
+      if (!wb || !wb.id) continue;
+      if (Array.isArray(wb.entries)) worldbookEntryCount += wb.entries.length;
+      if (wb.globalEnabled === true) {
+        globalWorldBookIds.push(wb.id);
+        if (wb.enabled !== false) {
+          enabledGlobalWorldBookIds.push(wb.id);
+        }
+      }
+    }
+
+    var presetBindings = presets.map(function(p) {
+      return {
+        presetId: p.id,
+        presetName: p.name,
+        worldBookIds: normalizeWorldBookIdList(p.worldBookIds)
+      };
+    });
+
+    var totalMessages = 0;
+    var chatBindings = chats.map(function(c) {
+      var msgLen = Array.isArray(c.messages) ? c.messages.length : 0;
+      totalMessages += msgLen;
+      return {
+        chatId: c.id,
+        chatTitle: c.title,
+        presetId: String(c.presetId || '').trim(),
+        presetSnapshotWorldBookIds: (c.presetSnapshot && Array.isArray(c.presetSnapshot.worldBookIds))
+          ? normalizeWorldBookIdList(c.presetSnapshot.worldBookIds)
+          : []
+      };
+    });
+
+    var nowMs = Date.now();
+    return {
+      format: 'wanwan-aiw-backup',
+      version: 2,
+      scope: 'full',
+      exportedAt: new Date(nowMs).toISOString(),
+      exportedAtMs: nowMs,
+      profile: deepClone(profile),
+      personalization: deepClone(personalization),
+      appearance: deepClone(appearance),
+      general: deepClone(general),
+      presets: deepClone(presets),
+      presetOrder: Array.isArray(rawPresetIds) ? rawPresetIds.slice() : presets.map(function(p) { return p.id; }),
+      defaultPresetId: defaultPresetId,
+      presetsInitialized: rawPresetsInit === true,
+      worldbooks: deepClone(worldbooks),
+      worldbookOrder: Array.isArray(rawWorldbookIds) ? rawWorldbookIds.slice() : worldbooks.map(function(w) { return w.id; }),
+      worldbookAssociations: {
+        globalWorldBookIds: globalWorldBookIds,
+        enabledGlobalWorldBookIds: enabledGlobalWorldBookIds,
+        presetBindings: presetBindings,
+        chatBindings: chatBindings
+      },
+      chats: deepClone(chats),
+      chatOrder: Array.isArray(rawChatIds) ? rawChatIds.slice() : chats.map(function(c) { return c.id; }),
+      favorites: deepClone(favorites),
+      memory: {
+        settings: deepClone(memorySettings),
+        memories: deepClone(memories),
+        memoryOrder: Array.isArray(rawMemoryIds) ? rawMemoryIds.slice() : memories.map(function(m) { return m.id; }),
+        tasks: deepClone(memoryTasks),
+        deletedSignatures: deepClone(deletedSignatures)
+      },
+      apiConfig: {
+        customApi: deepClone(customApi),
+        summaryApi: deepClone(summaryApi),
+        selectedModel: String(selectedModel || '').trim(),
+        selectedModelDetail: rawSelectedModel && typeof rawSelectedModel === 'object' ? deepClone(rawSelectedModel) : null
+      },
+      counts: {
+        chats: chats.length,
+        messages: totalMessages,
+        favorites: favorites.length,
+        memories: memories.length,
+        memoryTasks: memoryTasks.length,
+        deletedMemorySignatures: deletedSignatures.length,
+        presets: presets.length,
+        worldbooks: worldbooks.length,
+        worldbookEntries: worldbookEntryCount
+      }
+    };
+  }
+
+  async function buildFullBackupJson() {
+    var payload = await buildFullBackupPayload();
+    return {
+      payload: payload,
+      json: JSON.stringify(payload, null, 2)
+    };
+  }
+
+  // ===== 13. 知屿备份解析、校验、事务快照与双模式导入（合并去重 / 覆盖恢复，严格隔离 aiw_*） =====
+  function isPlainObject(val) {
+    return !!(val && typeof val === 'object' && !Array.isArray(val));
+  }
+
+  function isZhiyuStorageKey(key) {
+    return typeof key === 'string' && key.indexOf('aiw_') === 0;
+  }
+
+  function parseFullBackupJson(rawText) {
+    var text = String(rawText == null ? '' : rawText).trim();
+    if (!text) {
+      return { ok: false, error: '导入失败：备份文件内容为空' };
+    }
+    var rawParsed;
+    try {
+      rawParsed = JSON.parse(text);
+    } catch (_) {
+      return { ok: false, error: '导入失败：JSON 文件格式无效，请确认选择了正确的备份文件' };
+    }
+    if (!isPlainObject(rawParsed)) {
+      return { ok: false, error: '导入失败：备份文件内容不是有效的 JSON 对象' };
+    }
+
+    var safe = stripUnsafeJsonKeys(rawParsed);
+    if (safe.format !== 'wanwan-aiw-backup') {
+      return { ok: false, error: '导入失败：不支持的文件格式（仅支持知屿备份 wanwan-aiw-backup JSON）' };
+    }
+
+    var version = Number(safe.version);
+    if (!Number.isInteger(version) || (version !== 1 && version !== 2)) {
+      return { ok: false, error: '导入失败：不支持的知屿备份版本（version=' + String(safe.version) + '）' };
+    }
+
+    var optionalObjFields = ['profile', 'personalization', 'appearance', 'general', 'worldbookAssociations', 'memory', 'apiConfig'];
+    for (var oi = 0; oi < optionalObjFields.length; oi++) {
+      var ofName = optionalObjFields[oi];
+      if (safe[ofName] !== undefined && safe[ofName] !== null && !isPlainObject(safe[ofName])) {
+        return { ok: false, error: '导入失败：备份字段 ' + ofName + ' 格式无效' };
+      }
+    }
+
+    var optionalArrFields = ['presets', 'worldbooks', 'chats', 'favorites'];
+    for (var ai = 0; ai < optionalArrFields.length; ai++) {
+      var afName = optionalArrFields[ai];
+      if (safe[afName] !== undefined && safe[afName] !== null && !Array.isArray(safe[afName])) {
+        return { ok: false, error: '导入失败：备份字段 ' + afName + ' 应为数组格式' };
+      }
+    }
+
+    var hasAnySection = !!(
+      safe.profile !== undefined ||
+      safe.personalization !== undefined ||
+      safe.appearance !== undefined ||
+      safe.general !== undefined ||
+      safe.presets !== undefined ||
+      safe.worldbooks !== undefined ||
+      safe.chats !== undefined ||
+      safe.favorites !== undefined ||
+      safe.memory !== undefined ||
+      safe.apiConfig !== undefined
+    );
+    if (!hasAnySection) {
+      return { ok: false, error: '导入失败：备份文件中未包含任何有效知屿数据' };
+    }
+
+    // 校验并规范化 presets
+    var presets = [];
+    var hasPresetsSection = Array.isArray(safe.presets);
+    if (hasPresetsSection) {
+      for (var pi = 0; pi < safe.presets.length; pi++) {
+        if (!isPlainObject(safe.presets[pi])) {
+          return { ok: false, error: '导入失败：第 ' + (pi + 1) + ' 条预设格式无效' };
+        }
+        presets.push(normalizePreset(safe.presets[pi], safe.presets[pi].id));
+      }
+    }
+
+    // 校验并规范化 worldbooks
+    var worldbooks = [];
+    var hasWorldbooksSection = Array.isArray(safe.worldbooks);
+    var worldbookEntryCount = 0;
+    if (hasWorldbooksSection) {
+      for (var wi = 0; wi < safe.worldbooks.length; wi++) {
+        var rawWb = safe.worldbooks[wi];
+        if (!isPlainObject(rawWb)) {
+          return { ok: false, error: '导入失败：第 ' + (wi + 1) + ' 本世界书格式无效' };
+        }
+        if (rawWb.entries !== undefined && !Array.isArray(rawWb.entries)) {
+          return { ok: false, error: '导入失败：第 ' + (wi + 1) + ' 本世界书的词条列表格式无效' };
+        }
+        if (Array.isArray(rawWb.entries)) {
+          for (var wei = 0; wei < rawWb.entries.length; wei++) {
+            if (!isPlainObject(rawWb.entries[wei])) {
+              return { ok: false, error: '导入失败：第 ' + (wi + 1) + ' 本世界书第 ' + (wei + 1) + ' 条词条格式无效' };
+            }
+          }
+        }
+        var normWb = normalizeWorldBookRecord(rawWb, rawWb.id);
+        worldbookEntryCount += normWb.entries.length;
+        worldbooks.push(normWb);
+      }
+    }
+
+    // 校验并规范化 worldbookAssociations
+    var worldbookAssociations = isPlainObject(safe.worldbookAssociations) ? safe.worldbookAssociations : null;
+    if (worldbookAssociations) {
+      if (worldbookAssociations.presetBindings !== undefined && !Array.isArray(worldbookAssociations.presetBindings)) {
+        return { ok: false, error: '导入失败：worldbookAssociations.presetBindings 格式无效' };
+      }
+      if (worldbookAssociations.globalWorldBookIds !== undefined && !Array.isArray(worldbookAssociations.globalWorldBookIds)) {
+        return { ok: false, error: '导入失败：worldbookAssociations.globalWorldBookIds 格式无效' };
+      }
+    }
+
+    // 校验并规范化 chats 与 messages
+    var chats = [];
+    var hasChatsSection = Array.isArray(safe.chats);
+    var messagesCount = 0;
+    if (hasChatsSection) {
+      for (var ci = 0; ci < safe.chats.length; ci++) {
+        var rawChat = safe.chats[ci];
+        if (!isPlainObject(rawChat)) {
+          return { ok: false, error: '导入失败：第 ' + (ci + 1) + ' 个对话格式无效' };
+        }
+        if (rawChat.messages !== undefined && !Array.isArray(rawChat.messages)) {
+          return { ok: false, error: '导入失败：第 ' + (ci + 1) + ' 个对话的消息列表格式无效' };
+        }
+        if (Array.isArray(rawChat.messages)) {
+          for (var mi = 0; mi < rawChat.messages.length; mi++) {
+            if (!isPlainObject(rawChat.messages[mi])) {
+              return { ok: false, error: '导入失败：第 ' + (ci + 1) + ' 个对话第 ' + (mi + 1) + ' 条消息格式无效' };
+            }
+          }
+        }
+        var normChat = normalizeChatRecord(rawChat, rawChat.id);
+        messagesCount += normChat.messages.length;
+        chats.push(normChat);
+      }
+    }
+
+    // 校验并规范化 favorites
+    var favorites = [];
+    var hasFavoritesSection = Array.isArray(safe.favorites);
+    if (hasFavoritesSection) {
+      for (var fvi = 0; fvi < safe.favorites.length; fvi++) {
+        if (!isPlainObject(safe.favorites[fvi])) {
+          return { ok: false, error: '导入失败：第 ' + (fvi + 1) + ' 条收藏记录格式无效' };
+        }
+        var normFav = normalizeFavoriteRecord(safe.favorites[fvi]);
+        if (normFav.content.trim()) {
+          favorites.push(normFav);
+        }
+      }
+    }
+
+    // 校验并规范化 memory
+    var hasMemorySection = isPlainObject(safe.memory);
+    var memoryData = {
+      settings: null,
+      memories: [],
+      memoryOrder: [],
+      tasks: [],
+      deletedSignatures: []
+    };
+    if (hasMemorySection) {
+      var rawMemObj = safe.memory;
+      if (rawMemObj.settings !== undefined && rawMemObj.settings !== null && !isPlainObject(rawMemObj.settings)) {
+        return { ok: false, error: '导入失败：memory.settings 格式无效' };
+      }
+      if (rawMemObj.memories !== undefined && rawMemObj.memories !== null && !Array.isArray(rawMemObj.memories)) {
+        return { ok: false, error: '导入失败：memory.memories 应为数组格式' };
+      }
+      if (rawMemObj.tasks !== undefined && rawMemObj.tasks !== null && !Array.isArray(rawMemObj.tasks)) {
+        return { ok: false, error: '导入失败：memory.tasks 应为数组格式' };
+      }
+      if (rawMemObj.deletedSignatures !== undefined && rawMemObj.deletedSignatures !== null && !Array.isArray(rawMemObj.deletedSignatures)) {
+        return { ok: false, error: '导入失败：memory.deletedSignatures 应为数组格式' };
+      }
+      if (Array.isArray(rawMemObj.memories)) {
+        for (var mri = 0; mri < rawMemObj.memories.length; mri++) {
+          if (!isPlainObject(rawMemObj.memories[mri])) {
+            return { ok: false, error: '导入失败：第 ' + (mri + 1) + ' 条记忆格式无效' };
+          }
+          var normMem = normalizeMemoryRecord(rawMemObj.memories[mri], rawMemObj.memories[mri].id);
+          if (normMem.content) {
+            memoryData.memories.push(normMem);
+          }
+        }
+      }
+      if (Array.isArray(rawMemObj.tasks)) {
+        for (var ti = 0; ti < rawMemObj.tasks.length; ti++) {
+          if (!isPlainObject(rawMemObj.tasks[ti])) {
+            return { ok: false, error: '导入失败：第 ' + (ti + 1) + ' 条记忆任务格式无效' };
+          }
+          memoryData.tasks.push(normalizeMemoryTaskRecord(rawMemObj.tasks[ti]));
+        }
+      }
+      if (Array.isArray(rawMemObj.deletedSignatures)) {
+        for (var dsi = 0; dsi < rawMemObj.deletedSignatures.length; dsi++) {
+          var ds = rawMemObj.deletedSignatures[dsi];
+          if (isPlainObject(ds) && ds.norm) {
+            memoryData.deletedSignatures.push({
+              norm: String(ds.norm),
+              content: String(ds.content || '').slice(0, 120),
+              sourceChatId: String(ds.sourceChatId || ''),
+              deletedAt: Number(ds.deletedAt) || Date.now()
+            });
+          }
+        }
+      }
+      if (Array.isArray(rawMemObj.memoryOrder)) {
+        memoryData.memoryOrder = rawMemObj.memoryOrder.filter(Boolean).map(String);
+      }
+      if (isPlainObject(rawMemObj.settings)) {
+        memoryData.settings = rawMemObj.settings;
+      }
+    }
+
+    // 校验并规范化 apiConfig
+    var hasApiSection = isPlainObject(safe.apiConfig);
+    var apiData = {
+      customApi: null,
+      summaryApi: null,
+      selectedModel: ''
+    };
+    if (hasApiSection) {
+      var rawApi = safe.apiConfig;
+      if (rawApi.customApi !== undefined && rawApi.customApi !== null) {
+        if (!isPlainObject(rawApi.customApi)) {
+          return { ok: false, error: '导入失败：apiConfig.customApi 格式无效' };
+        }
+        var ca = rawApi.customApi;
+        apiData.customApi = {
+          baseUrl: normalizeBaseUrl(ca.baseUrl || ca.url || ''),
+          apiKey: String(ca.apiKey || ca.key || '').trim(),
+          model: String(ca.model || '').trim(),
+          fetchedModels: Array.isArray(ca.fetchedModels) ? ca.fetchedModels.filter(Boolean).map(String) : [],
+          temperature: normalizeTemperature(ca.temperature, 0.7),
+          updatedAt: Number(ca.updatedAt) || 0
+        };
+        apiData.customApi.complete = isCustomApiComplete(apiData.customApi);
+      }
+      if (rawApi.summaryApi !== undefined && rawApi.summaryApi !== null) {
+        if (!isPlainObject(rawApi.summaryApi)) {
+          return { ok: false, error: '导入失败：apiConfig.summaryApi 格式无效' };
+        }
+        var sa = rawApi.summaryApi;
+        apiData.summaryApi = {
+          baseUrl: normalizeBaseUrl(sa.baseUrl || sa.url || ''),
+          apiKey: String(sa.apiKey || sa.key || '').trim(),
+          model: String(sa.model || '').trim(),
+          temperature: normalizeTemperature(sa.temperature, 0.1),
+          updatedAt: Number(sa.updatedAt) || 0
+        };
+        apiData.summaryApi.complete = isSummaryApiComplete(apiData.summaryApi);
+      }
+      if (rawApi.selectedModel != null) {
+        apiData.selectedModel = String(rawApi.selectedModel).trim();
+      } else if (isPlainObject(rawApi.selectedModelDetail) && rawApi.selectedModelDetail.model != null) {
+        apiData.selectedModel = String(rawApi.selectedModelDetail.model).trim();
+      }
+    }
+
+    // 校验并规范化基础配置（profile / personalization / appearance / general）
+    var profile = isPlainObject(safe.profile) ? {
+      name: String(safe.profile.name || '我').trim() || '我',
+      avatar: String(safe.profile.avatar || 'img/ava-00.jpg'),
+      bio: safe.profile.bio != null ? String(safe.profile.bio) : '',
+      updatedAt: Number(safe.profile.updatedAt) || 0
+    } : null;
+
+    var personalization = isPlainObject(safe.personalization) ? {
+      enabled: typeof safe.personalization.enabled === 'boolean' ? safe.personalization.enabled : true,
+      customInstructions: safe.personalization.customInstructions != null ? String(safe.personalization.customInstructions) : '',
+      tone: safe.personalization.tone != null ? String(safe.personalization.tone) : '温和自然',
+      detailLevel: safe.personalization.detailLevel != null ? String(safe.personalization.detailLevel) : '适中',
+      userPreferences: safe.personalization.userPreferences != null ? String(safe.personalization.userPreferences) : '',
+      updatedAt: Number(safe.personalization.updatedAt) || 0
+    } : null;
+
+    var appearance = null;
+    if (isPlainObject(safe.appearance)) {
+      var modeVal = String(safe.appearance.mode || 'system');
+      if (['system', 'light', 'dark'].indexOf(modeVal) === -1) modeVal = 'system';
+      var accentVal = String(safe.appearance.accent || 'pink');
+      if (!ACCENT_PRESETS.some(function(a) { return a.id === accentVal; })) accentVal = 'pink';
+      appearance = {
+        mode: modeVal,
+        accent: accentVal,
+        updatedAt: Number(safe.appearance.updatedAt) || 0
+      };
+    }
+
+    var general = isPlainObject(safe.general) ? {
+      enterToSend: typeof safe.general.enterToSend === 'boolean' ? safe.general.enterToSend : true,
+      autoUseDefaultPreset: typeof safe.general.autoUseDefaultPreset === 'boolean' ? safe.general.autoUseDefaultPreset : true,
+      showCharCount: typeof safe.general.showCharCount === 'boolean' ? safe.general.showCharCount : true,
+      updatedAt: Number(safe.general.updatedAt) || 0
+    } : null;
+
+    var isLegacyBackup = version === 1 && !hasChatsSection && !hasWorldbooksSection && !hasMemorySection && !hasApiSection && !hasFavoritesSection;
+
+    return {
+      ok: true,
+      version: version,
+      isLegacyBackup: isLegacyBackup,
+      exportedAt: safe.exportedAt ? String(safe.exportedAt) : '',
+      summary: {
+        version: version,
+        isLegacyBackup: isLegacyBackup,
+        exportedAt: safe.exportedAt ? String(safe.exportedAt) : '',
+        chatsCount: chats.length,
+        messagesCount: messagesCount,
+        favoritesCount: favorites.length,
+        memoriesCount: memoryData.memories.length,
+        memoryTasksCount: memoryData.tasks.length,
+        presetsCount: presets.length,
+        worldbooksCount: worldbooks.length,
+        worldbookEntriesCount: worldbookEntryCount,
+        hasProfile: !!profile,
+        hasPersonalization: !!personalization,
+        hasAppearance: !!appearance,
+        hasGeneral: !!general,
+        hasApiConfig: !!(apiData.customApi || apiData.summaryApi || apiData.selectedModel)
+      },
+      data: {
+        profile: profile,
+        personalization: personalization,
+        appearance: appearance,
+        general: general,
+        presets: presets,
+        hasPresetsSection: hasPresetsSection,
+        presetOrder: Array.isArray(safe.presetOrder) ? safe.presetOrder.filter(Boolean).map(String) : presets.map(function(p) { return p.id; }),
+        defaultPresetId: safe.defaultPresetId ? String(safe.defaultPresetId).trim() : '',
+        worldbooks: worldbooks,
+        hasWorldbooksSection: hasWorldbooksSection,
+        worldbookOrder: Array.isArray(safe.worldbookOrder) ? safe.worldbookOrder.filter(Boolean).map(String) : worldbooks.map(function(w) { return w.id; }),
+        worldbookAssociations: worldbookAssociations,
+        chats: chats,
+        hasChatsSection: hasChatsSection,
+        chatOrder: Array.isArray(safe.chatOrder) ? safe.chatOrder.filter(Boolean).map(String) : chats.map(function(c) { return c.id; }),
+        favorites: favorites,
+        hasFavoritesSection: hasFavoritesSection,
+        memory: memoryData,
+        hasMemorySection: hasMemorySection,
+        apiConfig: apiData,
+        hasApiSection: hasApiSection
+      }
+    };
+  }
+
+  async function collectAllZhiyuConfigKeys() {
+    var keySet = {};
+    var fixedKeys = [
+      KEYS.PROFILE,
+      KEYS.PERSONALIZATION,
+      KEYS.APPEARANCE,
+      KEYS.GENERAL,
+      KEYS.PRESET_IDS,
+      KEYS.PRESETS_INIT,
+      KEYS.DEFAULT_PRESET_ID,
+      KEYS.API_CONFIG,
+      KEYS.SUMMARY_API_CONFIG,
+      KEYS.SELECTED_MODEL,
+      KEYS.CHAT_IDS,
+      KEYS.MEMORY_SETTINGS,
+      KEYS.MEMORY_IDS,
+      KEYS.MEMORY_TASKS,
+      KEYS.DELETED_MEMORY_SIGS,
+      KEYS.WORLDBOOK_IDS,
+      KEYS.FAVORITES
+    ];
+    for (var fi = 0; fi < fixedKeys.length; fi++) {
+      keySet[fixedKeys[fi]] = true;
+    }
+
+    var idMapPrefixes = [
+      { indexKey: KEYS.PRESET_IDS, prefix: KEYS.PRESET_PREFIX },
+      { indexKey: KEYS.WORLDBOOK_IDS, prefix: KEYS.WORLDBOOK_PREFIX },
+      { indexKey: KEYS.CHAT_IDS, prefix: KEYS.CHAT_PREFIX },
+      { indexKey: KEYS.MEMORY_IDS, prefix: KEYS.MEMORY_PREFIX }
+    ];
+    for (var pi = 0; pi < idMapPrefixes.length; pi++) {
+      var list = await dbGetConfig(idMapPrefixes[pi].indexKey);
+      if (Array.isArray(list)) {
+        for (var li = 0; li < list.length; li++) {
+          if (list[li]) keySet[idMapPrefixes[pi].prefix + String(list[li])] = true;
+        }
+      }
+    }
+
+    var cache = readLocalCache();
+    var cacheKeys = Object.keys(cache);
+    for (var ci = 0; ci < cacheKeys.length; ci++) {
+      if (isZhiyuStorageKey(cacheKeys[ci])) {
+        keySet[cacheKeys[ci]] = true;
+      }
+    }
+
+    var dbRef = await waitForConfigDB(600);
+    if (dbRef && dbRef.config && typeof dbRef.config.toArray === 'function') {
+      try {
+        var op = function() { return dbRef.config.toArray(); };
+        var rows = typeof global.runWanWanDBRead === 'function'
+          ? await global.runWanWanDBRead(op)
+          : await op();
+        if (Array.isArray(rows)) {
+          for (var ri = 0; ri < rows.length; ri++) {
+            if (rows[ri] && isZhiyuStorageKey(rows[ri].key)) {
+              keySet[rows[ri].key] = true;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    return Object.keys(keySet);
+  }
+
+  async function snapshotAllWorkspaceKeys() {
+    var keys = await collectAllZhiyuConfigKeys();
+    var entries = {};
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var val = await dbGetConfig(k);
+      if (val !== undefined) {
+        entries[k] = deepClone(val);
+      }
+    }
+    var rawLocalCache = null;
+    try {
+      if (global.localStorage) {
+        rawLocalCache = global.localStorage.getItem(CACHE_STORAGE_KEY);
+      }
+    } catch (_) {}
+    return {
+      entries: entries,
+      rawLocalCache: rawLocalCache
+    };
+  }
+
+  async function clearAllZhiyuWorkspaceKeys() {
+    var keys = await collectAllZhiyuConfigKeys();
+    for (var i = 0; i < keys.length; i++) {
+      await dbDeleteConfig(keys[i]);
+    }
+    try {
+      if (global.localStorage) {
+        global.localStorage.removeItem(CACHE_STORAGE_KEY);
+      }
+    } catch (_) {}
+  }
+
+  async function restoreWorkspaceSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    await clearAllZhiyuWorkspaceKeys();
+    var entries = snapshot.entries || {};
+    var keys = Object.keys(entries);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (!isZhiyuStorageKey(k)) continue;
+      await dbPutConfig(k, entries[k]);
+    }
+    try {
+      if (global.localStorage) {
+        if (snapshot.rawLocalCache === null || snapshot.rawLocalCache === undefined) {
+          global.localStorage.removeItem(CACHE_STORAGE_KEY);
+        } else {
+          global.localStorage.setItem(CACHE_STORAGE_KEY, snapshot.rawLocalCache);
+        }
+      }
+    } catch (_) {}
+  }
+
+  function buildWorldBookSignature(wb) {
+    var entries = Array.isArray(wb && wb.entries) ? wb.entries : [];
+    var parts = entries.map(function(e) {
+      return [
+        String(e.comment || '').trim(),
+        String(e.content || '').trim(),
+        e.constant ? '1' : '0',
+        e.disable ? '1' : '0',
+        normalizeWorldBookKeywords(e.key).join(',')
+      ].join('|');
+    });
+    return String((wb && wb.name) || '').trim() + '::' + parts.join(';;');
+  }
+
+  function buildPresetSignature(p) {
+    return [
+      String((p && p.name) || '').trim(),
+      String((p && p.systemPrompt) || '').trim(),
+      String((p && p.replyStyle) || '').trim(),
+      String((p && p.detailLevel) || '').trim()
+    ].join('\u0000');
+  }
+
+  function buildChatFingerprint(c) {
+    var msgs = Array.isArray(c && c.messages) ? c.messages : [];
+    var first = msgs[0] ? (String(msgs[0].role || '') + ':' + String(msgs[0].content || '').slice(0, 80)) : '';
+    return String((c && c.title) || '').trim() + '|' + String((c && c.createdAt) || 0) + '|' + first;
+  }
+
+  function buildMemoryDedupKey(m) {
+    return [
+      String((m && m.category) || '备忘'),
+      String((m && m.scope) || 'user'),
+      normalizeDeletedSignatureText(m && m.content)
+    ].join('|');
+  }
+
+  function collectExtraPresetBindingsMap(associations) {
+    var map = {};
+    if (!associations || !Array.isArray(associations.presetBindings)) return map;
+    for (var i = 0; i < associations.presetBindings.length; i++) {
+      var item = associations.presetBindings[i];
+      if (!item || !item.presetId) continue;
+      map[String(item.presetId)] = normalizeWorldBookIdList(item.worldBookIds);
+    }
+    return map;
+  }
+
+  function remapIdList(ids, idMap, validSet) {
+    var list = Array.isArray(ids) ? ids : [];
+    var seen = {};
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var raw = String(list[i] || '').trim();
+      if (!raw) continue;
+      var mapped = (idMap && idMap[raw]) ? idMap[raw] : raw;
+      if (validSet && !validSet[mapped]) continue;
+      if (seen[mapped]) continue;
+      seen[mapped] = true;
+      out.push(mapped);
+    }
+    return out;
+  }
+
+  function mergeWorldBookEntriesDedup(existingEntries, incomingEntries) {
+    var result = Array.isArray(existingEntries) ? existingEntries.map(function(e, i) { return normalizeWorldBookEntry(e, i); }) : [];
+    var byId = {};
+    var bySig = {};
+    var usedIds = {};
+    for (var i = 0; i < result.length; i++) {
+      var ex = result[i];
+      byId[ex.id] = i;
+      usedIds[ex.id] = true;
+      bySig[String(ex.comment || '').trim() + '\n' + String(ex.content || '').trim()] = i;
+    }
+
+    var added = 0;
+    var src = Array.isArray(incomingEntries) ? incomingEntries : [];
+    for (var j = 0; j < src.length; j++) {
+      var inc = normalizeWorldBookEntry(src[j], j);
+      var sig = String(inc.comment || '').trim() + '\n' + String(inc.content || '').trim();
+      if (byId[inc.id] !== undefined || bySig[sig] !== undefined) {
+        continue;
+      }
+      if (usedIds[inc.id]) inc.id = generateWorldBookEntryId();
+      usedIds[inc.id] = true;
+      inc.uid = getNextWorldBookEntryUid(result);
+      result.push(inc);
+      byId[inc.id] = result.length - 1;
+      bySig[sig] = result.length - 1;
+      added++;
+    }
+    return { entries: result, added: added };
+  }
+
+  function mergeChatRecordsDedup(existingChat, incomingChat, remappedPresetId, remappedSnapshot) {
+    var mergedMsgs = Array.isArray(existingChat.messages) ? existingChat.messages.map(normalizeChatMessage) : [];
+    var msgIdSet = {};
+    var msgSigSet = {};
+    for (var i = 0; i < mergedMsgs.length; i++) {
+      var em = mergedMsgs[i];
+      msgIdSet[em.id] = true;
+      msgSigSet[em.role + '|' + em.createdAt + '|' + em.content] = true;
+    }
+
+    var addedMessages = 0;
+    var incMsgs = Array.isArray(incomingChat.messages) ? incomingChat.messages : [];
+    for (var j = 0; j < incMsgs.length; j++) {
+      var im = normalizeChatMessage(incMsgs[j]);
+      var sig = im.role + '|' + im.createdAt + '|' + im.content;
+      if (msgIdSet[im.id] || msgSigSet[sig]) continue;
+      mergedMsgs.push(im);
+      msgIdSet[im.id] = true;
+      msgSigSet[sig] = true;
+      addedMessages++;
+    }
+
+    mergedMsgs.sort(function(a, b) {
+      return (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0);
+    });
+
+    // 合并分段摘要并去重
+    var mergedSegments = Array.isArray(existingChat.summarySegments) ? existingChat.summarySegments.slice() : [];
+    var segKeySet = {};
+    for (var si = 0; si < mergedSegments.length; si++) {
+      var es = mergedSegments[si];
+      segKeySet[es.id] = true;
+      segKeySet[es.startMessageIndex + ':' + es.endMessageIndex + ':' + es.content] = true;
+    }
+    var incSegments = Array.isArray(incomingChat.summarySegments) ? incomingChat.summarySegments : [];
+    for (var sj = 0; sj < incSegments.length; sj++) {
+      var iseg = incSegments[sj];
+      var sKey = iseg.startMessageIndex + ':' + iseg.endMessageIndex + ':' + iseg.content;
+      if (segKeySet[iseg.id] || segKeySet[sKey]) continue;
+      mergedSegments.push(iseg);
+      segKeySet[iseg.id] = true;
+      segKeySet[sKey] = true;
+    }
+
+    var useIncomingSummary = (!existingChat.summary && incomingChat.summary) ||
+      (incomingChat.summary && (incomingChat.summaryUpdatedAt || 0) > (existingChat.summaryUpdatedAt || 0));
+
+    var updated = normalizeChatRecord(Object.assign({}, existingChat, {
+      pinned: !!(existingChat.pinned || incomingChat.pinned),
+      messages: mergedMsgs,
+      model: existingChat.model || incomingChat.model || '',
+      presetId: existingChat.presetId || remappedPresetId || '',
+      presetSnapshot: existingChat.presetSnapshot || remappedSnapshot || null,
+      summary: useIncomingSummary ? incomingChat.summary : existingChat.summary,
+      summaryLegacyBase: existingChat.summaryLegacyBase || incomingChat.summaryLegacyBase || '',
+      summarySegments: mergedSegments,
+      summaryUpToCount: Math.max(Number(existingChat.summaryUpToCount) || 0, Number(incomingChat.summaryUpToCount) || 0),
+      summaryUpdatedAt: Math.max(Number(existingChat.summaryUpdatedAt) || 0, Number(incomingChat.summaryUpdatedAt) || 0),
+      lastMemoryMessageId: existingChat.lastMemoryMessageId || incomingChat.lastMemoryMessageId || '',
+      updatedAt: Math.max(Number(existingChat.updatedAt) || 0, Number(incomingChat.updatedAt) || 0)
+    }), existingChat.id);
+
+    return { chat: updated, addedMessages: addedMessages };
+  }
+
+  function mergeMemoryRecordsDedup(existingMem, incomingMem, chatIdMap) {
+    var existingSources = Array.isArray(existingMem.sourceChats) ? existingMem.sourceChats.slice() : [];
+    var sourceSeen = {};
+    for (var si = 0; si < existingSources.length; si++) {
+      var sk = existingSources[si].chatId || ('title:' + existingSources[si].chatTitle);
+      if (sk) sourceSeen[sk] = true;
+    }
+    var incSources = Array.isArray(incomingMem.sourceChats) ? incomingMem.sourceChats : [];
+    for (var sj = 0; sj < incSources.length; sj++) {
+      var isrc = incSources[sj];
+      var mappedCid = (chatIdMap && chatIdMap[isrc.chatId]) ? chatIdMap[isrc.chatId] : isrc.chatId;
+      var k = mappedCid || ('title:' + isrc.chatTitle);
+      if (!k || sourceSeen[k]) continue;
+      sourceSeen[k] = true;
+      existingSources.push({
+        chatId: mappedCid,
+        chatTitle: isrc.chatTitle,
+        mentionedAt: isrc.mentionedAt
+      });
+    }
+
+    var entityList = (existingMem.entities || []).concat(incomingMem.entities || []);
+    var historyList = (existingMem.history || []).slice();
+    var histSeen = {};
+    for (var hi = 0; hi < historyList.length; hi++) {
+      histSeen[historyList[hi].content + '|' + historyList[hi].updatedAt] = true;
+    }
+    var incHist = incomingMem.history || [];
+    for (var hj = 0; hj < incHist.length; hj++) {
+      var hk = incHist[hj].content + '|' + incHist[hj].updatedAt;
+      if (!histSeen[hk]) {
+        histSeen[hk] = true;
+        historyList.push(incHist[hj]);
+      }
+    }
+
+    var preferIncoming = (incomingMem.updatedAt || 0) > (existingMem.updatedAt || 0);
+    return normalizeMemoryRecord(Object.assign({}, existingMem, {
+      sourceChats: existingSources,
+      entities: entityList,
+      history: historyList,
+      mentionCount: Math.max(Number(existingMem.mentionCount) || 1, Number(incomingMem.mentionCount) || 1),
+      independentMentionCount: Math.max(Number(existingMem.independentMentionCount) || 1, Number(incomingMem.independentMentionCount) || 1),
+      usageCount: Math.max(Number(existingMem.usageCount) || 0, Number(incomingMem.usageCount) || 0),
+      lastUsedAt: Math.max(Number(existingMem.lastUsedAt) || 0, Number(incomingMem.lastUsedAt) || 0),
+      importance: preferIncoming ? incomingMem.importance : existingMem.importance,
+      updatedAt: Math.max(Number(existingMem.updatedAt) || 0, Number(incomingMem.updatedAt) || 0)
+    }), existingMem.id);
+  }
+
+  async function importBackupFromJson(rawText, options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var mode = opts.mode === 'overwrite' ? 'overwrite' : 'merge';
+
+    // 1) 导入前先完整解析与校验；失败时直接返回，绝不修改任何现有数据
+    var parsed = parseFullBackupJson(rawText);
+    if (!parsed.ok) {
+      return parsed;
+    }
+
+    // 2) 创建知屿数据事务快照，任何写入失败都会自动回滚，绝不影响弯弯机其他应用数据
+    var snapshot = await snapshotAllWorkspaceKeys();
+    var data = parsed.data;
+
+    try {
+      if (mode === 'overwrite') {
+        await clearAllZhiyuWorkspaceKeys();
+
+        // 基础配置
+        if (data.profile) await dbPutConfig(KEYS.PROFILE, data.profile);
+        if (data.personalization) await dbPutConfig(KEYS.PERSONALIZATION, data.personalization);
+        if (data.appearance) await dbPutConfig(KEYS.APPEARANCE, data.appearance);
+        if (data.general) await dbPutConfig(KEYS.GENERAL, data.general);
+
+        // 世界书（含全局开关与关联）
+        var validWbSet = {};
+        var wbIds = [];
+        var wbById = {};
+        for (var wi = 0; wi < data.worldbooks.length; wi++) {
+          var wb = normalizeWorldBookRecord(data.worldbooks[wi], data.worldbooks[wi].id);
+          if (wbById[wb.id]) continue;
+          wbById[wb.id] = wb;
+          validWbSet[wb.id] = true;
+          wbIds.push(wb.id);
+        }
+        if (data.worldbookAssociations && Array.isArray(data.worldbookAssociations.globalWorldBookIds)) {
+          for (var gi = 0; gi < data.worldbookAssociations.globalWorldBookIds.length; gi++) {
+            var gid = String(data.worldbookAssociations.globalWorldBookIds[gi] || '').trim();
+            if (wbById[gid]) wbById[gid].globalEnabled = true;
+          }
+        }
+        var orderedWbIds = [];
+        var seenWbOrder = {};
+        for (var woi = 0; woi < data.worldbookOrder.length; woi++) {
+          var woid = data.worldbookOrder[woi];
+          if (wbById[woid] && !seenWbOrder[woid]) {
+            seenWbOrder[woid] = true;
+            orderedWbIds.push(woid);
+          }
+        }
+        for (var wbi = 0; wbi < wbIds.length; wbi++) {
+          if (!seenWbOrder[wbIds[wbi]]) orderedWbIds.push(wbIds[wbi]);
+          await dbPutConfig(KEYS.WORLDBOOK_PREFIX + wbIds[wbi], wbById[wbIds[wbi]]);
+        }
+        await dbPutConfig(KEYS.WORLDBOOK_IDS, orderedWbIds);
+
+        // 预设与世界书关联
+        var extraBindings = collectExtraPresetBindingsMap(data.worldbookAssociations);
+        var presetById = {};
+        var presetIds = [];
+        var resolvedDefaultPresetId = data.defaultPresetId || '';
+        for (var pi = 0; pi < data.presets.length; pi++) {
+          var p = normalizePreset(data.presets[pi], data.presets[pi].id);
+          var combinedWbIds = normalizeWorldBookIdList((p.worldBookIds || []).concat(extraBindings[p.id] || []));
+          p.worldBookIds = combinedWbIds.filter(function(id) { return !!validWbSet[id]; });
+          if (presetById[p.id]) continue;
+          presetById[p.id] = p;
+          presetIds.push(p.id);
+          if (!resolvedDefaultPresetId && p.isDefault) resolvedDefaultPresetId = p.id;
+        }
+        if (resolvedDefaultPresetId && !presetById[resolvedDefaultPresetId]) {
+          resolvedDefaultPresetId = presetIds[0] || '';
+        }
+        var orderedPresetIds = [];
+        var seenPOrder = {};
+        for (var poi = 0; poi < data.presetOrder.length; poi++) {
+          var poid = data.presetOrder[poi];
+          if (presetById[poid] && !seenPOrder[poid]) {
+            seenPOrder[poid] = true;
+            orderedPresetIds.push(poid);
+          }
+        }
+        for (var pbi = 0; pbi < presetIds.length; pbi++) {
+          var pid = presetIds[pbi];
+          if (!seenPOrder[pid]) orderedPresetIds.push(pid);
+          presetById[pid].isDefault = pid === resolvedDefaultPresetId;
+          await dbPutConfig(KEYS.PRESET_PREFIX + pid, presetById[pid]);
+        }
+        await dbPutConfig(KEYS.PRESET_IDS, orderedPresetIds);
+        await dbPutConfig(KEYS.DEFAULT_PRESET_ID, resolvedDefaultPresetId);
+        await dbPutConfig(KEYS.PRESETS_INIT, true);
+
+        // 接口与模型配置（优先写入，以便后续 sanitizeMemorySettings 正确校验 summaryModelMode）
+        if (data.apiConfig.customApi) {
+          await dbPutConfig(KEYS.API_CONFIG, data.apiConfig.customApi);
+        }
+        if (data.apiConfig.summaryApi) {
+          await dbPutConfig(KEYS.SUMMARY_API_CONFIG, data.apiConfig.summaryApi);
+        }
+        if (data.apiConfig.selectedModel) {
+          await dbPutConfig(KEYS.SELECTED_MODEL, {
+            model: data.apiConfig.selectedModel,
+            updatedAt: Date.now()
+          });
+        }
+
+        // 记忆相关数据
+        if (data.memory.settings) {
+          var summaryComplete = !!(data.apiConfig.summaryApi && data.apiConfig.summaryApi.complete);
+          var cleanMemSettings = sanitizeMemorySettings(data.memory.settings, DEFAULT_MEMORY_SETTINGS, {
+            summaryApiComplete: summaryComplete
+          });
+          await dbPutConfig(KEYS.MEMORY_SETTINGS, cleanMemSettings);
+        }
+        var memById = {};
+        var memIds = [];
+        for (var mi = 0; mi < data.memory.memories.length; mi++) {
+          var mem = normalizeMemoryRecord(data.memory.memories[mi], data.memory.memories[mi].id);
+          if (!mem.content || memById[mem.id]) continue;
+          memById[mem.id] = mem;
+          memIds.push(mem.id);
+        }
+        var orderedMemIds = [];
+        var seenMOrder = {};
+        for (var moi = 0; moi < data.memory.memoryOrder.length; moi++) {
+          var moid = data.memory.memoryOrder[moi];
+          if (memById[moid] && !seenMOrder[moid]) {
+            seenMOrder[moid] = true;
+            orderedMemIds.push(moid);
+          }
+        }
+        for (var mbi = 0; mbi < memIds.length; mbi++) {
+          if (!seenMOrder[memIds[mbi]]) orderedMemIds.push(memIds[mbi]);
+          await dbPutConfig(KEYS.MEMORY_PREFIX + memIds[mbi], memById[memIds[mbi]]);
+        }
+        await dbPutConfig(KEYS.MEMORY_IDS, orderedMemIds);
+        await dbPutConfig(KEYS.MEMORY_TASKS, data.memory.tasks.slice(0, 40));
+        await dbPutConfig(KEYS.DELETED_MEMORY_SIGS, data.memory.deletedSignatures.slice(0, 100));
+
+        // 对话会话与消息记录
+        var chatById = {};
+        var chatIds = [];
+        var restoredMsgCount = 0;
+        for (var ci = 0; ci < data.chats.length; ci++) {
+          var chat = normalizeChatRecord(data.chats[ci], data.chats[ci].id);
+          if (chat.presetSnapshot && Array.isArray(chat.presetSnapshot.worldBookIds)) {
+            chat.presetSnapshot.worldBookIds = chat.presetSnapshot.worldBookIds.filter(function(id) {
+              return !!validWbSet[id];
+            });
+          }
+          if (chatById[chat.id]) continue;
+          chatById[chat.id] = chat;
+          chatIds.push(chat.id);
+          restoredMsgCount += chat.messages.length;
+        }
+        var orderedChatIds = [];
+        var seenCOrder = {};
+        for (var coi = 0; coi < data.chatOrder.length; coi++) {
+          var coid = data.chatOrder[coi];
+          if (chatById[coid] && !seenCOrder[coid]) {
+            seenCOrder[coid] = true;
+            orderedChatIds.push(coid);
+          }
+        }
+        for (var cbi = 0; cbi < chatIds.length; cbi++) {
+          if (!seenCOrder[chatIds[cbi]]) orderedChatIds.push(chatIds[cbi]);
+          await dbPutConfig(KEYS.CHAT_PREFIX + chatIds[cbi], chatById[chatIds[cbi]]);
+        }
+        await dbPutConfig(KEYS.CHAT_IDS, orderedChatIds);
+
+        // 收藏消息列表
+        var favSeen = {};
+        var restoredFavorites = [];
+        for (var fvi = 0; fvi < data.favorites.length; fvi++) {
+          var favItem = normalizeFavoriteRecord(data.favorites[fvi]);
+          if (!favItem.content.trim()) continue;
+          var fk = buildFavoriteLookupKey(favItem.chatId, favItem.messageId, favItem.role, favItem.content);
+          if (favSeen[fk]) continue;
+          favSeen[fk] = true;
+          restoredFavorites.push(favItem);
+        }
+        restoredFavorites.sort(function(a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+        if (restoredFavorites.length > 0 || data.hasFavoritesSection) {
+          await saveFavoritesList(restoredFavorites);
+        }
+
+        return {
+          ok: true,
+          mode: 'overwrite',
+          version: parsed.version,
+          isLegacyBackup: parsed.isLegacyBackup,
+          stats: {
+            chatsAdded: chatIds.length,
+            chatsMerged: 0,
+            messagesAdded: restoredMsgCount,
+            favoritesAdded: restoredFavorites.length,
+            memoriesAdded: memIds.length,
+            presetsAdded: presetIds.length,
+            worldbooksAdded: wbIds.length
+          }
+        };
+      }
+
+      // ===== 合并导入模式（保留现有数据，合并备份内容并去重） =====
+      // 1. 世界书合并与去重
+      var existingWbs = await listWorldBooks();
+      var existingWbIds = await dbGetConfig(KEYS.WORLDBOOK_IDS);
+      if (!Array.isArray(existingWbIds)) existingWbIds = existingWbs.map(function(w) { return w.id; });
+      var wbIdMap = {};
+      var wbByIdMap = {};
+      var wbBySigMap = {};
+      for (var ew = 0; ew < existingWbs.length; ew++) {
+        wbByIdMap[existingWbs[ew].id] = existingWbs[ew];
+        wbBySigMap[buildWorldBookSignature(existingWbs[ew])] = existingWbs[ew];
+      }
+      var wbAddedCount = 0;
+      for (var iw = 0; iw < data.worldbooks.length; iw++) {
+        var incWb = normalizeWorldBookRecord(data.worldbooks[iw], data.worldbooks[iw].id);
+        var incWbSig = buildWorldBookSignature(incWb);
+        if (wbByIdMap[incWb.id]) {
+          var exWb = wbByIdMap[incWb.id];
+          var mergedEntryInfo = mergeWorldBookEntriesDedup(exWb.entries, incWb.entries);
+          if (mergedEntryInfo.added > 0 || (!exWb.description && incWb.description)) {
+            var updatedWb = normalizeWorldBookRecord(Object.assign({}, exWb, {
+              description: exWb.description || incWb.description,
+              entries: mergedEntryInfo.entries
+            }), exWb.id);
+            await dbPutConfig(KEYS.WORLDBOOK_PREFIX + updatedWb.id, updatedWb);
+            wbByIdMap[updatedWb.id] = updatedWb;
+          }
+          wbIdMap[incWb.id] = exWb.id;
+        } else if (wbBySigMap[incWbSig]) {
+          wbIdMap[incWb.id] = wbBySigMap[incWbSig].id;
+        } else {
+          await dbPutConfig(KEYS.WORLDBOOK_PREFIX + incWb.id, incWb);
+          if (existingWbIds.indexOf(incWb.id) === -1) existingWbIds.unshift(incWb.id);
+          wbByIdMap[incWb.id] = incWb;
+          wbBySigMap[incWbSig] = incWb;
+          wbIdMap[incWb.id] = incWb.id;
+          wbAddedCount++;
+        }
+      }
+      await dbPutConfig(KEYS.WORLDBOOK_IDS, existingWbIds);
+      var allValidWbIds = {};
+      Object.keys(wbByIdMap).forEach(function(id) { allValidWbIds[id] = true; });
+
+      // 2. 预设与世界书关联聚合、合并与去重
+      var existingPresets = await listPresets();
+      var existingPresetIds = await dbGetConfig(KEYS.PRESET_IDS);
+      if (!Array.isArray(existingPresetIds)) existingPresetIds = existingPresets.map(function(p) { return p.id; });
+      var currentDefaultPresetId = await dbGetConfig(KEYS.DEFAULT_PRESET_ID);
+      var presetIdMap = {};
+      var presetByIdMap = {};
+      var presetBySigMap = {};
+      for (var ep = 0; ep < existingPresets.length; ep++) {
+        presetByIdMap[existingPresets[ep].id] = existingPresets[ep];
+        presetBySigMap[buildPresetSignature(existingPresets[ep])] = existingPresets[ep];
+        if (!currentDefaultPresetId && existingPresets[ep].isDefault) {
+          currentDefaultPresetId = existingPresets[ep].id;
+        }
+      }
+      var extraPresetBindings = collectExtraPresetBindingsMap(data.worldbookAssociations);
+      var presetAddedCount = 0;
+      for (var ip = 0; ip < data.presets.length; ip++) {
+        var incP = normalizePreset(data.presets[ip], data.presets[ip].id);
+        var combinedIncWb = (incP.worldBookIds || []).concat(extraPresetBindings[incP.id] || []);
+        var remappedWbIds = remapIdList(combinedIncWb, wbIdMap, allValidWbIds);
+        var incPSig = buildPresetSignature(incP);
+
+        if (presetByIdMap[incP.id]) {
+          var exP = presetByIdMap[incP.id];
+          var unionWbIds = normalizeWorldBookIdList((exP.worldBookIds || []).concat(remappedWbIds));
+          if (unionWbIds.length !== (exP.worldBookIds || []).length) {
+            var updP = normalizePreset(Object.assign({}, exP, { worldBookIds: unionWbIds }), exP.id);
+            await dbPutConfig(KEYS.PRESET_PREFIX + updP.id, updP);
+            presetByIdMap[updP.id] = updP;
+          }
+          presetIdMap[incP.id] = exP.id;
+        } else if (presetBySigMap[incPSig]) {
+          var sigP = presetBySigMap[incPSig];
+          var sigUnionWb = normalizeWorldBookIdList((sigP.worldBookIds || []).concat(remappedWbIds));
+          if (sigUnionWb.length !== (sigP.worldBookIds || []).length) {
+            var updSigP = normalizePreset(Object.assign({}, sigP, { worldBookIds: sigUnionWb }), sigP.id);
+            await dbPutConfig(KEYS.PRESET_PREFIX + updSigP.id, updSigP);
+            presetByIdMap[updSigP.id] = updSigP;
+            presetBySigMap[incPSig] = updSigP;
+          }
+          presetIdMap[incP.id] = sigP.id;
+        } else {
+          var shouldBeDefault = !currentDefaultPresetId && (incP.isDefault || incP.id === data.defaultPresetId);
+          var newP = normalizePreset(Object.assign({}, incP, {
+            worldBookIds: remappedWbIds,
+            isDefault: shouldBeDefault
+          }), incP.id);
+          await dbPutConfig(KEYS.PRESET_PREFIX + newP.id, newP);
+          if (existingPresetIds.indexOf(newP.id) === -1) existingPresetIds.unshift(newP.id);
+          presetByIdMap[newP.id] = newP;
+          presetBySigMap[incPSig] = newP;
+          presetIdMap[incP.id] = newP.id;
+          if (shouldBeDefault) currentDefaultPresetId = newP.id;
+          presetAddedCount++;
+        }
+      }
+      await dbPutConfig(KEYS.PRESET_IDS, existingPresetIds);
+      if (currentDefaultPresetId) {
+        await dbPutConfig(KEYS.DEFAULT_PRESET_ID, currentDefaultPresetId);
+      }
+      await dbPutConfig(KEYS.PRESETS_INIT, true);
+
+      // 3. 对话会话与消息合并去重
+      var existingChats = await listChats();
+      var existingChatIds = await dbGetConfig(KEYS.CHAT_IDS);
+      if (!Array.isArray(existingChatIds)) existingChatIds = existingChats.map(function(c) { return c.id; });
+      var chatIdMap = {};
+      var chatByIdMap = {};
+      var chatByFpMap = {};
+      for (var ec = 0; ec < existingChats.length; ec++) {
+        chatByIdMap[existingChats[ec].id] = existingChats[ec];
+        chatByFpMap[buildChatFingerprint(existingChats[ec])] = existingChats[ec];
+      }
+      var chatsAddedCount = 0;
+      var chatsMergedCount = 0;
+      var messagesAddedCount = 0;
+      for (var ic = 0; ic < data.chats.length; ic++) {
+        var incChat = normalizeChatRecord(data.chats[ic], data.chats[ic].id);
+        var mappedPresetId = presetIdMap[incChat.presetId] || incChat.presetId || '';
+        var mappedSnapshot = incChat.presetSnapshot ? buildPresetSnapshot(incChat.presetSnapshot) : null;
+        if (mappedSnapshot) {
+          if (mappedSnapshot.id && presetIdMap[mappedSnapshot.id]) {
+            mappedSnapshot.id = presetIdMap[mappedSnapshot.id];
+          }
+          mappedSnapshot.worldBookIds = remapIdList(mappedSnapshot.worldBookIds, wbIdMap, allValidWbIds);
+        }
+        var incFp = buildChatFingerprint(incChat);
+        var matchedChat = chatByIdMap[incChat.id] || chatByFpMap[incFp] || null;
+
+        if (matchedChat) {
+          var mergeChatRes = mergeChatRecordsDedup(matchedChat, incChat, mappedPresetId, mappedSnapshot);
+          await dbPutConfig(KEYS.CHAT_PREFIX + matchedChat.id, mergeChatRes.chat);
+          chatByIdMap[matchedChat.id] = mergeChatRes.chat;
+          chatIdMap[incChat.id] = matchedChat.id;
+          chatsMergedCount++;
+          messagesAddedCount += mergeChatRes.addedMessages;
+        } else {
+          var newChat = normalizeChatRecord(Object.assign({}, incChat, {
+            presetId: mappedPresetId,
+            presetSnapshot: mappedSnapshot
+          }), incChat.id);
+          await dbPutConfig(KEYS.CHAT_PREFIX + newChat.id, newChat);
+          if (existingChatIds.indexOf(newChat.id) === -1) existingChatIds.unshift(newChat.id);
+          chatByIdMap[newChat.id] = newChat;
+          chatByFpMap[incFp] = newChat;
+          chatIdMap[incChat.id] = newChat.id;
+          chatsAddedCount++;
+          messagesAddedCount += newChat.messages.length;
+        }
+      }
+      await dbPutConfig(KEYS.CHAT_IDS, existingChatIds);
+
+      // 4. 接口与模型配置（合并模式：保留现有已配置项，空白项由备份补全）
+      if (data.hasApiSection) {
+        var exCustomApi = await getCustomApiConfig();
+        if (data.apiConfig.customApi) {
+          var incCA = data.apiConfig.customApi;
+          var unionFetched = exCustomApi.fetchedModels.slice();
+          for (var fmi = 0; fmi < incCA.fetchedModels.length; fmi++) {
+            if (unionFetched.indexOf(incCA.fetchedModels[fmi]) === -1) {
+              unionFetched.push(incCA.fetchedModels[fmi]);
+            }
+          }
+          if (!exCustomApi.complete && !exCustomApi.baseUrl && !exCustomApi.apiKey) {
+            await dbPutConfig(KEYS.API_CONFIG, Object.assign({}, incCA, { fetchedModels: unionFetched }));
+          } else if (unionFetched.length !== exCustomApi.fetchedModels.length) {
+            await dbPutConfig(KEYS.API_CONFIG, Object.assign({}, exCustomApi, { fetchedModels: unionFetched }));
+          }
+        }
+        var exSummaryApi = await getSummaryApiConfig();
+        if (data.apiConfig.summaryApi && !exSummaryApi.complete && !exSummaryApi.baseUrl && !exSummaryApi.apiKey) {
+          await dbPutConfig(KEYS.SUMMARY_API_CONFIG, data.apiConfig.summaryApi);
+        }
+        var exSelectedModel = await getSelectedModel();
+        if (!exSelectedModel && data.apiConfig.selectedModel) {
+          await saveSelectedModel(data.apiConfig.selectedModel);
+        }
+      }
+
+      // 5. 记忆相关数据合并与去重
+      var memAddedCount = 0;
+      if (data.hasMemorySection) {
+        if (data.memory.settings) {
+          var exMemSettings = await getMemorySettings();
+          if (!exMemSettings.updatedAt) {
+            var latestSummaryApi = await getSummaryApiConfig();
+            var mergedMemSettings = sanitizeMemorySettings(data.memory.settings, exMemSettings, {
+              summaryApiComplete: !!(latestSummaryApi && latestSummaryApi.complete)
+            });
+            await dbPutConfig(KEYS.MEMORY_SETTINGS, mergedMemSettings);
+          }
+        }
+
+        var existingMems = await listMemories();
+        var existingMemIds = await dbGetConfig(KEYS.MEMORY_IDS);
+        if (!Array.isArray(existingMemIds)) existingMemIds = existingMems.map(function(m) { return m.id; });
+        var memByIdMap = {};
+        var memByKeyMap = {};
+        for (var em = 0; em < existingMems.length; em++) {
+          memByIdMap[existingMems[em].id] = existingMems[em];
+          memByKeyMap[buildMemoryDedupKey(existingMems[em])] = existingMems[em];
+        }
+        var memIdMap = {};
+        var touchedNewMemIds = [];
+        for (var im = 0; im < data.memory.memories.length; im++) {
+          var incMem = normalizeMemoryRecord(data.memory.memories[im], data.memory.memories[im].id);
+          if (!incMem.content) continue;
+          if (incMem.sourceChatId && chatIdMap[incMem.sourceChatId]) {
+            incMem.sourceChatId = chatIdMap[incMem.sourceChatId];
+          }
+          var mDedupKey = buildMemoryDedupKey(incMem);
+          var matchedMem = memByIdMap[incMem.id] || memByKeyMap[mDedupKey] || null;
+          if (matchedMem) {
+            var mergedMem = mergeMemoryRecordsDedup(matchedMem, incMem, chatIdMap);
+            await dbPutConfig(KEYS.MEMORY_PREFIX + matchedMem.id, mergedMem);
+            memByIdMap[matchedMem.id] = mergedMem;
+            memIdMap[incMem.id] = matchedMem.id;
+          } else {
+            await dbPutConfig(KEYS.MEMORY_PREFIX + incMem.id, incMem);
+            if (existingMemIds.indexOf(incMem.id) === -1) existingMemIds.unshift(incMem.id);
+            memByIdMap[incMem.id] = incMem;
+            memByKeyMap[mDedupKey] = incMem;
+            memIdMap[incMem.id] = incMem.id;
+            touchedNewMemIds.push(incMem.id);
+            memAddedCount++;
+          }
+        }
+        // 修正新增记忆的关系引用 ID
+        for (var tmi = 0; tmi < touchedNewMemIds.length; tmi++) {
+          var nm = memByIdMap[touchedNewMemIds[tmi]];
+          if (!nm) continue;
+          var relChanged = false;
+          var nextRels = (nm.relations || []).map(function(r) {
+            var mappedT = memIdMap[r.targetId] || r.targetId;
+            if (mappedT !== r.targetId) relChanged = true;
+            return Object.assign({}, r, { targetId: mappedT });
+          });
+          var nextConf = remapIdList(nm.conflictWithIds, memIdMap, memByIdMap);
+          if (nextConf.length !== (nm.conflictWithIds || []).length) relChanged = true;
+          var nextSup = nm.supersedesId ? (memIdMap[nm.supersedesId] || nm.supersedesId) : '';
+          var nextSupBy = nm.supersededById ? (memIdMap[nm.supersededById] || nm.supersededById) : '';
+          if (nextSup !== nm.supersedesId || nextSupBy !== nm.supersededById) relChanged = true;
+          if (relChanged) {
+            var fixedNm = normalizeMemoryRecord(Object.assign({}, nm, {
+              relations: nextRels,
+              conflictWithIds: nextConf,
+              supersedesId: nextSup,
+              supersededById: nextSupBy
+            }), nm.id);
+            await dbPutConfig(KEYS.MEMORY_PREFIX + fixedNm.id, fixedNm);
+          }
+        }
+        await dbPutConfig(KEYS.MEMORY_IDS, existingMemIds);
+
+        // 合并记忆任务与去重
+        var exTasks = await listMemoryTasks();
+        var taskKeySet = {};
+        var mergedTasks = [];
+        for (var eti = 0; eti < exTasks.length; eti++) {
+          var et = exTasks[eti];
+          mergedTasks.push(et);
+          taskKeySet[et.id] = true;
+          if (et.turnKey) taskKeySet['tk:' + et.turnKey] = true;
+        }
+        for (var iti = 0; iti < data.memory.tasks.length; iti++) {
+          var it = data.memory.tasks[iti];
+          if (taskKeySet[it.id] || (it.turnKey && taskKeySet['tk:' + it.turnKey])) continue;
+          if (it.chatId && chatIdMap[it.chatId]) it.chatId = chatIdMap[it.chatId];
+          mergedTasks.push(it);
+          taskKeySet[it.id] = true;
+          if (it.turnKey) taskKeySet['tk:' + it.turnKey] = true;
+        }
+        await saveMemoryTasks(mergedTasks);
+
+        // 合并已删除记忆签名与去重
+        var exSigs = await listDeletedMemorySignatures();
+        var sigNormSet = {};
+        var mergedSigs = [];
+        for (var esi = 0; esi < exSigs.length; esi++) {
+          if (exSigs[esi] && exSigs[esi].norm && !sigNormSet[exSigs[esi].norm]) {
+            sigNormSet[exSigs[esi].norm] = true;
+            mergedSigs.push(exSigs[esi]);
+          }
+        }
+        for (var isi = 0; isi < data.memory.deletedSignatures.length; isi++) {
+          var isig = data.memory.deletedSignatures[isi];
+          if (isig && isig.norm && !sigNormSet[isig.norm]) {
+            sigNormSet[isig.norm] = true;
+            mergedSigs.push(isig);
+          }
+        }
+        mergedSigs.sort(function(a, b) { return (b.deletedAt || 0) - (a.deletedAt || 0); });
+        await dbPutConfig(KEYS.DELETED_MEMORY_SIGS, mergedSigs.slice(0, 100));
+      }
+
+      // 5.5 收藏消息合并与去重
+      var favAddedCount = 0;
+      if (data.favorites && data.favorites.length) {
+        var existingFavs = await listFavorites();
+        var favKeySet = {};
+        var favIdSet = {};
+        for (var efi = 0; efi < existingFavs.length; efi++) {
+          var ef = existingFavs[efi];
+          favIdSet[ef.id] = true;
+          favKeySet[buildFavoriteLookupKey(ef.chatId, ef.messageId, ef.role, ef.content)] = true;
+        }
+        for (var ifi = 0; ifi < data.favorites.length; ifi++) {
+          var incFav = normalizeFavoriteRecord(data.favorites[ifi]);
+          if (!incFav.content.trim()) continue;
+          if (incFav.chatId && chatIdMap[incFav.chatId]) {
+            incFav.chatId = chatIdMap[incFav.chatId];
+          }
+          var incFavKey = buildFavoriteLookupKey(incFav.chatId, incFav.messageId, incFav.role, incFav.content);
+          if (favKeySet[incFavKey] || favIdSet[incFav.id]) continue;
+          existingFavs.push(incFav);
+          favIdSet[incFav.id] = true;
+          favKeySet[incFavKey] = true;
+          favAddedCount++;
+        }
+        if (favAddedCount > 0) {
+          existingFavs.sort(function(a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+          await saveFavoritesList(existingFavs);
+        }
+      }
+
+      // 6. 个人资料、个性化、外观、常规设置（保留本地已修改项，未配置项由备份补全）
+      if (data.profile) {
+        var exProfileRaw = await dbGetConfig(KEYS.PROFILE);
+        if (!exProfileRaw || !Number(exProfileRaw.updatedAt)) {
+          await dbPutConfig(KEYS.PROFILE, data.profile);
+        }
+      }
+      if (data.personalization) {
+        var exPers = await getPersonalization();
+        if (!exPers.updatedAt && !exPers.customInstructions && !exPers.userPreferences) {
+          await dbPutConfig(KEYS.PERSONALIZATION, data.personalization);
+        }
+      }
+      if (data.appearance) {
+        var exApp = await getAppearance();
+        if (!exApp.updatedAt) {
+          await dbPutConfig(KEYS.APPEARANCE, data.appearance);
+        }
+      }
+      if (data.general) {
+        var exGen = await getGeneralSettings();
+        if (!exGen.updatedAt) {
+          await dbPutConfig(KEYS.GENERAL, data.general);
+        }
+      }
+
+      return {
+        ok: true,
+        mode: 'merge',
+        version: parsed.version,
+        isLegacyBackup: parsed.isLegacyBackup,
+        stats: {
+          chatsAdded: chatsAddedCount,
+          chatsMerged: chatsMergedCount,
+          messagesAdded: messagesAddedCount,
+          favoritesAdded: favAddedCount,
+          memoriesAdded: memAddedCount,
+          presetsAdded: presetAddedCount,
+          worldbooksAdded: wbAddedCount
+        }
+      };
+    } catch (err) {
+      // 任何写入异常均自动回滚知屿快照，确保原有知屿数据与其他应用数据零损失
+      try {
+        await restoreWorkspaceSnapshot(snapshot);
+      } catch (rbErr) {
+        console.error('[AiWorkspaceStorage] rollback failed:', rbErr);
+      }
+      return {
+        ok: false,
+        rolledBack: true,
+        error: '导入过程中发生异常，已自动恢复原数据：' + String((err && err.message) || '未知错误')
+      };
+    }
+  }
+
   global.AiWorkspaceStorage = {
     KEYS: KEYS,
     ACCENT_PRESETS: ACCENT_PRESETS,
@@ -3262,6 +4901,18 @@
     importWorldBookFromTxt: importWorldBookFromTxt,
     importWorldBookFromDocx: importWorldBookFromDocx,
     importWorldBookFromDoc: importWorldBookFromDoc,
-    buildAllWorldBooksZipBlob: buildAllWorldBooksZipBlob
+    buildAllWorldBooksZipBlob: buildAllWorldBooksZipBlob,
+    buildFullBackupPayload: buildFullBackupPayload,
+    buildFullBackupJson: buildFullBackupJson,
+    parseFullBackupJson: parseFullBackupJson,
+    importBackupFromJson: importBackupFromJson,
+    listFavorites: listFavorites,
+    isMessageFavorited: isMessageFavorited,
+    addFavorite: addFavorite,
+    removeFavoriteById: removeFavoriteById,
+    removeFavoriteByMessage: removeFavoriteByMessage,
+    toggleMessageFavorite: toggleMessageFavorite,
+    searchFavorites: searchFavorites,
+    syncFavoriteMessageContent: syncFavoriteMessageContent
   };
 })(typeof window !== 'undefined' ? window : globalThis);
