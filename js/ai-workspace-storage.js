@@ -1005,6 +1005,24 @@
     if (Number.isFinite(editedAt) && editedAt > 0) msg.editedAt = editedAt;
     var translations = normalizeMessageTranslations(src.translations);
     if (translations) msg.translations = translations;
+    if (Array.isArray(src.toolCalls) && src.toolCalls.length > 0) {
+      msg.toolCalls = src.toolCalls.slice(0, 20).map(function(tc) {
+        if (!tc || typeof tc !== 'object') return null;
+        return {
+          id: String(tc.id || ''),
+          name: String(tc.name || ''),
+          fullName: String(tc.fullName || ''),
+          pluginName: String(tc.pluginName || ''),
+          toolLabel: String(tc.toolLabel || ''),
+          status: ['running', 'success', 'error'].indexOf(tc.status) !== -1 ? tc.status : 'success',
+          summaryText: String(tc.summaryText || ''),
+          error: tc.error ? String(tc.error) : '',
+          argumentsText: tc.argumentsText ? String(tc.argumentsText) : '',
+          resultText: tc.resultText ? String(tc.resultText) : '',
+          durationMs: Number(tc.durationMs) || 0
+        };
+      }).filter(Boolean);
+    }
     return msg;
   }
 

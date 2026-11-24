@@ -516,7 +516,7 @@
 
     return (
       '<div class="aiw-st-topbar">' +
-        '<button type="button" class="aiw-circle-btn" data-st-back aria-label="返回"><i class="fa-solid fa-angle-left"></i></button>' +
+        '<button type="button" class="aiw-circle-btn" id="aiw-st-sub-back" data-st-back aria-label="返回"><i class="fa-solid fa-angle-left"></i></button>' +
         '<div class="aiw-st-topbar-title">插件管理</div>' +
         '<div class="aiw-st-topbar-spacer"></div>' +
       '</div>' +
@@ -543,7 +543,7 @@
         '</div>' +
 
         '<div class="aiw-plg-list">' + cardsHtml + '</div>' +
-        '<div class="aiw-st-footnote">安全说明：当前已接入「时间感知」「随机骰子」「计算器」三个只读内置插件，支持独立启停与手动测试；暂不启用 AI 自动调用，暂未连接真实 MCP 服务。工具默认不得擅自修改聊天、记忆或外部数据。</div>' +
+        '<div class="aiw-st-footnote">安全说明：当前已接入「时间感知」「随机骰子」「计算器」三个只读内置插件，支持独立启停与手动测试；已支持在聊天中由 AI 自动调用已启用的内置插件（不支持工具调用的模型会自动兼容普通聊天）；暂未连接真实 MCP 服务。工具默认不得擅自修改聊天、记忆或外部数据。</div>' +
       '</div>'
     );
   }
@@ -7655,7 +7655,7 @@
     var backHomeBtn = layer.querySelector('#aiw-st-back-home');
     if (backHomeBtn) backHomeBtn.addEventListener('click', closeLayer);
 
-    var subBackBtn = layer.querySelector('#aiw-st-sub-back');
+    var subBackBtn = layer.querySelector('#aiw-st-sub-back') || layer.querySelector('[data-st-back]');
     if (subBackBtn) subBackBtn.addEventListener('click', popView);
   }
 

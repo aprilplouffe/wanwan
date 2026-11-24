@@ -424,8 +424,30 @@
   // - 校验全局/单聊天启用状态
   // - 校验参数
   // - 默认拦截所有非只读或敏感权限操作，必须获得显式用户确认后方可执行
+  function toApiToolName(fullName) {
+    return String(fullName || '').trim().replace(/[^a-zA-Z0-9_-]/g, '__').slice(0, 64);
+  }
+
+  function resolveToolFullName(rawName, nameMap) {
+    var key = String(rawName || '').trim();
+    if (!key) return '';
+    if (nameMap && nameMap[key]) return nameMap[key];
+    if (_tools[key]) return key;
+    var dotCandidate = key.replace(/__/g, '.');
+    if (_tools[dotCandidate]) return dotCandidate;
+    var matched = [];
+    Object.keys(_tools).forEach(function(fullKey) {
+      var tool = _tools[fullKey];
+      if (tool && (tool.name === key || toApiToolName(tool.fullName) === key)) {
+        matched.push(tool.fullName);
+      }
+    });
+    return matched.length === 1 ? matched[0] : '';
+  }
+
   async function invokeTool(toolFullName, params, options) {
-    var key = String(toolFullName || '').trim();
+    var rawKey = String(toolFullName || '').trim();
+    var key = _tools[rawKey] ? rawKey : (resolveToolFullName(rawKey) || rawKey);
     var tool = _tools[key];
     if (!tool) {
       return { ok: false, error: '未找到工具：' + key, code: 'tool_not_found' };
@@ -893,6 +915,37 @@
 
   registerStarterPlugins();
 
+  async function getEnabledOpenAiTools(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var settings = opts.settings || (await loadPluginSettings());
+    var all = await listTools({ settings: settings, chatId: opts.chatId || '' });
+    var tools = [];
+    var nameMap = {};
+    for (var i = 0; i < all.length; i++) {
+      var t = all[i];
+      var rawTool = t ? _tools[t.fullName] : null;
+      var rawPlugin = t ? _plugins[t.pluginId] : null;
+      if (!t || !t.enabled || !rawTool || typeof rawTool.execute !== 'function') continue;
+      if (t.permissions && t.permissions.requiresConfirmation) continue;
+      var apiName = toApiToolName(t.fullName);
+      nameMap[apiName] = t.fullName;
+      var pName = (rawPlugin && rawPlugin.name) || '';
+      tools.push({
+        type: 'function',
+        function: {
+          name: apiName,
+          description: (pName ? ('[' + pName + '] ') : '') + (t.description || t.title || t.name),
+          parameters: t.parameters || { type: 'object', properties: {}, required: [] }
+        }
+      });
+    }
+    return {
+      tools: tools,
+      nameMap: nameMap,
+      enabledCount: tools.length
+    };
+  }
+
   global.AiWorkspacePlugins = {
     CATEGORY_BUILTIN: CATEGORY_BUILTIN,
     CATEGORY_MCP: CATEGORY_MCP,
@@ -910,6 +963,9 @@
     setGlobalMasterEnabled: setGlobalMasterEnabled,
     setChatMasterOverride: setChatMasterOverride,
     setPluginEnabled: setPluginEnabled,
-    updatePluginConfig: updatePluginConfig
+    updatePluginConfig: updatePluginConfig,
+    toApiToolName: toApiToolName,
+    resolveToolFullName: resolveToolFullName,
+    getEnabledOpenAiTools: getEnabledOpenAiTools
   };
 })(typeof window !== 'undefined' ? window : globalThis);

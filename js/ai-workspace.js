@@ -1454,6 +1454,7 @@
         '</div>';
     }
 
+    var toolCallsHtml = renderToolCallsHtml(m);
     var translationHtml = renderTranslationPanelHtml(m);
 
     var actionsHtml = '';
@@ -1473,6 +1474,7 @@
 
     return (
       '<div class="aiw-msg-row is-assistant" data-msg-id="' + escapeHtml(m.id) + '">' +
+        toolCallsHtml +
         '<div class="aiw-msg-bubble" id="aiw-msg-bubble-' + escapeHtml(m.id) + '">' + bodyHtml + '</div>' +
         statusLine +
         errorHtml +
@@ -2378,6 +2380,53 @@
     });
   }
 
+  function formatToolCallSummary(fullName, resData, errMsg) {
+    if (errMsg) return String(errMsg);
+    if (!resData || typeof resData !== 'object') return '已完成';
+    if (fullName === 'builtin_time_utils.get_current_datetime') {
+      return (resData.date || '') + ' ' + (resData.weekday || '') + ' ' + (resData.time || '') + (resData.utcOffset ? (' (' + resData.utcOffset + ')') : '');
+    }
+    if (fullName === 'builtin_dice_roller.roll_dice') {
+      var rollsStr = Array.isArray(resData.rolls) ? ('[' + resData.rolls.join(', ') + ']') : '';
+      return (resData.notation || '骰子') + ' → ' + rollsStr + ' = ' + (resData.total != null ? resData.total : '');
+    }
+    if (fullName === 'builtin_calculator.calculate_expression') {
+      return (resData.expression || '') + ' = ' + (resData.result != null ? resData.result : '');
+    }
+    return '已完成';
+  }
+
+  function renderToolCallsHtml(msg) {
+    var list = msg && Array.isArray(msg.toolCalls) ? msg.toolCalls : [];
+    if (!list.length) return '';
+    var itemsHtml = list.map(function(tc) {
+      var statusCls = tc.status === 'error' ? ' is-error' : (tc.status === 'running' ? ' is-running' : ' is-success');
+      var statusText = tc.status === 'error' ? '失败' : (tc.status === 'running' ? '调用中' : '已完成');
+      var titleText = tc.pluginName ? (tc.pluginName + ' · ' + (tc.toolLabel || tc.name)) : (tc.toolLabel || tc.name || '内置工具');
+      var summary = tc.summaryText || statusText;
+      var detailBody = '';
+      if (tc.argumentsText || tc.resultText || tc.error) {
+        detailBody =
+          '<details class="aiw-tool-call-details">' +
+            '<summary>查看详情' + (tc.durationMs ? (' (' + tc.durationMs + 'ms)') : '') + '</summary>' +
+            (tc.argumentsText ? ('<div class="aiw-tool-call-kv"><span>参数：</span><code>' + escapeHtml(tc.argumentsText) + '</code></div>') : '') +
+            (tc.resultText ? ('<div class="aiw-tool-call-kv"><span>结果：</span><pre>' + escapeHtml(tc.resultText) + '</pre></div>') : '') +
+          '</details>';
+      }
+      return (
+        '<div class="aiw-tool-call-item' + statusCls + '">' +
+          '<div class="aiw-tool-call-head">' +
+            '<span class="aiw-tool-call-name"><i class="fa-solid fa-puzzle-piece"></i> ' + escapeHtml(titleText) + '</span>' +
+            '<span class="aiw-tool-call-badge' + statusCls + '">' + escapeHtml(statusText) + '</span>' +
+          '</div>' +
+          '<div class="aiw-tool-call-summary">' + escapeHtml(summary) + '</div>' +
+          detailBody +
+        '</div>'
+      );
+    }).join('');
+    return '<div class="aiw-tool-calls-wrap" aria-label="插件调用记录">' + itemsHtml + '</div>';
+  }
+
   function updateStreamingBubbleDom(page, msg) {
     if (!page || !msg) return;
     var row = Array.from(page.querySelectorAll('.aiw-msg-row')).find(function(el) {
@@ -2386,6 +2435,21 @@
     if (!row) {
       updateMainStage(page);
       return;
+    }
+    var existingToolWrap = row.querySelector('.aiw-tool-calls-wrap');
+    var nextToolHtml = renderToolCallsHtml(msg);
+    if (nextToolHtml) {
+      var tempDiv = document.createElement('div');
+      tempDiv.innerHTML = nextToolHtml;
+      var nextToolEl = tempDiv.firstElementChild;
+      if (existingToolWrap) {
+        existingToolWrap.replaceWith(nextToolEl);
+      } else {
+        var bubbleRef = row.querySelector('.aiw-msg-bubble');
+        if (bubbleRef) row.insertBefore(nextToolEl, bubbleRef);
+      }
+    } else if (existingToolWrap) {
+      existingToolWrap.remove();
     }
     var bubble = row.querySelector('.aiw-msg-bubble');
     if (bubble) {
@@ -2555,6 +2619,7 @@
       if (m.quote && m.quote.content) item.quote = m.quote;
       if (m.editedAt) item.editedAt = m.editedAt;
       if (m.translations && typeof m.translations === 'object') item.translations = m.translations;
+      if (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) item.toolCalls = m.toolCalls;
       return item;
     });
     _state.activeChat = await S().saveChat({
@@ -2717,18 +2782,86 @@
     syncComposerButtons(page);
 
     var completedNormally = false;
+    var activeChatId = _state.activeChat ? _state.activeChat.id : '';
+    var pluginApi = global.AiWorkspacePlugins || null;
+    var enabledToolsRes = { tools: [], nameMap: {} };
+    if (pluginApi && typeof pluginApi.getEnabledOpenAiTools === 'function') {
+      try {
+        enabledToolsRes = await pluginApi.getEnabledOpenAiTools({ chatId: activeChatId });
+      } catch (plgLoadErr) {
+        console.warn('[AiWorkspace] load enabled tools skipped:', plgLoadErr);
+      }
+    }
+
     try {
-      var res = await AI().streamChatCompletion({
-        apiConfig: effectiveApi,
-        model: effectiveApi.model,
-        temperature: effectiveApi.temperature,
-        messages: composed,
-        signal: controller.signal,
-        onDelta: function(_, fullText) {
-          assistantMsg.content = fullText;
-          updateStreamingBubbleDom(page, assistantMsg);
+      var res;
+      if (enabledToolsRes.tools.length > 0 && typeof AI().runChatCompletionWithTools === 'function') {
+        res = await AI().runChatCompletionWithTools({
+          apiConfig: effectiveApi,
+          model: effectiveApi.model,
+          temperature: effectiveApi.temperature,
+          messages: composed,
+          tools: enabledToolsRes.tools,
+          signal: controller.signal,
+          onDelta: function(_, fullText) {
+            assistantMsg.content = fullText;
+            updateStreamingBubbleDom(page, assistantMsg);
+          },
+          onToolCallUpdate: function(records) {
+            assistantMsg.toolCalls = records;
+            updateStreamingBubbleDom(page, assistantMsg);
+          },
+          executeTool: async function(tc, parsedArgs) {
+            var rawName = (tc && tc.function && tc.function.name) || '';
+            var resolvedFullName = pluginApi.resolveToolFullName
+              ? pluginApi.resolveToolFullName(rawName, enabledToolsRes.nameMap)
+              : (enabledToolsRes.nameMap[rawName] || rawName);
+            if (!resolvedFullName || (!enabledToolsRes.nameMap[rawName] && Object.values(enabledToolsRes.nameMap).indexOf(resolvedFullName) === -1)) {
+              return {
+                ok: false,
+                fullName: resolvedFullName || rawName,
+                pluginName: '插件系统',
+                toolLabel: rawName,
+                error: '该插件未启用或不可调用'
+              };
+            }
+            var invokeRes = await pluginApi.invokeTool(resolvedFullName, parsedArgs, {
+              chatId: activeChatId,
+              source: 'ai_auto'
+            });
+            var plgMeta = invokeRes && invokeRes.plugin ? invokeRes.plugin : null;
+            var toolMeta = invokeRes && invokeRes.tool ? invokeRes.tool : null;
+            return {
+              ok: !!(invokeRes && invokeRes.ok),
+              fullName: resolvedFullName,
+              pluginName: (plgMeta && plgMeta.name) || '',
+              toolLabel: (toolMeta && (toolMeta.title || toolMeta.name)) || resolvedFullName,
+              result: invokeRes ? invokeRes.result : null,
+              error: invokeRes ? invokeRes.error : '工具执行失败',
+              summaryText: formatToolCallSummary(
+                resolvedFullName,
+                invokeRes ? invokeRes.result : null,
+                (invokeRes && !invokeRes.ok) ? invokeRes.error : ''
+              )
+            };
+          }
+        });
+        if (res && Array.isArray(res.toolCalls) && res.toolCalls.length > 0) {
+          assistantMsg.toolCalls = res.toolCalls;
         }
-      });
+      } else {
+        res = await AI().streamChatCompletion({
+          apiConfig: effectiveApi,
+          model: effectiveApi.model,
+          temperature: effectiveApi.temperature,
+          messages: composed,
+          signal: controller.signal,
+          onDelta: function(_, fullText) {
+            assistantMsg.content = fullText;
+            updateStreamingBubbleDom(page, assistantMsg);
+          }
+        });
+      }
 
       assistantMsg.streaming = false;
       assistantMsg.content = res.content || assistantMsg.content || '';

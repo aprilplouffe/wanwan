@@ -869,6 +869,7 @@
       throw modelErr;
     }
 
+    var hasTools = Array.isArray(opts.tools) && opts.tools.length > 0;
     var endpoint = buildChatCompletionsUrl(url);
     var body = {
       model: model,
@@ -876,6 +877,10 @@
       temperature: temperature,
       stream: true
     };
+    if (hasTools) {
+      body.tools = opts.tools;
+      body.tool_choice = opts.toolChoice || 'auto';
+    }
 
     var res;
     try {
@@ -901,6 +906,14 @@
     }
 
     if (!res.ok) {
+      if (hasTools && opts.allowToolFallback !== false && [400, 404, 422, 500].indexOf(res.status) !== -1) {
+        var fallbackOpts = Object.assign({}, opts, {
+          tools: undefined,
+          toolChoice: undefined,
+          allowToolFallback: false
+        });
+        return streamChatCompletion(fallbackOpts);
+      }
       var errText = '';
       var errJson = null;
       try {
@@ -915,6 +928,74 @@
       httpErr.hint = hint;
       httpErr.source = cfg.source || 'unknown';
       throw httpErr;
+    }
+
+    function extractNonStreamToolCalls(jsonObj) {
+      var ch = jsonObj && Array.isArray(jsonObj.choices) ? jsonObj.choices[0] : null;
+      var msgObj = ch && ch.message ? ch.message : null;
+      var rawCalls = msgObj && Array.isArray(msgObj.tool_calls) ? msgObj.tool_calls : [];
+      return rawCalls.map(function(tc, i) {
+        return {
+          id: (tc && tc.id) ? String(tc.id) : ('call_' + Date.now() + '_' + i),
+          type: 'function',
+          function: {
+            name: (tc && tc.function && tc.function.name) ? String(tc.function.name) : '',
+            arguments: (tc && tc.function && tc.function.arguments != null)
+              ? (typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments))
+              : '{}'
+          }
+        };
+      }).filter(function(tc) { return !!tc.function.name; });
+    }
+
+    var toolCallAcc = Object.create(null);
+    var lastFinishReason = '';
+    function accumulateStreamToolCalls(parsedChunk) {
+      var ch = parsedChunk && Array.isArray(parsedChunk.choices) ? parsedChunk.choices[0] : null;
+      if (!ch) return;
+      if (ch.finish_reason) lastFinishReason = String(ch.finish_reason);
+      var delta = ch.delta || ch.message || null;
+      if (!delta || !Array.isArray(delta.tool_calls)) return;
+      for (var ti = 0; ti < delta.tool_calls.length; ti++) {
+        var part = delta.tool_calls[ti];
+        if (!part) continue;
+        var idxKey = String(part.index != null ? part.index : ti);
+        if (!toolCallAcc[idxKey]) {
+          toolCallAcc[idxKey] = {
+            index: Number(part.index != null ? part.index : ti),
+            id: '',
+            type: 'function',
+            function: { name: '', arguments: '' }
+          };
+        }
+        var entry = toolCallAcc[idxKey];
+        if (part.id) entry.id = String(part.id);
+        if (part.function) {
+          if (part.function.name) entry.function.name += String(part.function.name);
+          if (part.function.arguments != null) {
+            entry.function.arguments += (typeof part.function.arguments === 'string'
+              ? part.function.arguments
+              : JSON.stringify(part.function.arguments));
+          }
+        }
+      }
+    }
+
+    function finalizeAccumulatedToolCalls() {
+      return Object.keys(toolCallAcc)
+        .map(function(k) { return toolCallAcc[k]; })
+        .sort(function(a, b) { return a.index - b.index; })
+        .map(function(tc, i) {
+          return {
+            id: tc.id || ('call_' + Date.now() + '_' + i),
+            type: 'function',
+            function: {
+              name: String(tc.function.name || '').trim(),
+              arguments: String(tc.function.arguments || '').trim() || '{}'
+            }
+          };
+        })
+        .filter(function(tc) { return !!tc.function.name; });
     }
 
     var contentType = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
@@ -937,6 +1018,8 @@
       if (fullText) onDelta(fullText, fullText);
       return {
         content: fullText,
+        toolCalls: extractNonStreamToolCalls(parsedJson),
+        finishReason: (parsedJson && parsedJson.choices && parsedJson.choices[0] && parsedJson.choices[0].finish_reason) || '',
         aborted: false,
         model: (parsedJson && parsedJson.model) || model,
         source: cfg.source || 'unknown'
@@ -957,6 +1040,7 @@
           if (fParsed && fParsed.error) {
             throw new Error((fParsed.error && fParsed.error.message) || String(fParsed.error));
           }
+          accumulateStreamToolCalls(fParsed);
           var fDelta = extractDeltaText(fParsed);
           if (fDelta) {
             fullText += fDelta;
@@ -966,7 +1050,14 @@
           if (parseEx && parseEx.message && fPayload.indexOf('"error"') !== -1) throw parseEx;
         }
       }
-      return { content: fullText, aborted: false, model: model, source: cfg.source || 'unknown' };
+      return {
+        content: fullText,
+        toolCalls: finalizeAccumulatedToolCalls(),
+        finishReason: lastFinishReason,
+        aborted: false,
+        model: model,
+        source: cfg.source || 'unknown'
+      };
     }
 
     var reader = res.body.getReader();
@@ -996,6 +1087,7 @@
         streamErr.source = cfg.source || 'unknown';
         throw streamErr;
       }
+      accumulateStreamToolCalls(parsed);
       var deltaText = extractDeltaText(parsed);
       if (deltaText) {
         fullText += deltaText;
@@ -1038,6 +1130,8 @@
 
     return {
       content: fullText,
+      toolCalls: finalizeAccumulatedToolCalls(),
+      finishReason: lastFinishReason,
       aborted: false,
       model: model,
       source: cfg.source || 'unknown'
@@ -1154,6 +1248,158 @@
     return await store.matchWorldBookEntries(options || {});
   }
 
+  // ===== 带工具自动调用循环的流式对话执行器（7-A3） =====
+  async function runChatCompletionWithTools(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var tools = Array.isArray(opts.tools) ? opts.tools : [];
+    var executeTool = typeof opts.executeTool === 'function' ? opts.executeTool : null;
+    if (!tools.length || !executeTool) {
+      return streamChatCompletion(opts);
+    }
+
+    var maxRounds = Math.max(1, Math.min(8, Math.floor(Number(opts.maxToolRounds) || 5)));
+    var maxTotalCalls = Math.max(1, Math.min(20, Math.floor(Number(opts.maxTotalCalls) || 10)));
+    var workingMessages = Array.isArray(opts.messages) ? opts.messages.slice() : [];
+    var onDelta = typeof opts.onDelta === 'function' ? opts.onDelta : function() {};
+    var onToolCallUpdate = typeof opts.onToolCallUpdate === 'function' ? opts.onToolCallUpdate : function() {};
+    var toolRecords = [];
+    var totalCallsCount = 0;
+
+    for (var round = 0; round <= maxRounds; round++) {
+      var canOfferTools = round < maxRounds && totalCallsCount < maxTotalCalls;
+      var roundResult = await streamChatCompletion({
+        apiConfig: opts.apiConfig,
+        model: opts.model,
+        temperature: opts.temperature,
+        messages: workingMessages,
+        tools: canOfferTools ? tools : undefined,
+        toolChoice: canOfferTools ? (opts.toolChoice || 'auto') : undefined,
+        allowToolFallback: opts.allowToolFallback !== false,
+        signal: opts.signal,
+        onDelta: onDelta
+      });
+
+      var calls = Array.isArray(roundResult.toolCalls) ? roundResult.toolCalls : [];
+      if (!calls.length || !canOfferTools) {
+        return {
+          content: roundResult.content || '',
+          aborted: !!roundResult.aborted,
+          model: roundResult.model || opts.model || '',
+          source: roundResult.source || 'unknown',
+          toolCalls: toolRecords.slice()
+        };
+      }
+
+      workingMessages.push({
+        role: 'assistant',
+        content: roundResult.content ? roundResult.content : null,
+        tool_calls: calls
+      });
+
+      for (var ci = 0; ci < calls.length; ci++) {
+        var tc = calls[ci];
+        if (!tc || !tc.function || !tc.function.name) continue;
+        if (totalCallsCount >= maxTotalCalls) {
+          var limitMsg = '已达到单次回复最大工具调用次数上限（' + maxTotalCalls + ' 次）';
+          workingMessages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            name: tc.function.name,
+            content: JSON.stringify({ ok: false, error: limitMsg })
+          });
+          continue;
+        }
+        totalCallsCount++;
+
+        var rawArgs = tc.function.arguments || '{}';
+        var parsedArgs = {};
+        var parseError = '';
+        try {
+          parsedArgs = rawArgs ? JSON.parse(rawArgs) : {};
+          if (!parsedArgs || typeof parsedArgs !== 'object' || Array.isArray(parsedArgs)) {
+            parsedArgs = {};
+          }
+        } catch (argErr) {
+          parseError = '工具参数 JSON 解析失败：' + (argErr && argErr.message ? argErr.message : '格式错误');
+        }
+
+        var record = {
+          id: tc.id || ('tool_' + Date.now() + '_' + totalCallsCount),
+          name: tc.function.name,
+          fullName: tc.function.name,
+          pluginName: '',
+          toolLabel: tc.function.name,
+          status: 'running',
+          summaryText: '正在调用...',
+          error: '',
+          argumentsText: rawArgs,
+          resultText: '',
+          durationMs: 0
+        };
+        toolRecords.push(record);
+        onToolCallUpdate(toolRecords.slice());
+
+        var startedAt = Date.now();
+        var execRes;
+        if (parseError) {
+          execRes = { ok: false, error: parseError };
+        } else {
+          try {
+            execRes = await executeTool(tc, parsedArgs);
+          } catch (execErr) {
+            execRes = { ok: false, error: (execErr && execErr.message) ? execErr.message : '工具执行异常' };
+          }
+        }
+        var duration = Math.max(0, Date.now() - startedAt);
+        record.durationMs = duration;
+        if (execRes) {
+          if (execRes.fullName) record.fullName = execRes.fullName;
+          if (execRes.pluginName) record.pluginName = execRes.pluginName;
+          if (execRes.toolLabel) record.toolLabel = execRes.toolLabel;
+          if (execRes.summaryText) record.summaryText = execRes.summaryText;
+        }
+
+        if (execRes && execRes.ok) {
+          record.status = 'success';
+          record.error = '';
+          try {
+            record.resultText = JSON.stringify(execRes.result, null, 2);
+          } catch (_) {
+            record.resultText = String(execRes.result || '');
+          }
+          if (!record.summaryText || record.summaryText === '正在调用...') {
+            record.summaryText = '调用成功';
+          }
+        } else {
+          record.status = 'error';
+          record.error = (execRes && execRes.error) ? String(execRes.error) : '工具执行失败';
+          record.summaryText = record.error;
+          record.resultText = JSON.stringify({ ok: false, error: record.error });
+        }
+        onToolCallUpdate(toolRecords.slice());
+
+        workingMessages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          name: tc.function.name,
+          content: JSON.stringify(
+            execRes && execRes.ok
+              ? { ok: true, data: execRes.result }
+              : { ok: false, error: record.error }
+          )
+        });
+      }
+    }
+
+    return {
+      content: '',
+      aborted: false,
+      model: opts.model || '',
+      source: 'unknown',
+      toolCalls: toolRecords.slice()
+    };
+  }
+
   global.AiWorkspaceAI = {
     normalizeBaseUrl: normalizeBaseUrl,
     normalizeTemperature: normalizeTemperature,
@@ -1174,6 +1420,7 @@
     composeSystemPrompt: composeSystemPrompt,
     composeMessages: composeMessages,
     streamChatCompletion: streamChatCompletion,
+    runChatCompletionWithTools: runChatCompletionWithTools,
     requestChatCompletion: requestChatCompletion
   };
 })(typeof window !== 'undefined' ? window : globalThis);
