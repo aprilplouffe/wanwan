@@ -624,7 +624,6 @@
               '<button type="button" class="aiw-nav-item" data-nav="plugins">' +
                 '<span class="aiw-nav-item-icon"><i class="fa-solid fa-puzzle-piece"></i></span>' +
                 '<span class="aiw-nav-item-label">插件扩展</span>' +
-                '<span class="aiw-nav-item-tag">待接入</span>' +
               '</button>' +
               '<button type="button" class="aiw-nav-item" data-nav="memory">' +
                 '<span class="aiw-nav-item-icon"><i class="fa-regular fa-bookmark"></i></span>' +
