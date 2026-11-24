@@ -83,6 +83,9 @@
     favorites: [],
     favoritesSearchQuery: '',
     favoritesRoleFilter: 'all',
+    apiPresets: [],
+    selectedApiPresetId: '',
+    summaryTimelineExpandedIds: {},
     onNavigateToChatMessage: null
   };
 
@@ -244,7 +247,8 @@
         ? store.getSummaryApiConfig()
         : Promise.resolve({ baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false }),
       typeof store.listWorldBooks === 'function' ? store.listWorldBooks() : Promise.resolve([]),
-      typeof store.listFavorites === 'function' ? store.listFavorites() : Promise.resolve([])
+      typeof store.listFavorites === 'function' ? store.listFavorites() : Promise.resolve([]),
+      typeof store.listApiPresets === 'function' ? store.listApiPresets() : Promise.resolve([])
     ]);
     _ctx.profile = results[0];
     _ctx.personalization = results[1];
@@ -260,6 +264,10 @@
     _ctx.summaryApiConfig = results[10] || { baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false };
     _ctx.worldbooks = results[11] || [];
     _ctx.favorites = results[12] || [];
+    _ctx.apiPresets = results[13] || [];
+    if (_ctx.selectedApiPresetId && !_ctx.apiPresets.some(function(p) { return p && p.id === _ctx.selectedApiPresetId; })) {
+      _ctx.selectedApiPresetId = '';
+    }
     if (AI() && typeof AI().resolveEffectiveApiConfig === 'function') {
       _ctx.effectiveApi = await AI().resolveEffectiveApiConfig();
     }
@@ -301,6 +309,7 @@
     }, 260);
     _ctx.viewStack = [];
     _ctx.summaryApiPanelOpen = false;
+    _ctx.summaryTimelineExpandedIds = {};
     clearExpiredArchivePreviewState();
     notifyWorkspaceStateChanged();
   }
@@ -1565,7 +1574,8 @@
         (s.chatsAdded || 0) + ' 个对话 / ' +
         (s.favoritesAdded || 0) + ' 条收藏 / ' +
         (s.memoriesAdded || 0) + ' 条记忆 / ' +
-        (s.presetsAdded || 0) + ' 个预设 / ' +
+        (s.presetsAdded || 0) + ' 个预设' +
+        (s.apiPresetsAdded ? ' / ' + s.apiPresetsAdded + ' 个 API 预设' : '') + ' / ' +
         (s.worldbooksAdded || 0) + ' 本世界书）';
     }
     var parts = [];
@@ -1575,6 +1585,7 @@
     if (s.favoritesAdded) parts.push('新增收藏 ' + s.favoritesAdded);
     if (s.memoriesAdded) parts.push('新增记忆 ' + s.memoriesAdded);
     if (s.presetsAdded) parts.push('新增预设 ' + s.presetsAdded);
+    if (s.apiPresetsAdded) parts.push('新增 API 预设 ' + s.apiPresetsAdded);
     if (s.worldbooksAdded) parts.push('新增世界书 ' + s.worldbooksAdded);
     return parts.length
       ? ('已完成合并导入（' + parts.join('，') + '）')
@@ -1685,6 +1696,9 @@
         '预设 ' + (sum.presetsCount || 0) + ' 个',
         '世界书 ' + (sum.worldbooksCount || 0) + ' 本（' + (sum.worldbookEntriesCount || 0) + ' 条词条）'
       ];
+      if (sum.apiPresetsCount) {
+        countParts.push('API 预设 ' + sum.apiPresetsCount + ' 个');
+      }
       var legacyNoteHtml = parsed.isLegacyBackup
         ? '<div class="aiw-bk-legacy-note">检测到旧版（v1）知屿备份，仅包含资料、个性化、外观、常规设置与预设，不含对话/记忆/世界书/接口配置。若选择「覆盖恢复」，将会清空当前未包含的对话、记忆、世界书与专属接口配置；如需保留现有记录请选择「合并导入」。</div>'
         : '';
@@ -1790,6 +1804,16 @@
     return num.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
   }
 
+  function buildApiPresetOptionsHtml(apiPresets, selectedId) {
+    var list = Array.isArray(apiPresets) ? apiPresets : [];
+    var activeId = String(selectedId || '').trim();
+    return '<option value="">选择预设...</option>' + list.map(function(p) {
+      if (!p || !p.id || !p.name) return '';
+      var isSel = activeId && p.id === activeId ? ' selected' : '';
+      return '<option value="' + escapeHtml(p.id) + '"' + isSel + '>' + escapeHtml(p.name) + '</option>';
+    }).join('');
+  }
+
   function renderCustomApiHtml() {
     var cfg = _ctx.customApi || { baseUrl: '', apiKey: '', model: '', fetchedModels: [], temperature: 0.7, complete: false };
     var models = Array.isArray(cfg.fetchedModels) ? cfg.fetchedModels.slice() : [];
@@ -1810,6 +1834,8 @@
       return '<option value="' + escapeHtml(m) + '"' + selected + '>' + escapeHtml(m) + '</option>';
     }).join('');
 
+    var apiPresetOptionsHtml = buildApiPresetOptionsHtml(_ctx.apiPresets, _ctx.selectedApiPresetId);
+
     return (
       '<div class="aiw-st-topbar">' +
         '<button type="button" class="aiw-circle-btn" id="aiw-st-sub-back" aria-label="返回设置">' +
@@ -1826,12 +1852,20 @@
         '</div>' +
 
         '<div class="aiw-st-card aiw-st-pad">' +
+          '<div class="aiw-api-preset-bar">' +
+            '<select class="aiw-field-input aiw-api-preset-select" id="aiw-api-preset-select" aria-label="选择 API 配置预设">' +
+              apiPresetOptionsHtml +
+            '</select>' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm aiw-api-preset-btn" id="aiw-api-preset-save">存预设</button>' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm aiw-btn-text-danger aiw-api-preset-btn" id="aiw-api-preset-delete">删除</button>' +
+          '</div>' +
+
           '<label class="aiw-field-label" for="aiw-api-base-url">Base URL</label>' +
           '<input type="url" class="aiw-field-input" id="aiw-api-base-url" autocomplete="off" spellcheck="false" value="' + escapeHtml(cfg.baseUrl || '') + '" placeholder="https://api.openai.com/v1">' +
 
           '<label class="aiw-field-label" for="aiw-api-key" style="margin-top:14px;">API Key</label>' +
           '<div class="aiw-api-key-row">' +
-            '<input type="password" class="aiw-field-input" id="aiw-api-key" autocomplete="off" spellcheck="false" value="' + escapeHtml(cfg.apiKey || '') + '" placeholder="sk-...">' +
+            '<input type="password" class="aiw-field-input" id="aiw-api-key" autocomplete="off" spellcheck="false" placeholder="sk-...">' +
             '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-api-toggle-key">显示</button>' +
           '</div>' +
 
@@ -1877,6 +1911,9 @@
   }
 
   function bindCustomApiEvents(layer) {
+    var presetSelect = layer.querySelector('#aiw-api-preset-select');
+    var savePresetBtn = layer.querySelector('#aiw-api-preset-save');
+    var delPresetBtn = layer.querySelector('#aiw-api-preset-delete');
     var urlInput = layer.querySelector('#aiw-api-base-url');
     var keyInput = layer.querySelector('#aiw-api-key');
     var toggleKeyBtn = layer.querySelector('#aiw-api-toggle-key');
@@ -1890,6 +1927,10 @@
     var saveTopBtn = layer.querySelector('#aiw-api-save-top');
     var clearBtn = layer.querySelector('#aiw-api-clear-btn');
 
+    if (keyInput && _ctx.customApi && _ctx.customApi.apiKey) {
+      keyInput.value = String(_ctx.customApi.apiKey);
+    }
+
     var fetchedList = (_ctx.customApi && Array.isArray(_ctx.customApi.fetchedModels))
       ? _ctx.customApi.fetchedModels.slice()
       : [];
@@ -1898,10 +1939,24 @@
       return {
         baseUrl: S().normalizeBaseUrl(urlInput.value),
         apiKey: String(keyInput.value || '').trim(),
-        model: String(modelInput.value || '').trim(),
+        model: String(modelInput.value || (modelSelect && modelSelect.value) || '').trim(),
         temperature: S().normalizeTemperature(tempSlider.value, 0.7),
         fetchedModels: fetchedList
       };
+    }
+
+    function refreshPresetDropdown(selectedId) {
+      if (!presetSelect) return;
+      presetSelect.innerHTML = buildApiPresetOptionsHtml(_ctx.apiPresets, selectedId);
+      presetSelect.value = selectedId || '';
+    }
+
+    function getPresetMissingFields(draft) {
+      var missing = [];
+      if (!draft.baseUrl) missing.push('Base URL');
+      if (!draft.apiKey) missing.push('API Key');
+      if (!draft.model) missing.push('模型名称');
+      return missing;
     }
 
     function syncDropdownOptions(models, currentModel) {
@@ -1915,6 +1970,128 @@
       if (currentModel) {
         modelSelect.value = currentModel;
       }
+    }
+
+    if (presetSelect) {
+      presetSelect.addEventListener('change', function() {
+        var selectedId = String(presetSelect.value || '').trim();
+        _ctx.selectedApiPresetId = selectedId;
+        if (!selectedId) return;
+        var preset = (_ctx.apiPresets || []).find(function(item) {
+          return item && item.id === selectedId;
+        });
+        if (!preset) return;
+
+        urlInput.value = preset.baseUrl || '';
+        keyInput.value = preset.apiKey || '';
+        // 切换预设时强制保持掩码显示，避免密钥意外明文暴露
+        keyInput.type = 'password';
+        toggleKeyBtn.textContent = '显示';
+        modelInput.value = preset.model || '';
+        fetchedList = Array.isArray(preset.fetchedModels) ? preset.fetchedModels.slice() : [];
+        syncDropdownOptions(fetchedList, preset.model || '');
+        if (preset.temperature !== undefined && preset.temperature !== null) {
+          var nextTemp = S().normalizeTemperature(preset.temperature, 0.7);
+          tempSlider.value = String(nextTemp);
+          tempValEl.textContent = formatTempReadout(nextTemp);
+        }
+        notifyToast('已加载预设：' + preset.name);
+      });
+    }
+
+    if (savePresetBtn) {
+      savePresetBtn.addEventListener('click', function() {
+        var draft = readFormDraft();
+        var missing = getPresetMissingFields(draft);
+        if (missing.length) {
+          notifyToast('请先填写' + missing.join('、') + '后再存预设');
+          return;
+        }
+        var modal = showCustomModal(
+          '保存预设',
+          '<label class="aiw-field-label" for="aiw-api-preset-name-input">预设名称</label>' +
+          '<input type="text" class="aiw-field-input" id="aiw-api-preset-name-input" maxlength="60" autocomplete="off" spellcheck="false" placeholder="输入预设名称">',
+          '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-api-preset-cancel">取消</button>' +
+          '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-api-preset-confirm">确定</button>'
+        );
+        if (!modal) return;
+        var nameInput = modal.querySelector('#aiw-api-preset-name-input');
+        var cancelBtn = modal.querySelector('#aiw-api-preset-cancel');
+        var confirmBtn = modal.querySelector('#aiw-api-preset-confirm');
+        if (nameInput) {
+          setTimeout(function() { nameInput.focus(); }, 20);
+          nameInput.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Enter') {
+              ev.preventDefault();
+              if (confirmBtn) confirmBtn.click();
+            }
+          });
+        }
+        if (cancelBtn) cancelBtn.addEventListener('click', closeModalOverlay);
+        if (confirmBtn) {
+          confirmBtn.addEventListener('click', async function() {
+            var presetName = String((nameInput && nameInput.value) || '').trim();
+            if (!presetName) {
+              notifyToast('请输入预设名称');
+              if (nameInput) nameInput.focus();
+              return;
+            }
+            var latestDraft = readFormDraft();
+            var latestMissing = getPresetMissingFields(latestDraft);
+            if (latestMissing.length) {
+              notifyToast('请先填写' + latestMissing.join('、'));
+              closeModalOverlay();
+              return;
+            }
+            confirmBtn.disabled = true;
+            try {
+              var saved = await S().saveApiPreset({
+                name: presetName,
+                baseUrl: latestDraft.baseUrl,
+                apiKey: latestDraft.apiKey,
+                model: latestDraft.model,
+                temperature: latestDraft.temperature,
+                fetchedModels: latestDraft.fetchedModels
+              });
+              _ctx.apiPresets = await S().listApiPresets();
+              _ctx.selectedApiPresetId = saved.id;
+              refreshPresetDropdown(saved.id);
+              closeModalOverlay();
+              notifyToast('预设已保存：' + saved.name);
+            } catch (err) {
+              confirmBtn.disabled = false;
+              notifyToast((err && err.message) || '预设保存失败');
+            }
+          });
+        }
+      });
+    }
+
+    if (delPresetBtn) {
+      delPresetBtn.addEventListener('click', function() {
+        var selectedId = String((presetSelect && presetSelect.value) || '').trim();
+        if (!selectedId) {
+          notifyToast('请先选择预设');
+          return;
+        }
+        var targetPreset = (_ctx.apiPresets || []).find(function(item) {
+          return item && item.id === selectedId;
+        });
+        var targetName = (targetPreset && targetPreset.name) || '该预设';
+        showConfirmModal(
+          '删除预设',
+          '确定要删除 API 预设「' + targetName + '」吗？删除后无法恢复。',
+          '确认删除',
+          true,
+          async function() {
+            await S().deleteApiPreset(selectedId);
+            _ctx.apiPresets = await S().listApiPresets();
+            _ctx.selectedApiPresetId = '';
+            refreshPresetDropdown('');
+            notifyToast('预设已删除');
+          }
+        );
+      });
     }
 
     toggleKeyBtn.addEventListener('click', function() {
@@ -2047,6 +2224,7 @@
         true,
         async function() {
           _ctx.customApi = await S().clearCustomApiConfig();
+          _ctx.selectedApiPresetId = '';
           await S().saveSelectedModel('');
           if (AI() && typeof AI().resolveEffectiveApiConfig === 'function') {
             _ctx.effectiveApi = await AI().resolveEffectiveApiConfig();
@@ -2934,6 +3112,165 @@
     }
   }
 
+  function sortSummarySegmentsChronologically(segments) {
+    var list = Array.isArray(segments)
+      ? segments.filter(function(s) {
+          return s && typeof s === 'object' && String(s.content || '').trim();
+        }).map(function(s, idx) {
+          return { seg: s, origIndex: idx };
+        })
+      : [];
+    list.sort(function(a, b) {
+      var ca = Number(a.seg.createdAt) || 0;
+      var cb = Number(b.seg.createdAt) || 0;
+      if (ca && cb && ca !== cb) return ca - cb;
+      if (ca !== cb) return ca ? 1 : -1;
+      var sa = Number(a.seg.startMessageIndex) || 0;
+      var sb = Number(b.seg.startMessageIndex) || 0;
+      if (sa !== sb) return sa - sb;
+      var ea = Number(a.seg.endMessageIndex) || 0;
+      var eb = Number(b.seg.endMessageIndex) || 0;
+      if (ea !== eb) return ea - eb;
+      return a.origIndex - b.origIndex;
+    });
+    return list.map(function(item) { return item.seg; });
+  }
+
+  function describeSummarySegment(seg) {
+    var s = seg && typeof seg === 'object' ? seg : {};
+    var id = String(s.id || '');
+    var isManual = !!(s.source === 'manual_written' || s.isManualWritten === true || id.indexOf('manual_') === 0);
+    var isMerged = !isManual && (s.status === 'merged' || s.source === 'merged' || id.indexOf('summerge_') === 0);
+    var isCompacted = s.status === 'compacted';
+    var startIdx = Math.max(0, Math.floor(Number(s.startMessageIndex) || 0));
+    var endIdx = Math.max(0, Math.floor(Number(s.endMessageIndex) || 0));
+    var hasRange = endIdx > startIdx;
+    var rangeText = hasRange ? ('第 ' + (startIdx + 1) + '–' + endIdx + ' 条消息') : '';
+    var sourceLabel = isManual ? '手写摘要' : (isMerged ? 'AI 合并摘要' : 'AI 摘要');
+    var sourceClass = isManual ? 'is-manual' : (isMerged ? 'is-merged' : 'is-ai');
+    var statusLabel = isCompacted ? '已合并压缩' : (isMerged ? '阶段综合' : '');
+    var createdAt = Number(s.createdAt) || 0;
+    var updatedAt = Number(s.updatedAt) || 0;
+    var timeText = createdAt ? formatMemoryDate(createdAt) : '暂无时间记录';
+    var isEdited = updatedAt > 0 && updatedAt > createdAt;
+    return {
+      isManual: isManual,
+      isMerged: isMerged,
+      isCompacted: isCompacted,
+      hasRange: hasRange,
+      rangeText: rangeText,
+      sourceLabel: sourceLabel,
+      sourceClass: sourceClass,
+      statusLabel: statusLabel,
+      timeText: timeText,
+      isEdited: isEdited
+    };
+  }
+
+  function buildTimelinePreviewText(text, maxChars) {
+    var clean = String(text || '').trim();
+    var limit = Number(maxChars) || 96;
+    var lines = clean.split('\n');
+    var truncatedByLines = lines.length > 3;
+    var sliceBase = truncatedByLines ? lines.slice(0, 3).join('\n') : clean;
+    if (sliceBase.length > limit) {
+      return sliceBase.slice(0, limit).trimEnd() + '…';
+    }
+    return truncatedByLines ? (sliceBase.trimEnd() + '…') : clean;
+  }
+
+  function isTimelineContentLong(text) {
+    var clean = String(text || '').trim();
+    return clean.length > 96 || clean.split('\n').length > 3;
+  }
+
+  function compileUpdatedChatSummaryFields(chat, nextSegments) {
+    var legacyBase = String((chat && chat.summaryLegacyBase) || '').trim();
+    var compiled = '';
+    if (M() && typeof M().buildShortTermSummaryContext === 'function') {
+      compiled = M().buildShortTermSummaryContext({
+        summary: '',
+        summaryLegacyBase: legacyBase,
+        summarySegments: Array.isArray(nextSegments) ? nextSegments : []
+      }, 1000);
+    } else {
+      compiled = (Array.isArray(nextSegments) ? nextSegments : [])
+        .filter(function(s) { return s && (s.status === 'active' || s.status === 'merged') && String(s.content || '').trim(); })
+        .map(function(s) { return String(s.content || '').trim(); })
+        .join('\n')
+        .slice(0, 1000);
+    }
+    return {
+      summary: compiled,
+      summaryLegacyBase: legacyBase
+    };
+  }
+
+  function renderSummaryTimelineSectionHtml(targetChat, summaryText) {
+    var ordered = sortSummarySegmentsChronologically(targetChat && targetChat.summarySegments);
+    if (!ordered.length) {
+      var emptySub = summaryText
+        ? '当前对话仅包含早期整体摘要（见上方「阶段性摘要」），后续自动生成或手写保存的摘要片段会按时间顺序显示在这里。'
+        : '暂无摘要片段。可等待自动摘要触发，或点击上方「立即摘要」「手写摘要」新增摘要记录。';
+      return (
+        '<div class="aiw-st-group-title" style="margin-top:16px;">摘要时间线</div>' +
+        '<div class="aiw-st-card aiw-st-pad">' +
+          '<div class="aiw-mem-empty aiw-ss-empty-inner">' +
+            '<div class="aiw-mem-empty-icon"><i class="fa-regular fa-clock"></i></div>' +
+            '<div class="aiw-mem-empty-title">暂无摘要时间线记录</div>' +
+            '<div class="aiw-mem-empty-sub">' + escapeHtml(emptySub) + '</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    var expandedMap = _ctx.summaryTimelineExpandedIds || {};
+    var itemsHtml = ordered.map(function(seg) {
+      var meta = describeSummarySegment(seg);
+      var fullText = String(seg.content || '').trim();
+      var longFlag = isTimelineContentLong(fullText);
+      var isExpanded = !!expandedMap[seg.id];
+      var displayText = (!isExpanded && longFlag) ? buildTimelinePreviewText(fullText, 96) : fullText;
+
+      return (
+        '<div class="aiw-ss-tl-item' + (meta.isCompacted ? ' is-compacted' : '') + '" data-ss-tl-id="' + escapeHtml(seg.id) + '">' +
+          '<div class="aiw-ss-tl-dot ' + escapeHtml(meta.sourceClass) + '" aria-hidden="true"></div>' +
+          '<div class="aiw-ss-tl-card">' +
+            '<div class="aiw-ss-tl-head">' +
+              '<div class="aiw-ss-tl-badges">' +
+                '<span class="aiw-ss-tl-source ' + escapeHtml(meta.sourceClass) + '">' + escapeHtml(meta.sourceLabel) + '</span>' +
+                (meta.rangeText ? '<span class="aiw-ss-tl-range">' + escapeHtml(meta.rangeText) + '</span>' : '') +
+                (meta.statusLabel ? '<span class="aiw-ss-tl-status">' + escapeHtml(meta.statusLabel) + '</span>' : '') +
+              '</div>' +
+              '<span class="aiw-ss-tl-time">' + escapeHtml(meta.timeText) + (meta.isEdited ? ' · 已编辑' : '') + '</span>' +
+            '</div>' +
+            '<div class="aiw-ss-tl-body' + (isExpanded ? ' is-expanded' : '') + '">' + escapeHtml(displayText) + '</div>' +
+            '<div class="aiw-ss-tl-actions">' +
+              (longFlag
+                ? '<button type="button" class="aiw-ss-tl-btn" data-ss-tl-act="toggle" data-ss-tl-id="' + escapeHtml(seg.id) + '">' +
+                    (isExpanded ? '<i class="fa-solid fa-chevron-up"></i> 收起' : '<i class="fa-solid fa-chevron-down"></i> 展开全文') +
+                  '</button>'
+                : '') +
+              '<button type="button" class="aiw-ss-tl-btn" data-ss-tl-act="edit" data-ss-tl-id="' + escapeHtml(seg.id) + '">' +
+                '<i class="fa-regular fa-pen-to-square"></i> 编辑' +
+              '</button>' +
+              '<button type="button" class="aiw-ss-tl-btn is-danger" data-ss-tl-act="delete" data-ss-tl-id="' + escapeHtml(seg.id) + '">' +
+                '<i class="fa-regular fa-trash-can"></i> 删除' +
+              '</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+
+    return (
+      '<div class="aiw-st-group-title" style="margin-top:16px;">摘要时间线 · ' + ordered.length + ' 条</div>' +
+      '<div class="aiw-st-card aiw-st-pad">' +
+        '<div class="aiw-ss-timeline" id="aiw-ss-timeline">' + itemsHtml + '</div>' +
+      '</div>'
+    );
+  }
+
   // ===== 视图 7B：短期摘要独立页面 =====
   function renderShortSummaryHtml() {
     var ms = _ctx.memorySettings || {};
@@ -2984,7 +3321,12 @@
     var summaryTime = targetChat && targetChat.summaryUpdatedAt ? formatMemoryDate(targetChat.summaryUpdatedAt) : '';
 
     var chatSegments = targetChat && Array.isArray(targetChat.summarySegments) ? targetChat.summarySegments : [];
-    var activeSegmentCount = chatSegments.filter(function(s) { return s && s.status === 'active'; }).length;
+    var activeSegmentCount = chatSegments.filter(function(s) {
+      if (!s || s.status !== 'active' || !String(s.content || '').trim()) return false;
+      var idStr = String(s.id || '');
+      var isMan = !!(s.source === 'manual_written' || s.isManualWritten === true || idStr.indexOf('manual_') === 0);
+      return !isMan;
+    }).length;
     var mergedSegmentCount = chatSegments.filter(function(s) { return s && s.status === 'merged'; }).length;
 
     var chatSummaryTasks = targetChat
@@ -3144,7 +3486,7 @@
           '<select class="aiw-api-select" id="aiw-ss-chat-select">' +
             chats.map(function(c) {
               var selected = targetChat && c.id === targetChat.id ? ' selected' : '';
-              var hasSum = !!(c && (String(c.summary || '').trim() || (Array.isArray(c.summarySegments) && c.summarySegments.length > 0)));
+              var hasSum = !!(c && (String(c.summary || '').trim() || (Array.isArray(c.summarySegments) && c.summarySegments.some(function(s) { return s && (s.status === 'active' || s.status === 'merged') && String(s.content || '').trim(); }))));
               return '<option value="' + escapeHtml(c.id) + '"' + selected + '>' + escapeHtml(c.title || '新对话') + (hasSum ? '（已有摘要）' : '（暂无摘要）') + '</option>';
             }).join('') +
           '</select>' +
@@ -3227,13 +3569,15 @@
         )
         : '';
 
+      var timelineHtml = renderSummaryTimelineSectionHtml(targetChat, summaryText);
+
       mainBodyHtml = (
         '<div class="aiw-st-group-title" style="margin-top:16px;">摘要状态概览 · ' + escapeHtml(targetChat.title || '新对话') + '</div>' +
         '<div class="aiw-st-card aiw-st-pad">' +
           '<div class="aiw-rm-stats-row">' +
             '<div class="aiw-rm-stat"><span class="aiw-rm-stat-num">' + escapeHtml(summarizedRangeText) + '</span><span class="aiw-rm-stat-lbl">已摘要范围/条数</span></div>' +
             '<div class="aiw-rm-stat"><span class="aiw-rm-stat-num">' + unsummarizedCount + ' 条</span><span class="aiw-rm-stat-lbl">尚未摘要消息</span></div>' +
-            '<div class="aiw-rm-stat"><span class="aiw-ss-status-pill ' + escapeHtml(taskStatusCls) + '">' + escapeHtml(taskStatusText) + '</span><span class="aiw-rm-stat-lbl">摘要任务状态</span></div>' +
+            '<div class="aiw-rm-stat"><span class="aiw-ss-status-pill ' + escapeHtml(taskStatusCls) + '">' + escapeHtml(taskStatusText) + '</span><span class="aiw-ss-status-lbl">摘要任务状态</span></div>' +
           '</div>' +
           '<div class="aiw-ss-info-line">' +
             '<span>摘要生成时间</span>' +
@@ -3244,6 +3588,7 @@
 
         '<div class="aiw-st-group-title" style="margin-top:16px;">阶段性摘要</div>' +
         '<div class="aiw-st-card aiw-st-pad">' + summaryContentHtml + '</div>' +
+        timelineHtml +
         taskHistoryHtml
       );
     }
@@ -3265,14 +3610,201 @@
     );
   }
 
+  function openEditSummarySegmentModal(chatId, segId) {
+    var targetChat = (_ctx.chats || []).find(function(c) { return c && c.id === chatId; }) || resolveSummaryTargetChat();
+    if (!targetChat || !targetChat.id) {
+      notifyToast('未找到当前聊天');
+      return;
+    }
+    var segments = Array.isArray(targetChat.summarySegments) ? targetChat.summarySegments : [];
+    var seg = segments.find(function(item) { return item && item.id === segId; });
+    if (!seg) {
+      notifyToast('未找到要编辑的摘要片段');
+      return;
+    }
+    var meta = describeSummarySegment(seg);
+    var metaChips = [meta.sourceLabel, meta.timeText];
+    if (meta.rangeText) metaChips.push(meta.rangeText);
+
+    var bodyHtml =
+      '<div class="aiw-ss-edit-meta">' + escapeHtml(metaChips.join(' · ')) + '</div>' +
+      '<label class="aiw-field-label" for="aiw-ss-edit-seg-input">摘要内容</label>' +
+      '<textarea class="aiw-field-textarea" id="aiw-ss-edit-seg-input" rows="6" maxlength="1200" placeholder="请输入摘要内容..."></textarea>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ss-edit-seg-cancel">取消</button>' +
+      '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-ss-edit-seg-save">保存修改</button>';
+
+    var modal = showCustomModal('编辑摘要片段', bodyHtml, footerHtml);
+    if (!modal) return;
+    var inputEl = modal.querySelector('#aiw-ss-edit-seg-input');
+    var cancelBtn = modal.querySelector('#aiw-ss-edit-seg-cancel');
+    var saveBtn = modal.querySelector('#aiw-ss-edit-seg-save');
+    if (inputEl) {
+      inputEl.value = String(seg.content || '');
+      setTimeout(function() { inputEl.focus(); }, 20);
+    }
+    if (cancelBtn) cancelBtn.addEventListener('click', closeModalOverlay);
+
+    var isSaving = false;
+    if (saveBtn && inputEl) {
+      saveBtn.addEventListener('click', async function() {
+        var nextContent = String(inputEl.value || '').trim();
+        if (!nextContent) {
+          notifyToast('摘要内容不能为空');
+          inputEl.focus();
+          return;
+        }
+        if (isSaving) return;
+        isSaving = true;
+        saveBtn.disabled = true;
+        saveBtn.textContent = '保存中...';
+
+        try {
+          var latestChat = await S().getChat(targetChat.id);
+          if (!latestChat) {
+            throw new Error('聊天记录不存在');
+          }
+          var latestSegs = Array.isArray(latestChat.summarySegments) ? latestChat.summarySegments.slice() : [];
+          var foundIdx = -1;
+          for (var i = 0; i < latestSegs.length; i++) {
+            if (latestSegs[i] && latestSegs[i].id === segId) {
+              foundIdx = i;
+              break;
+            }
+          }
+          if (foundIdx === -1) {
+            closeModalOverlay();
+            notifyToast('该摘要片段已不存在');
+            await refreshAllData();
+            renderCurrentView();
+            return;
+          }
+
+          var nowTs = Date.now();
+          var origSeg = latestSegs[foundIdx];
+          latestSegs[foundIdx] = Object.assign({}, origSeg, {
+            content: nextContent.slice(0, 1200),
+            updatedAt: nowTs
+          });
+
+          var compiled = compileUpdatedChatSummaryFields(latestChat, latestSegs);
+          // 仅更新目标摘要片段与汇总展示，绝不改动 summaryUpToCount，防止旧消息被重复摘要
+          await S().saveChat({
+            id: latestChat.id,
+            summary: compiled.summary,
+            summaryLegacyBase: compiled.summaryLegacyBase,
+            summarySegments: latestSegs,
+            summaryUpdatedAt: nowTs,
+            updatedAt: latestChat.updatedAt || nowTs
+          });
+
+          closeModalOverlay();
+          await refreshAllData();
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast('摘要已更新');
+        } catch (err) {
+          console.warn('[AiWorkspaceSettings] edit summary segment failed:', err);
+          notifyToast('保存摘要修改失败，请稍后重试');
+          isSaving = false;
+          saveBtn.disabled = false;
+          saveBtn.textContent = '保存修改';
+        }
+      });
+    }
+  }
+
+  function confirmDeleteSummarySegment(chatId, segId) {
+    var targetChat = (_ctx.chats || []).find(function(c) { return c && c.id === chatId; }) || resolveSummaryTargetChat();
+    if (!targetChat || !targetChat.id) {
+      notifyToast('未找到当前聊天');
+      return;
+    }
+    var segments = Array.isArray(targetChat.summarySegments) ? targetChat.summarySegments : [];
+    var seg = segments.find(function(item) { return item && item.id === segId; });
+    if (!seg) {
+      notifyToast('未找到要删除的摘要片段');
+      return;
+    }
+    var meta = describeSummarySegment(seg);
+    var msgText = '确定要删除这条' + meta.sourceLabel +
+      (meta.rangeText ? ('（' + meta.rangeText + '）') : '') +
+      '吗？删除后仅移除选中的摘要片段，不会修改已摘要消息进度，旧消息不会被重复摘要。';
+
+    showConfirmModal('删除摘要片段', msgText, '确认删除', true, async function() {
+      try {
+        var latestChat = await S().getChat(targetChat.id);
+        if (!latestChat) return;
+        var latestSegs = Array.isArray(latestChat.summarySegments) ? latestChat.summarySegments : [];
+        var removedSeg = latestSegs.find(function(item) { return item && item.id === segId; });
+        if (!removedSeg) {
+          await refreshAllData();
+          renderCurrentView();
+          return;
+        }
+        var nextSegs = latestSegs.filter(function(item) { return item && item.id !== segId; });
+        var preservedUpToCount = Math.max(
+          Math.max(0, Math.floor(Number(latestChat.summaryUpToCount) || 0)),
+          Math.max(0, Math.floor(Number(removedSeg.endMessageIndex) || 0))
+        );
+        var compiled = compileUpdatedChatSummaryFields(latestChat, nextSegs);
+        var hasLiveOrLegacy = !!(compiled.summary || nextSegs.length);
+
+        await S().saveChat({
+          id: latestChat.id,
+          summary: compiled.summary,
+          summaryLegacyBase: compiled.summaryLegacyBase,
+          summarySegments: nextSegs,
+          summaryUpToCount: preservedUpToCount,
+          summaryUpdatedAt: hasLiveOrLegacy ? (latestChat.summaryUpdatedAt || Date.now()) : 0,
+          updatedAt: latestChat.updatedAt || Date.now()
+        });
+
+        if (_ctx.summaryTimelineExpandedIds) {
+          delete _ctx.summaryTimelineExpandedIds[segId];
+        }
+        await refreshAllData();
+        notifyWorkspaceStateChanged();
+        renderCurrentView();
+        notifyToast('已删除该摘要片段');
+      } catch (err) {
+        console.warn('[AiWorkspaceSettings] delete summary segment failed:', err);
+        notifyToast('删除摘要片段失败，请稍后重试');
+      }
+    });
+  }
+
   function bindShortSummaryEvents(layer) {
     var chatSelect = layer.querySelector('#aiw-ss-chat-select');
     if (chatSelect) {
       chatSelect.addEventListener('change', function() {
         _ctx.summarySelectedChatId = chatSelect.value;
+        _ctx.summaryTimelineExpandedIds = {};
         renderCurrentView();
       });
     }
+
+    layer.querySelectorAll('[data-ss-tl-act]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var act = btn.getAttribute('data-ss-tl-act');
+        var segId = String(btn.getAttribute('data-ss-tl-id') || '').trim();
+        var targetChat = resolveSummaryTargetChat();
+        if (!segId || !targetChat || !targetChat.id) return;
+
+        if (act === 'toggle') {
+          if (!_ctx.summaryTimelineExpandedIds || typeof _ctx.summaryTimelineExpandedIds !== 'object') {
+            _ctx.summaryTimelineExpandedIds = {};
+          }
+          _ctx.summaryTimelineExpandedIds[segId] = !_ctx.summaryTimelineExpandedIds[segId];
+          renderCurrentView();
+        } else if (act === 'edit') {
+          openEditSummarySegmentModal(targetChat.id, segId);
+        } else if (act === 'delete') {
+          confirmDeleteSummarySegment(targetChat.id, segId);
+        }
+      });
+    });
 
     var manualSummaryBtn = layer.querySelector('#aiw-ss-manual-summary');
     if (manualSummaryBtn) {
@@ -3318,22 +3850,37 @@
             saveBtn.textContent = '保存中...';
 
             try {
-              var segments = Array.isArray(targetChat.summarySegments) ? targetChat.summarySegments.slice() : [];
+              var latestChat = await S().getChat(targetChat.id) || targetChat;
+              var segments = Array.isArray(latestChat.summarySegments) ? latestChat.summarySegments.slice() : [];
+              var legacyBase = String(latestChat.summaryLegacyBase || '').trim();
+              if (!legacyBase && segments.length === 0 && String(latestChat.summary || '').trim()) {
+                legacyBase = String(latestChat.summary || '').trim();
+              }
+              var nowTs = Date.now();
+              var curUpTo = Number(latestChat.summaryUpToCount) || 0;
               var newSeg = {
-                id: 'manual_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-                startMessageIndex: Number(targetChat.summaryUpToCount) || 0,
-                endMessageIndex: Number(targetChat.summaryUpToCount) || 0,
-                content: val,
-                createdAt: Date.now(),
+                id: 'manual_' + nowTs + '_' + Math.random().toString(36).slice(2, 7),
+                startMessageIndex: curUpTo,
+                endMessageIndex: curUpTo,
+                content: val.slice(0, 1200),
+                createdAt: nowTs,
                 status: 'active',
                 source: 'manual_written',
                 isManualWritten: true
               };
               segments.push(newSeg);
 
+              var compiled = compileUpdatedChatSummaryFields(
+                Object.assign({}, latestChat, { summaryLegacyBase: legacyBase }),
+                segments
+              );
               await S().saveChat({
-                id: targetChat.id,
-                summarySegments: segments
+                id: latestChat.id,
+                summary: compiled.summary,
+                summaryLegacyBase: compiled.summaryLegacyBase,
+                summarySegments: segments,
+                summaryUpdatedAt: nowTs,
+                updatedAt: latestChat.updatedAt || nowTs
               });
 
               closeModalOverlay();
@@ -3356,58 +3903,66 @@
     var triggerSummaryBtn = layer.querySelector('#aiw-ss-trigger-summary');
     if (triggerSummaryBtn) {
       triggerSummaryBtn.addEventListener('click', async function() {
+        if (_ctx.triggerSummaryInFlight) {
+          notifyToast('摘要任务正在处理中，请稍候...');
+          return;
+        }
         var targetChat = resolveSummaryTargetChat();
         if (!targetChat || !targetChat.id) {
           notifyToast('请先选择一个有效的聊天');
           return;
         }
 
-        var existingTasks = Array.isArray(_ctx.memoryTasks) ? _ctx.memoryTasks : [];
-        var activeSumTask = existingTasks.find(function(t) {
-          return t && t.type === 'summarize_chat' && t.chatId === targetChat.id &&
-            (t.status === 'pending' || t.status === 'running' || t.status === 'retry_waiting');
-        });
-        if (activeSumTask) {
-          notifyToast('摘要任务正在处理中，请稍候...');
-          return;
-        }
-
-        var cleanMsgs = targetChat && Array.isArray(targetChat.messages)
-          ? targetChat.messages.filter(function(m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim(); })
-          : [];
-        var alreadyUpTo = Math.max(0, Math.floor(Number(targetChat.summaryUpToCount) || 0));
-        var segs = Array.isArray(targetChat.summarySegments) ? targetChat.summarySegments : [];
-        for (var si = 0; si < segs.length; si++) {
-          var s = segs[si];
-          if (!s || typeof s !== 'object') continue;
-          var endIdx = Math.max(0, Math.floor(Number(s.endMessageIndex) || 0));
-          if (endIdx > alreadyUpTo) alreadyUpTo = endIdx;
-        }
-
-        var ms = _ctx.memorySettings || {};
-        var keepRecent = Number(ms.recentRawMessagesLimit) || 20;
-        var targetUpTo = Math.max(0, cleanMsgs.length - keepRecent);
-
-        if (targetUpTo <= alreadyUpTo) {
-          notifyToast('暂无需要摘要的新消息');
-          return;
-        }
-
         var prevHtml = triggerSummaryBtn.innerHTML;
+        _ctx.triggerSummaryInFlight = true;
         triggerSummaryBtn.disabled = true;
         triggerSummaryBtn.textContent = '摘要生成中...';
 
         try {
+          var liveTasks = typeof S().listMemoryTasks === 'function'
+            ? await S().listMemoryTasks()
+            : (Array.isArray(_ctx.memoryTasks) ? _ctx.memoryTasks : []);
+          var activeSumTask = liveTasks.find(function(t) {
+            return t && t.type === 'summarize_chat' && t.chatId === targetChat.id &&
+              (t.status === 'pending' || t.status === 'running' || t.status === 'retry_waiting');
+          });
+          if (activeSumTask) {
+            notifyToast('摘要任务正在处理中，请稍候...');
+            return;
+          }
+
+          var freshChat = typeof S().getChat === 'function' ? (await S().getChat(targetChat.id) || targetChat) : targetChat;
+          var cleanMsgs = freshChat && Array.isArray(freshChat.messages)
+            ? freshChat.messages.filter(function(m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim(); })
+            : [];
+          var alreadyUpTo = Math.max(0, Math.floor(Number(freshChat.summaryUpToCount) || 0));
+          var segs = Array.isArray(freshChat.summarySegments) ? freshChat.summarySegments : [];
+          for (var si = 0; si < segs.length; si++) {
+            var s = segs[si];
+            if (!s || typeof s !== 'object') continue;
+            var endIdx = Math.max(0, Math.floor(Number(s.endMessageIndex) || 0));
+            if (endIdx > alreadyUpTo) alreadyUpTo = endIdx;
+          }
+
+          var ms = _ctx.memorySettings || {};
+          var keepRecent = Number(ms.recentRawMessagesLimit) || 20;
+          var targetUpTo = Math.max(0, cleanMsgs.length - keepRecent);
+
+          if (targetUpTo <= alreadyUpTo) {
+            notifyToast('暂无需要摘要的新消息');
+            return;
+          }
+
           var intervalMsgs = Number(ms.summaryIntervalMessages) || 20;
           var chunkCap = Math.max(intervalMsgs, 40);
           var endIndex = Math.min(targetUpTo, alreadyUpTo + chunkCap);
 
           await S().enqueueMemoryTask({
             type: 'summarize_chat',
-            turnKey: 'manual_sum:' + String(targetChat.id) + ':' + alreadyUpTo + ':' + endIndex + ':' + Date.now(),
-            chatId: targetChat.id,
-            chatTitle: targetChat.title || '',
-            projectId: targetChat.projectId || '',
+            turnKey: 'manual_sum:' + String(freshChat.id) + ':' + alreadyUpTo + ':' + endIndex + ':' + Date.now(),
+            chatId: freshChat.id,
+            chatTitle: freshChat.title || '',
+            projectId: freshChat.projectId || '',
             userId: 'local_user',
             status: 'pending',
             memoryWritten: false,
@@ -3419,19 +3974,41 @@
             }
           });
 
+          var qRes = null;
           if (M() && typeof M().processMemoryTaskQueue === 'function') {
-            await M().processMemoryTaskQueue();
+            qRes = await M().processMemoryTaskQueue();
           }
 
           await refreshAllData();
           notifyWorkspaceStateChanged();
           renderCurrentView();
-          notifyToast('立即摘要生成完成');
+
+          if (qRes && qRes.busy) {
+            notifyToast('后台摘要任务正在运行，已加入队列稍后完成');
+          } else {
+            var failedForChat = qRes && Array.isArray(qRes.failedTasks)
+              ? qRes.failedTasks.find(function(t) { return t && t.chatId === freshChat.id && (t.type === 'summarize_chat' || t.type === 'merge_summary'); })
+              : null;
+            var summarizedForChat = qRes && Array.isArray(qRes.summarizedChats)
+              ? qRes.summarizedChats.some(function(c) { return c && c.id === freshChat.id; })
+              : false;
+            if (failedForChat) {
+              notifyToast('立即摘要生成失败：' + (failedForChat.lastError || '请检查摘要模型配置或稍后重试'));
+            } else if (summarizedForChat) {
+              notifyToast('立即摘要生成完成');
+            } else {
+              notifyToast('暂无需要摘要的新消息');
+            }
+          }
         } catch (err) {
           console.warn('[AiWorkspaceSettings] manual summarize failed:', err);
           notifyToast('立即摘要生成失败，请稍后重试');
-          triggerSummaryBtn.disabled = false;
-          triggerSummaryBtn.innerHTML = prevHtml;
+        } finally {
+          _ctx.triggerSummaryInFlight = false;
+          if (triggerSummaryBtn && triggerSummaryBtn.isConnected) {
+            triggerSummaryBtn.disabled = false;
+            triggerSummaryBtn.innerHTML = prevHtml;
+          }
         }
       });
     }
@@ -6254,6 +6831,8 @@
     _ctx.activeChatId = (options && options.activeChatId) || '';
     _ctx.recentSelectedChatId = _ctx.activeChatId || '';
     _ctx.summarySelectedChatId = _ctx.activeChatId || '';
+    _ctx.summaryTimelineExpandedIds = {};
+    _ctx.triggerSummaryInFlight = false;
     _ctx.favoritesSearchQuery = '';
     _ctx.favoritesRoleFilter = 'all';
     _ctx.summaryApiPanelOpen = false;

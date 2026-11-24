@@ -342,6 +342,51 @@
     return head.trimEnd();
   }
 
+  function safeSlicePromptTail(text, maxLen) {
+    var src = String(text || '');
+    if (maxLen <= 0) return '';
+    if (src.length <= maxLen) return src;
+    var start = src.length - maxLen;
+    var firstCode = src.charCodeAt(start);
+    if (firstCode >= 0xDC00 && firstCode <= 0xDFFF) {
+      start++;
+    }
+    var tail = src.slice(start);
+    var firstNewline = tail.indexOf('\n');
+    if (firstNewline > 0 && firstNewline <= Math.floor(tail.length * 0.22)) {
+      tail = tail.slice(firstNewline + 1);
+    }
+    return tail.trimStart();
+  }
+
+  function trimSummaryToBudget(summaryText, maxChars) {
+    var clean = String(summaryText || '').trim();
+    var limit = Math.floor(Number(maxChars) || 0);
+    if (!clean || limit <= 80) return '';
+    if (clean.length <= limit) return clean;
+    var lines = clean.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
+    if (lines.length > 1) {
+      var kept = [];
+      var used = 0;
+      for (var i = lines.length - 1; i >= 0; i--) {
+        var line = lines[i];
+        var need = line.length + (kept.length ? 1 : 0);
+        if (used + need <= limit) {
+          kept.unshift(line);
+          used += need;
+        } else if (!kept.length && limit > 40) {
+          kept.unshift('…' + safeSlicePromptTail(line, limit - 1));
+          break;
+        } else {
+          break;
+        }
+      }
+      var joined = kept.join('\n');
+      return joined.length > limit ? (safeSlicePromptText(joined, limit - 1) + '…') : joined;
+    }
+    return '…' + safeSlicePromptTail(clean, limit - 1);
+  }
+
   function buildWorldBookPromptSection(worldBookEntries, options) {
     var list = Array.isArray(worldBookEntries) ? worldBookEntries : [];
     if (!list.length) return '';
@@ -642,6 +687,21 @@
     return sections.join('\n\n');
   }
 
+  var DEFAULT_CONTEXT_BUDGET_BY_STRATEGY = {
+    token_saver: 14000,
+    natural: 26000,
+    recall_more: 38000
+  };
+
+  function resolveTotalContextBudget(opts) {
+    var explicit = Number(opts && opts.maxTotalContextChars);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return Math.max(400, Math.floor(explicit));
+    }
+    var strategy = String((opts && opts.strategy) || 'natural').trim();
+    return DEFAULT_CONTEXT_BUDGET_BY_STRATEGY[strategy] || DEFAULT_CONTEXT_BUDGET_BY_STRATEGY.natural;
+  }
+
   function composeMessages(options) {
     var opts = options && typeof options === 'object' ? options : {};
     var history = Array.isArray(opts.historyMessages) ? opts.historyMessages : [];
@@ -653,36 +713,132 @@
       ? Math.max(0, Math.round(parsedLimit))
       : 6;
 
-    // 7. 近期原始消息：若存在短期摘要且覆盖前 summaryUpToCount 条，则只取未摘要的最近原始消息
+    // 7. 近期原始消息：按与 summaryUpToCount 一致的非空 user/assistant 清洗序列切片，避免空白/错误占位消息错位或重复注入已摘要消息
+    var cleanHistory = [];
+    for (var hi = 0; hi < history.length; hi++) {
+      var hm = history[hi];
+      if (!hm || (hm.role !== 'user' && hm.role !== 'assistant')) continue;
+      if (!String(hm.content || '').trim()) continue;
+      cleanHistory.push(hm);
+    }
+
     var recentSlice = [];
     if (maxRecent > 0) {
-      recentSlice = history;
-      if (shortTermSummary && summaryUpToCount > 0 && summaryUpToCount < history.length) {
-        recentSlice = history.slice(summaryUpToCount);
+      recentSlice = cleanHistory;
+      if (shortTermSummary && summaryUpToCount > 0) {
+        recentSlice = cleanHistory.slice(summaryUpToCount);
       }
       if (recentSlice.length > maxRecent) {
         recentSlice = recentSlice.slice(recentSlice.length - maxRecent);
       }
     }
 
-    var systemText = composeSystemPrompt(opts);
-    var out = [];
-    if (systemText) {
-      out.push({ role: 'system', content: systemText });
-    }
-
+    var workingRecent = [];
     for (var i = 0; i < recentSlice.length; i++) {
       var msg = recentSlice[i];
       if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue;
       var text = String(msg.content || '').trim();
       if (!text) continue;
       if (msg.error && !msg.content) continue;
-      out.push({ role: msg.role, content: String(msg.content) });
+      workingRecent.push({ role: msg.role, content: String(msg.content) });
     }
 
-    // 8. 当前用户输入
-    if (opts.userContent != null && String(opts.userContent).trim()) {
-      out.push({ role: 'user', content: String(opts.userContent) });
+    var userMsgText = (opts.userContent != null && String(opts.userContent).trim()) ? String(opts.userContent) : '';
+    var workingCross = Array.isArray(opts.crossChatContexts) ? opts.crossChatContexts.slice() : [];
+    var workingMemories = Array.isArray(opts.memories) ? opts.memories.slice() : [];
+    var workingSummary = shortTermSummary;
+    var totalBudget = resolveTotalContextBudget(opts);
+
+    var buildSystemWithWorking = function() {
+      return composeSystemPrompt(Object.assign({}, opts, {
+        shortTermSummary: workingSummary,
+        memories: workingMemories,
+        crossChatContexts: workingCross
+      }));
+    };
+    var calcRecentChars = function(list) {
+      var sum = 0;
+      for (var ri = 0; ri < list.length; ri++) {
+        sum += String((list[ri] && list[ri].content) || '').length;
+      }
+      return sum;
+    };
+
+    var systemText = buildSystemWithWorking();
+    var totalChars = systemText.length + calcRecentChars(workingRecent) + userMsgText.length;
+
+    if (totalChars > totalBudget) {
+      // 1) 优先裁剪最低优先级的跨窗口历史参考（从尾部相关性最低项移除）
+      while (totalChars > totalBudget && workingCross.length > 0) {
+        workingCross.pop();
+        systemText = buildSystemWithWorking();
+        totalChars = systemText.length + calcRecentChars(workingRecent) + userMsgText.length;
+      }
+
+      // 2) 若近期原始消息过多过长，先收窄超出最近 4 条锚点窗口的较早原始消息，避免挤掉长期记忆与摘要
+      while (totalChars > totalBudget && workingRecent.length > 4) {
+        workingRecent.shift();
+        totalChars = systemText.length + calcRecentChars(workingRecent) + userMsgText.length;
+      }
+
+      // 3) 若仍超预算，按最新行优先裁剪短期摘要（空间不足 80 字时整段省略，避免残片）
+      if (totalChars > totalBudget && workingSummary) {
+        var overage = totalChars - totalBudget;
+        var targetSummaryLen = workingSummary.length - overage;
+        workingSummary = trimSummaryToBudget(workingSummary, targetSummaryLen);
+        systemText = buildSystemWithWorking();
+        totalChars = systemText.length + calcRecentChars(workingRecent) + userMsgText.length;
+      }
+
+      // 4) 若仍超预算，从尾部逐条移除相关性最低的长期记忆，保住高相关核心记忆与近期对话
+      while (totalChars > totalBudget && workingMemories.length > 0) {
+        workingMemories.pop();
+        systemText = buildSystemWithWorking();
+        totalChars = systemText.length + calcRecentChars(workingRecent) + userMsgText.length;
+      }
+
+      // 5) 极端长对话下，逐步收缩更早近期消息（优先保住最新一轮与当前用户输入/必要系统指令）
+      while (totalChars > totalBudget && workingRecent.length > 2) {
+        workingRecent.shift();
+        totalChars = systemText.length + calcRecentChars(workingRecent) + userMsgText.length;
+      }
+      while (totalChars > totalBudget && workingRecent.length > 1) {
+        workingRecent.shift();
+        totalChars = systemText.length + calcRecentChars(workingRecent) + userMsgText.length;
+      }
+      if (totalChars > totalBudget && workingRecent.length === 1) {
+        var allowRecent = Math.max(0, totalBudget - systemText.length - userMsgText.length);
+        if (allowRecent < 60) {
+          workingRecent = [];
+        } else {
+          var truncPrefix = '…（较早内容已截断）\n';
+          var tailBudget = allowRecent - truncPrefix.length;
+          if (tailBudget > 24) {
+            workingRecent[0] = {
+              role: workingRecent[0].role,
+              content: truncPrefix + safeSlicePromptTail(workingRecent[0].content, tailBudget)
+            };
+          } else {
+            workingRecent[0] = {
+              role: workingRecent[0].role,
+              content: safeSlicePromptTail(workingRecent[0].content, allowRecent)
+            };
+          }
+        }
+      }
+    }
+
+    var out = [];
+    if (systemText) {
+      out.push({ role: 'system', content: systemText });
+    }
+    for (var j = 0; j < workingRecent.length; j++) {
+      out.push(workingRecent[j]);
+    }
+
+    // 8. 当前用户输入（最高优先级完整保留）
+    if (userMsgText) {
+      out.push({ role: 'user', content: userMsgText });
     }
     return out;
   }

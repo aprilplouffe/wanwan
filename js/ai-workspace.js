@@ -2579,6 +2579,8 @@
         var matchedSum = qRes.summarizedChats.find(function(c) { return c && c.id === _state.activeChat.id; });
         if (matchedSum) {
           _state.activeChat.summary = matchedSum.summary || '';
+          _state.activeChat.summaryLegacyBase = matchedSum.summaryLegacyBase || '';
+          _state.activeChat.summarySegments = Array.isArray(matchedSum.summarySegments) ? matchedSum.summarySegments.slice() : [];
           _state.activeChat.summaryUpToCount = matchedSum.summaryUpToCount || 0;
           _state.activeChat.summaryUpdatedAt = matchedSum.summaryUpdatedAt || 0;
         }
@@ -2609,6 +2611,16 @@
   if (typeof global.addEventListener === 'function') {
     global.addEventListener('aiw:memory-queue-updated', function(ev) {
       var qRes = (ev && ev.detail) || {};
+      if (Array.isArray(qRes.summarizedChats) && _state.activeChat) {
+        var matchedRetrySum = qRes.summarizedChats.find(function(c) { return c && c.id === _state.activeChat.id; });
+        if (matchedRetrySum) {
+          _state.activeChat.summary = matchedRetrySum.summary || '';
+          _state.activeChat.summaryLegacyBase = matchedRetrySum.summaryLegacyBase || '';
+          _state.activeChat.summarySegments = Array.isArray(matchedRetrySum.summarySegments) ? matchedRetrySum.summarySegments.slice() : [];
+          _state.activeChat.summaryUpToCount = matchedRetrySum.summaryUpToCount || 0;
+          _state.activeChat.summaryUpdatedAt = matchedRetrySum.summaryUpdatedAt || 0;
+        }
+      }
       var addedCount = qRes.addedCount || 0;
       var updatedCount = qRes.updatedCount || 0;
       var deletedCount = qRes.deletedCount || 0;
@@ -2696,7 +2708,8 @@
       memories: memContext.memories || [],
       crossChatContexts: memContext.crossChatContexts || [],
       deepThink: _state.deepThinkEnabled,
-      memoryTurnNotice: (turnOpts && turnOpts.memoryTurnNotice) || ''
+      memoryTurnNotice: (turnOpts && turnOpts.memoryTurnNotice) || '',
+      strategy: (memContext.settings && memContext.settings.strategy) || 'natural'
     });
 
     var controller = new AbortController();
