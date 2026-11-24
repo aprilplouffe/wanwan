@@ -1169,9 +1169,10 @@
     return 'follow_chat';
   }
 
-  // 按 summaryModelMode 解析摘要/合并任务的模型配置（供 summarize_chat 与 merge_summary 共用，重试时实时重读）：
-  // 1) follow_chat：根据 task.chatId 读取所属聊天的 chat.model，经 resolveEffectiveApiConfig({ chatModel }) 获取配置；
-  // 2) independent：调用 getSummaryApiConfig()；完整时使用其 Base URL / API Key / 模型 / 温度；不完整时明确报错，绝不退回聊天模型。
+  // 按优先级解析摘要/合并任务的模型配置（供 summarize_chat 与 merge_summary 共用，重试时实时重读）：
+  // 1) 已启用且完整配置的独立摘要 API（可选，不强制配置）；
+  // 2) 知屿副 API（知屿专属 API）；
+  // 3) 弯弯机主 API（由 ai.resolveEffectiveApiConfig 自动按 专属 API -> 主 API 顺序复用）。
   async function resolveChatSummaryTaskApiConfig(chatId, settings) {
     var store = S();
     var ai = AI();
@@ -1193,25 +1194,26 @@
         modelName &&
         (typeof (store && store.isSummaryApiComplete) !== 'function' || store.isSummaryApiComplete(indCfg))
       );
-      if (!isComplete) {
-        throw new Error('独立摘要模型配置不完整，请先完善 Base URL、API Key 和模型名称');
+      if (isComplete) {
+        var rawTemp = Number(indCfg.temperature);
+        var summaryTemp = Number.isFinite(rawTemp)
+          ? Math.round(Math.max(0, Math.min(2, rawTemp)) * 100) / 100
+          : 0.1;
+        return {
+          url: baseUrl,
+          key: apiKey,
+          model: modelName,
+          temperature: summaryTemp,
+          source: 'summary_independent',
+          mode: 'independent',
+          configured: true
+        };
       }
-      var rawTemp = Number(indCfg.temperature);
-      var summaryTemp = Number.isFinite(rawTemp)
-        ? Math.round(Math.max(0, Math.min(2, rawTemp)) * 100) / 100
-        : 0.1;
-      return {
-        url: baseUrl,
-        key: apiKey,
-        model: modelName,
-        temperature: summaryTemp,
-        source: 'summary_independent',
-        mode: 'independent',
-        configured: true
-      };
     }
 
-    if (!ai || typeof ai.resolveEffectiveApiConfig !== 'function') return null;
+    if (!ai || typeof ai.resolveEffectiveApiConfig !== 'function') {
+      throw new Error('摘要请求模块未就绪，请稍后重试');
+    }
     var chatModel = '';
     if (chatId && store && typeof store.getChat === 'function') {
       var targetChat = await store.getChat(chatId);
@@ -1220,10 +1222,10 @@
       }
     }
     var followApi = await ai.resolveEffectiveApiConfig({ chatModel: chatModel });
-    if (followApi && typeof followApi === 'object') {
-      return Object.assign({}, followApi, { mode: 'follow_chat' });
+    if (!followApi || !followApi.configured || !followApi.url || !followApi.key || !followApi.model) {
+      throw new Error('尚未配置可用的摘要 API（请在「知屿专属 API」或弯弯机主设置中配置 URL、API Key 与模型）');
     }
-    return followApi;
+    return Object.assign({}, followApi, { mode: 'follow_chat' });
   }
 
   async function summarizeChatSegment(options) {
@@ -1295,7 +1297,11 @@
           '\n\n请仅基于上述对话片段，按「剧情经过」与「长期要紧」结构输出本段第三人称客观剧情摘要（不要将附加摘要要求本身写入摘要正文）：';
       }
       var segmentText = '';
-      if (ai && typeof ai.requestChatCompletion === 'function' && apiConfig && apiConfig.url && apiConfig.key) {
+      var hasReadyApi = !!(ai && typeof ai.requestChatCompletion === 'function' && apiConfig && apiConfig.url && apiConfig.key && apiConfig.model);
+      if (!hasReadyApi && !opts.allowLocalFallback) {
+        throw new Error('尚未配置可用的摘要 API（请在「知屿专属 API」或弯弯机主设置中配置 URL、API Key 与模型）');
+      }
+      if (hasReadyApi) {
         try {
           var res = await ai.requestChatCompletion({
             apiConfig: apiConfig,
@@ -1322,6 +1328,9 @@
       }
 
       if (!segmentText) {
+        if (!opts.allowLocalFallback) {
+          throw new Error('摘要模型返回内容为空，请稍后重试');
+        }
         segmentText = buildLocalFallbackSegmentSummary(deltaMsgs);
       }
       segmentText = safeSliceMemoryText(redactApiSecret(segmentText, apiConfig && apiConfig.key).trim(), MAX_SINGLE_SEGMENT_CHARS);
@@ -1417,7 +1426,11 @@
     var requestTemp = (apiConfig && apiConfig.mode === 'independent' && Number.isFinite(Number(apiConfig.temperature)))
       ? Number(apiConfig.temperature)
       : 0.1;
-    if (ai && typeof ai.requestChatCompletion === 'function' && apiConfig && apiConfig.url && apiConfig.key) {
+    var hasReadyApi = !!(ai && typeof ai.requestChatCompletion === 'function' && apiConfig && apiConfig.url && apiConfig.key && apiConfig.model);
+    if (!hasReadyApi && !allowLocalFallback) {
+      throw new Error('尚未配置可用的摘要 API（请在「知屿专属 API」或弯弯机主设置中配置 URL、API Key 与模型）');
+    }
+    if (hasReadyApi) {
       try {
         var res = await ai.requestChatCompletion({
           apiConfig: apiConfig,
@@ -1451,6 +1464,9 @@
     }
 
     if (!mergedText) {
+      if (!allowLocalFallback) {
+        throw new Error('摘要合并模型返回内容为空，请稍后重试');
+      }
       mergedText = buildLocalFallbackMergedSummary(batchEntries.map(function(e) { return { content: e.text }; }));
     }
     return safeSliceMemoryText(redactApiSecret(mergedText, apiConfig && apiConfig.key).trim(), MAX_MERGED_SUMMARY_CHARS);
@@ -5914,7 +5930,7 @@
 
       for (var i = 0; i < runnable.length; i++) {
         var task = runnable[i];
-        await store.updateMemoryTask(task.id, { status: 'running' });
+        await store.updateMemoryTask(task.id, { status: 'running', resultSummary: '' });
 
         try {
           if (task.type === 'extract_memory' || task.type === 'explicit_memory' || task.type === 'explicit_update') {
@@ -6068,6 +6084,7 @@
             attempts: nextAttempts,
             memoryWritten: false,
             lastError: errMsg,
+            resultSummary: willRetry ? '等待自动重试' : '执行失败',
             diagnostics: failDiag,
             nextRetryAt: willRetry ? (Date.now() + backoffMs) : 0
           });
@@ -6115,6 +6132,7 @@
       if (t && (t.status === 'failed' || t.status === 'retry_waiting')) {
         await store.updateMemoryTask(t.id, {
           status: 'pending',
+          resultSummary: '',
           nextRetryAt: 0,
           maxAttempts: Math.max((t.maxAttempts || 3), (t.attempts || 0) + 2)
         });
