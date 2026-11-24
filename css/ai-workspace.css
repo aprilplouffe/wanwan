@@ -5581,3 +5581,92 @@
   padding: 4px 8px;
   font-size: 11px;
 }
+
+/* 7-A3: 聊天中 AI 自动调用插件记录卡片 */
+.aiw-tool-calls-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+  width: 100%;
+}
+
+.aiw-tool-call-item {
+  border: 1px solid var(--aiw-border, rgba(148, 163, 184, 0.25));
+  background: var(--aiw-surface-soft, rgba(148, 163, 184, 0.08));
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.aiw-tool-call-item.is-error {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.aiw-tool-call-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aiw-tool-call-name {
+  font-weight: 600;
+  color: var(--aiw-text, #1e293b);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.aiw-tool-call-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.12);
+  color: var(--aiw-accent, #0284c7);
+}
+
+.aiw-tool-call-badge.is-success {
+  background: rgba(16, 185, 129, 0.14);
+  color: #059669;
+}
+
+.aiw-tool-call-badge.is-error {
+  background: rgba(239, 68, 68, 0.14);
+  color: #dc2626;
+}
+
+.aiw-tool-call-summary {
+  margin-top: 4px;
+  color: var(--aiw-muted, #64748b);
+  word-break: break-word;
+}
+
+.aiw-tool-call-details {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--aiw-muted, #64748b);
+}
+
+.aiw-tool-call-details summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.aiw-tool-call-kv {
+  margin-top: 4px;
+}
+
+.aiw-tool-call-kv pre,
+.aiw-tool-call-kv code {
+  margin: 2px 0 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
