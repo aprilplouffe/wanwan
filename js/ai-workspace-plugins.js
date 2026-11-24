@@ -1459,7 +1459,314 @@
       ]
     });
 
+    registerPlugin({
+      id: 'builtin_rp_random_event',
+      name: '随机事件',
+      category: CATEGORY_BUILTIN,
+      description: '结合当前聊天的角色、世界观与剧情上下文，生成不篡改既定剧情的随机事件建议。',
+      version: '1.0.0',
+      author: '知屿内置',
+      defaultEnabled: true,
+      permissions: {
+        readOnly: true,
+        scopes: [PERMISSION_SCOPES.READ_ONLY],
+        requiresConfirmation: false
+      },
+      tools: [
+        {
+          name: 'generate_random_event',
+          title: '生成随机事件建议',
+          description: '读取当前聊天的角色设定、世界书与上下文，生成随机事件建议（仅作建议，不修改剧情）。',
+          parameters: {
+            type: 'object',
+            properties: {
+              sceneHint: { type: 'string', description: '可选：当前场景或方向提示，如“雨夜街头”' },
+              tone: { type: 'string', description: '可选：期望氛围，如“日常”“悬疑”“温馨”' }
+            },
+            required: []
+          },
+          execute: async function(params, execContext) {
+            var ctx = await collectChatRoleplayContext(execContext, params);
+            return extractRoleplayRandomEventSuggestion(ctx, params);
+          }
+        }
+      ]
+    });
+
+    registerPlugin({
+      id: 'builtin_rp_story_state',
+      name: '剧情状态',
+      category: CATEGORY_BUILTIN,
+      description: '只读整理当前聊天已有的人物关系、所在地点、当前事件与未解决事项，不编造也不修改记录。',
+      version: '1.0.0',
+      author: '知屿内置',
+      defaultEnabled: true,
+      permissions: {
+        readOnly: true,
+        scopes: [PERMISSION_SCOPES.READ_ONLY],
+        requiresConfirmation: false
+      },
+      tools: [
+        {
+          name: 'get_story_state',
+          title: '整理当前剧情状态',
+          description: '读取当前聊天已有记录，只读整理人物关系、所在地点、当前事件与未解决事项。',
+          parameters: {
+            type: 'object',
+            properties: {
+              focus: { type: 'string', description: '可选：重点关注的方面，如“人物关系”“所在地点”“未解决事项”' }
+            },
+            required: []
+          },
+          execute: async function(params, execContext) {
+            var ctx = await collectChatRoleplayContext(execContext, params);
+            return extractRoleplayStoryState(ctx, params);
+          }
+        }
+      ]
+    });
+
     registerReservedMcpPlaceholder();
+  }
+
+
+  // ===== 7-A5: 角色扮演专属内置插件（严格绑定当前 chatId，只读不篡改剧情/记忆） =====
+  async function collectChatRoleplayContext(execContext, params) {
+    var ctx = execContext && typeof execContext === 'object' ? execContext : {};
+    var p = params && typeof params === 'object' ? params : {};
+    var targetChatId = String(ctx.chatId || p.chatId || '').trim();
+    if (!targetChatId) {
+      throw new Error('未绑定当前聊天（请先打开或选择一个对话后再使用该插件）');
+    }
+    var st = S();
+    if (!st || typeof st.getChat !== 'function') {
+      throw new Error('存储模块未就绪，无法读取当前聊天上下文');
+    }
+    var chat = await st.getChat(targetChatId);
+    if (!chat) {
+      throw new Error('未找到对应的聊天记录：' + targetChatId);
+    }
+
+    var preset = null;
+    if (chat.presetId && typeof st.getPreset === 'function') {
+      try { preset = await st.getPreset(chat.presetId); } catch (_) {}
+    }
+    if (!preset && chat.presetSnapshot) {
+      preset = chat.presetSnapshot;
+    }
+    var profile = typeof st.getProfile === 'function' ? (await st.getProfile()) : null;
+
+    var allMsgs = Array.isArray(chat.messages) ? chat.messages : [];
+    var validMsgs = allMsgs.filter(function(m) {
+      return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim();
+    });
+    var recentMessages = validMsgs.slice(-12);
+
+    var summaryText = String(chat.summary || '').trim();
+    if (!summaryText && Array.isArray(chat.summarySegments) && chat.summarySegments.length) {
+      summaryText = chat.summarySegments
+        .filter(function(seg) { return seg && seg.status === 'active' && seg.content; })
+        .map(function(seg) { return seg.content; })
+        .join('\n');
+    }
+
+    var memories = [];
+    if (typeof st.listMemories === 'function') {
+      try {
+        var allMems = await st.listMemories();
+        memories = (allMems || []).filter(function(m) {
+          if (!m || !m.content) return false;
+          var mCid = String(m.chatId || m.sourceChatId || '').trim();
+          return mCid === targetChatId;
+        });
+      } catch (_) {}
+    }
+
+    var worldBookEntries = [];
+    var effectiveBooks = [];
+    if (typeof st.matchWorldBookEntries === 'function') {
+      try {
+        var wbRes = await st.matchWorldBookEntries({
+          preset: preset,
+          messages: recentMessages,
+          userInput: String(p.sceneHint || p.focus || '')
+        });
+        if (wbRes) {
+          worldBookEntries = Array.isArray(wbRes.matchedEntries) ? wbRes.matchedEntries : [];
+          effectiveBooks = Array.isArray(wbRes.effectiveBooks) ? wbRes.effectiveBooks : [];
+        }
+      } catch (_) {}
+    }
+
+    return {
+      chatId: targetChatId,
+      chat: chat,
+      preset: preset,
+      profile: profile,
+      validMessageCount: validMsgs.length,
+      recentMessages: recentMessages,
+      summaryText: summaryText,
+      memories: memories,
+      worldBookEntries: worldBookEntries,
+      effectiveBooks: effectiveBooks
+    };
+  }
+
+  function extractRoleplayRandomEventSuggestion(ctx, params) {
+    var p = params && typeof params === 'object' ? params : {};
+    var sceneHint = String(p.sceneHint || '').trim();
+    var tone = String(p.tone || '').trim();
+    var charName = (ctx.preset && ctx.preset.name) ? String(ctx.preset.name).trim() : '角色';
+    var userName = (ctx.profile && ctx.profile.name) ? String(ctx.profile.name).trim() : '你';
+
+    var wbKeywords = [];
+    var wbTitles = [];
+    (ctx.worldBookEntries || []).slice(0, 5).forEach(function(e) {
+      if (e && e.title) wbTitles.push(String(e.title));
+      if (e && Array.isArray(e.keywords)) {
+        e.keywords.slice(0, 2).forEach(function(k) {
+          if (k) wbKeywords.push(String(k));
+        });
+      }
+    });
+
+    var anchorText = sceneHint ||
+      (wbKeywords.length ? wbKeywords[0] : '') ||
+      (ctx.recentMessages.length ? String(ctx.recentMessages[ctx.recentMessages.length - 1].content || '').replace(/\s+/g, ' ').slice(0, 28) : '') ||
+      (ctx.chat.title || '当前场景');
+
+    var templates = [
+      {
+        title: '环境细节变化',
+        build: function() {
+          return '围绕「' + anchorText + '」，周围突然出现轻微的氛围变化（如天气转折、灯光闪烁或远处的声响），给' + charName + '与' + userName + '一个自然接话或互动的契机。';
+        }
+      },
+      {
+        title: '意外线索或物件出现',
+        build: function() {
+          var refHint = wbTitles.length ? ('（可呼应设定「' + wbTitles[0] + '」）') : '';
+          return '在当前情境中，' + charName + '或' + userName + '无意间留意到一件与「' + anchorText + '」相关的旧物、便签或微弱异常' + refHint + '，可供推进探索。';
+        }
+      },
+      {
+        title: '角色情绪与微动作呼应',
+        build: function() {
+          return charName + '因「' + anchorText + '」联想到过去的某段记忆或细节，神情或语气出现细微变化，等待' + userName + '察觉并追问。';
+        }
+      },
+      {
+        title: '突发小插曲',
+        build: function() {
+          return '一个不破坏主线的小插曲打断了原本的节奏（如路人经过、消息提示或时间节点临近），促使' + charName + '和' + userName + '做出即时反应。';
+        }
+      }
+    ];
+
+    var pickIdx = getSecureRandomInt(0, templates.length - 1);
+    var picked = templates[pickIdx];
+    return {
+      chatId: ctx.chatId,
+      isSuggestionOnly: true,
+      mutatesStory: false,
+      characterName: charName,
+      userName: userName,
+      tone: tone || '贴合当前氛围',
+      sceneAnchor: anchorText,
+      worldBookRefs: wbTitles,
+      eventTitle: picked.title,
+      eventSuggestion: picked.build(),
+      integrationTip: '此事件仅为剧情建议，未修改既定剧情或聊天记录，可自然融入对话或忽略。'
+    };
+  }
+
+  function extractRoleplayStoryState(ctx, params) {
+    var p = params && typeof params === 'object' ? params : {};
+    var focus = String(p.focus || '').trim();
+    var charName = (ctx.preset && ctx.preset.name) ? String(ctx.preset.name).trim() : '';
+    var userName = (ctx.profile && ctx.profile.name) ? String(ctx.profile.name).trim() : '';
+
+    var corpusLines = [];
+    if (ctx.summaryText) {
+      ctx.summaryText.split(/\r?\n/).forEach(function(line) {
+        var t = line.trim();
+        if (t) corpusLines.push({ source: '短期摘要', text: t });
+      });
+    }
+    (ctx.memories || []).forEach(function(m) {
+      if (m && m.content) {
+        corpusLines.push({ source: '聊天记忆', text: String(m.content).trim() });
+      }
+    });
+    (ctx.recentMessages || []).forEach(function(m) {
+      var speaker = m.role === 'assistant' ? (charName || '对方') : (userName || '用户');
+      var snippet = String(m.content || '').replace(/\s+/g, ' ').trim();
+      if (snippet) {
+        corpusLines.push({ source: '近期对话(' + speaker + ')', text: snippet.slice(0, 140) });
+      }
+    });
+
+    var relationships = [];
+    if (charName || userName) {
+      relationships.push((userName || '用户') + ' 与 ' + (charName || '当前角色') + '（当前对话双方）');
+    }
+    corpusLines.forEach(function(item) {
+      if (/(关系|朋友|恋人|搭档|同事|师徒|兄妹|姐弟|同学|邻居|未婚|上司|下属|认识|约定)/.test(item.text)) {
+        if (relationships.length < 6) relationships.push('[' + item.source + '] ' + item.text.slice(0, 100));
+      }
+    });
+
+    var locations = [];
+    corpusLines.forEach(function(item) {
+      if (/(地点|位置|来到|回到|身处|位于|医院|学校|天台|咖啡|餐厅|公寓|房间|客厅|卧室|街道|公司|车站|酒吧|图书馆|公园|大厅)/.test(item.text)) {
+        if (locations.length < 6) locations.push('[' + item.source + '] ' + item.text.slice(0, 100));
+      }
+    });
+
+    var currentEvents = [];
+    if (ctx.summaryText) {
+      var plotMatch = ctx.summaryText.match(/【剧情经过】([\s\S]*?)(?=【|$)/);
+      if (plotMatch && plotMatch[1] && plotMatch[1].trim()) {
+        currentEvents.push('[短期摘要] ' + plotMatch[1].trim().slice(0, 180));
+      }
+    }
+    ctx.recentMessages.slice(-3).forEach(function(m) {
+      var sp = m.role === 'assistant' ? (charName || '对方') : (userName || '用户');
+      currentEvents.push('[' + sp + '] ' + String(m.content || '').replace(/\s+/g, ' ').trim().slice(0, 100));
+    });
+
+    var unresolvedItems = [];
+    if (ctx.summaryText) {
+      var keyMatch = ctx.summaryText.match(/【(?:关键记忆|长期要紧)】([\s\S]*?)(?=【|$)/);
+      if (keyMatch && keyMatch[1] && keyMatch[1].trim()) {
+        unresolvedItems.push('[关键记忆] ' + keyMatch[1].trim().slice(0, 160));
+      }
+    }
+    corpusLines.forEach(function(item) {
+      if (/(待解决|未解决|还没|尚未|约定|明天|下周|计划|调查|秘密|需要|准备|？|\?)/.test(item.text)) {
+        if (unresolvedItems.length < 6) unresolvedItems.push('[' + item.source + '] ' + item.text.slice(0, 100));
+      }
+    });
+
+    return {
+      chatId: ctx.chatId,
+      chatTitle: ctx.chat.title || '',
+      characterName: charName || '未绑定角色',
+      focus: focus || '全部',
+      readOnly: true,
+      fabricated: false,
+      sourceCounts: {
+        validMessages: ctx.validMessageCount,
+        hasSummary: !!ctx.summaryText,
+        chatMemories: (ctx.memories || []).length,
+        worldBookEntries: (ctx.worldBookEntries || []).length
+      },
+      relationships: relationships,
+      locations: locations,
+      currentEvents: currentEvents,
+      unresolvedItems: unresolvedItems,
+      note: '仅基于当前聊天的已有对话、摘要、本聊天记忆与世界书整理；未出现的项目不作编造。'
+    };
   }
 
   function registerReservedMcpPlaceholder() {

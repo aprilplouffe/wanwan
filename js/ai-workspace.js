@@ -2393,6 +2393,16 @@
     if (fullName === 'builtin_calculator.calculate_expression') {
       return (resData.expression || '') + ' = ' + (resData.result != null ? resData.result : '');
     }
+    if (fullName === 'builtin_rp_random_event.generate_random_event') {
+      return (resData.eventTitle ? ('[' + resData.eventTitle + '] ') : '') + (resData.eventSuggestion || '已生成随机事件建议');
+    }
+    if (fullName === 'builtin_rp_story_state.get_story_state') {
+      var relN = Array.isArray(resData.relationships) ? resData.relationships.length : 0;
+      var locN = Array.isArray(resData.locations) ? resData.locations.length : 0;
+      var evtN = Array.isArray(resData.currentEvents) ? resData.currentEvents.length : 0;
+      var unrN = Array.isArray(resData.unresolvedItems) ? resData.unresolvedItems.length : 0;
+      return '人物关系 ' + relN + ' · 地点 ' + locN + ' · 事件 ' + evtN + ' · 待解决 ' + unrN;
+    }
     if (resData.text) {
       var txt = String(resData.text).trim();
       return txt.length > 90 ? (txt.slice(0, 90) + '…') : txt;

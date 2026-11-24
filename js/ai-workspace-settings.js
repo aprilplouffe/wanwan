@@ -616,6 +616,24 @@
           '<label class="aiw-field-label" for="aiw-plg-test-expr">数学表达式（支持 + - * /、括号与小数）</label>' +
           '<input type="text" class="aiw-field-input" id="aiw-plg-test-expr" placeholder="例如：(12.5 + 7.5) * 3 / 4" value="(12.5 + 7.5) * 3 / 4">' +
         '</div>';
+    } else if (plg.id === 'builtin_rp_random_event') {
+      inputsHtml =
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">' +
+          '<div>' +
+            '<label class="aiw-field-label" for="aiw-plg-test-scene">场景提示（可选）</label>' +
+            '<input type="text" class="aiw-field-input" id="aiw-plg-test-scene" placeholder="例如：雨夜咖啡馆">' +
+          '</div>' +
+          '<div>' +
+            '<label class="aiw-field-label" for="aiw-plg-test-tone">氛围（可选）</label>' +
+            '<input type="text" class="aiw-field-input" id="aiw-plg-test-tone" placeholder="例如：温馨 / 悬疑">' +
+          '</div>' +
+        '</div>';
+    } else if (plg.id === 'builtin_rp_story_state') {
+      inputsHtml =
+        '<div>' +
+          '<label class="aiw-field-label" for="aiw-plg-test-focus">关注重点（可选）</label>' +
+          '<input type="text" class="aiw-field-input" id="aiw-plg-test-focus" placeholder="留空整理全部：人物关系、地点、事件、未解决事项">' +
+        '</div>';
     } else {
       inputsHtml = '<div style="font-size:12px; color:#64748b;">点击下方「执行测试」将通过统一调用接口测试 <code>' + escapeHtml(firstTool.fullName) + '</code>。</div>';
     }
@@ -669,6 +687,16 @@
         } else if (plg.id === 'builtin_calculator') {
           var eEl = modal.querySelector('#aiw-plg-test-expr');
           params = { expression: eEl ? String(eEl.value || '') : '' };
+        } else if (plg.id === 'builtin_rp_random_event') {
+          var scEl = modal.querySelector('#aiw-plg-test-scene');
+          var tnEl = modal.querySelector('#aiw-plg-test-tone');
+          params = {
+            sceneHint: scEl ? String(scEl.value || '') : '',
+            tone: tnEl ? String(tnEl.value || '') : ''
+          };
+        } else if (plg.id === 'builtin_rp_story_state') {
+          var fcEl = modal.querySelector('#aiw-plg-test-focus');
+          params = { focus: fcEl ? String(fcEl.value || '') : '' };
         }
         var res = await pApi.invokeTool(firstTool.fullName, params, {
           chatId: _ctx.activeChatId,
