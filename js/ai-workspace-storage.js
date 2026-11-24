@@ -993,6 +993,13 @@
     var mergedFromIds = Array.isArray(raw.mergedFromIds)
       ? raw.mergedFromIds.filter(Boolean).map(String)
       : [];
+    var mergedFromIndices = Array.isArray(raw.mergedFromIndices)
+      ? Array.from(new Set(raw.mergedFromIndices.map(function(n) {
+          return Math.floor(Number(n) || 0);
+        }).filter(function(n) { return n >= 1; }))).sort(function(a, b) { return a - b; })
+      : [];
+    var segmentNumber = Math.floor(Number(raw.segmentNumber) || 0);
+    var mergedSourceCount = Math.floor(Number(raw.mergedSourceCount) || 0);
     var isManualWritten = !!(raw.isManualWritten || raw.source === 'manual_written' || id.indexOf('manual_') === 0);
     var source = String(raw.source || '').trim();
     if (!source) {
@@ -1016,6 +1023,15 @@
       isManualWritten: isManualWritten,
       mergedFromIds: mergedFromIds
     };
+    if (segmentNumber >= 1) {
+      normalized.segmentNumber = segmentNumber;
+    }
+    if (mergedFromIndices.length > 0) {
+      normalized.mergedFromIndices = mergedFromIndices;
+    }
+    if (mergedSourceCount >= 1) {
+      normalized.mergedSourceCount = mergedSourceCount;
+    }
     if (updatedAt > 0) {
       normalized.updatedAt = updatedAt;
     }
