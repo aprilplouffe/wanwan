@@ -1000,10 +1000,13 @@
       : [];
     var segmentNumber = Math.floor(Number(raw.segmentNumber) || 0);
     var mergedSourceCount = Math.floor(Number(raw.mergedSourceCount) || 0);
-    var isManualWritten = !!(raw.isManualWritten || raw.source === 'manual_written' || id.indexOf('manual_') === 0);
+    var isManualRange = !!(raw.isManualRange || raw.source === 'manual_range' || id.indexOf('manual_range_') === 0);
+    var isManualWritten = !isManualRange && !!(raw.isManualWritten || raw.source === 'manual_written' || id.indexOf('manual_') === 0);
     var source = String(raw.source || '').trim();
     if (!source) {
-      if (isManualWritten) {
+      if (isManualRange) {
+        source = 'manual_range';
+      } else if (isManualWritten) {
         source = 'manual_written';
       } else if (status === 'merged' || id.indexOf('summerge_') === 0) {
         source = 'merged';
@@ -1023,6 +1026,9 @@
       isManualWritten: isManualWritten,
       mergedFromIds: mergedFromIds
     };
+    if (isManualRange) {
+      normalized.isManualRange = true;
+    }
     if (segmentNumber >= 1) {
       normalized.segmentNumber = segmentNumber;
     }
