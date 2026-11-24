@@ -477,9 +477,14 @@
               (toolsHtml ? ('<div class="aiw-plg-tools">' + toolsHtml + '</div>') : '') +
               '<div class="aiw-plg-foot">' +
                 chatOverrideHtml +
-                '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-config="' + escapeHtml(plg.id) + '">' +
-                  '<i class="fa-solid fa-sliders"></i> 配置与详情' +
-                '</button>' +
+                '<div style="display:flex; gap:6px; margin-left:auto;">' +
+                  '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-test="' + escapeHtml(plg.id) + '">' +
+                    '<i class="fa-solid fa-play"></i> 手动测试' +
+                  '</button>' +
+                  '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-config="' + escapeHtml(plg.id) + '">' +
+                    '<i class="fa-solid fa-sliders"></i> 配置与详情' +
+                  '</button>' +
+                '</div>' +
               '</div>' +
             '</div>'
           );
@@ -538,9 +543,123 @@
         '</div>' +
 
         '<div class="aiw-plg-list">' + cardsHtml + '</div>' +
-        '<div class="aiw-st-footnote">安全说明：7-A1 阶段仅建立统一插件注册、权限声明与开关框架，暂不连接真实 MCP 服务，也不启用 AI 自动调用。工具默认不得擅自修改聊天、记忆或外部数据，敏感操作须经用户明确确认。</div>' +
+        '<div class="aiw-st-footnote">安全说明：当前已接入「时间感知」「随机骰子」「计算器」三个只读内置插件，支持独立启停与手动测试；暂不启用 AI 自动调用，暂未连接真实 MCP 服务。工具默认不得擅自修改聊天、记忆或外部数据。</div>' +
       '</div>'
     );
+  }
+
+  function openPluginTestModal(pluginId) {
+    var pApi = P();
+    if (!pApi) return;
+    var plg = pApi.getPlugin(pluginId);
+    if (!plg) return;
+    var cfg = _ctx.pluginSettings || { globalEnabled: true, plugins: {}, chatOverrides: {} };
+    var eff = pApi.resolvePluginEffectiveState(plg.id, cfg, _ctx.activeChatId);
+    var firstTool = (plg.tools && plg.tools[0]) || null;
+    if (!firstTool) {
+      notifyToast('该插件暂无可测试的工具');
+      return;
+    }
+
+    var inputsHtml = '';
+    if (plg.id === 'builtin_time_utils') {
+      inputsHtml = '<div style="font-size:12px; color:#64748b;">点击下方「执行测试」将调用 <code>' + escapeHtml(firstTool.fullName) + '</code> 读取当前日期、星期、时间与用户时区。</div>';
+    } else if (plg.id === 'builtin_dice_roller') {
+      inputsHtml =
+        '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">' +
+          '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-dice-preset="6,1">D6</button>' +
+          '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-dice-preset="20,1">D20</button>' +
+          '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-dice-preset="6,2">2D6</button>' +
+          '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-dice-preset="100,1">D100</button>' +
+        '</div>' +
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">' +
+          '<div>' +
+            '<label class="aiw-field-label" for="aiw-plg-test-sides">骰子面数（2~10000）</label>' +
+            '<input type="number" inputmode="numeric" class="aiw-field-input" id="aiw-plg-test-sides" value="6" min="2" max="10000">' +
+          '</div>' +
+          '<div>' +
+            '<label class="aiw-field-label" for="aiw-plg-test-count">投掷次数（1~100）</label>' +
+            '<input type="number" inputmode="numeric" class="aiw-field-input" id="aiw-plg-test-count" value="1" min="1" max="100">' +
+          '</div>' +
+        '</div>';
+    } else if (plg.id === 'builtin_calculator') {
+      inputsHtml =
+        '<div>' +
+          '<label class="aiw-field-label" for="aiw-plg-test-expr">数学表达式（支持 + - * /、括号与小数）</label>' +
+          '<input type="text" class="aiw-field-input" id="aiw-plg-test-expr" placeholder="例如：(12.5 + 7.5) * 3 / 4" value="(12.5 + 7.5) * 3 / 4">' +
+        '</div>';
+    } else {
+      inputsHtml = '<div style="font-size:12px; color:#64748b;">点击下方「执行测试」将通过统一调用接口测试 <code>' + escapeHtml(firstTool.fullName) + '</code>。</div>';
+    }
+
+    var stateBanner = eff.effectiveEnabled
+      ? '<span class="aiw-plg-badge is-ro">当前状态：已启用</span>'
+      : '<span class="aiw-plg-badge is-warn">当前状态：已禁用（执行将被拦截）</span>';
+
+    var bodyHtml =
+      '<div class="aiw-import-box" style="display:flex; flex-direction:column; gap:10px;">' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">' +
+          '<span style="font-size:12px; color:#64748b;">工具：<code>' + escapeHtml(firstTool.fullName) + '</code></span>' +
+          stateBanner +
+        '</div>' +
+        inputsHtml +
+        '<pre id="aiw-plg-test-output" style="margin:0; padding:10px; border-radius:10px; background:rgba(15,23,42,0.04); font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-word; display:none;"></pre>' +
+      '</div>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-plg-test-close">关闭</button>' +
+      '<button type="button" class="aiw-st-btn-primary" id="aiw-plg-test-run">执行测试</button>';
+
+    var modal = showCustomModal('手动测试 · ' + plg.name, bodyHtml, footerHtml);
+    if (!modal) return;
+
+    modal.querySelectorAll('[data-dice-preset]').forEach(function(pBtn) {
+      pBtn.addEventListener('click', function() {
+        var parts = String(pBtn.getAttribute('data-dice-preset') || '').split(',');
+        var sEl = modal.querySelector('#aiw-plg-test-sides');
+        var cEl = modal.querySelector('#aiw-plg-test-count');
+        if (sEl && parts[0]) sEl.value = parts[0];
+        if (cEl && parts[1]) cEl.value = parts[1];
+      });
+    });
+
+    var closeBtn = modal.querySelector('#aiw-plg-test-close');
+    var runBtn = modal.querySelector('#aiw-plg-test-run');
+    var outEl = modal.querySelector('#aiw-plg-test-output');
+    if (closeBtn) closeBtn.addEventListener('click', closeModalOverlay);
+
+    if (runBtn) {
+      runBtn.addEventListener('click', async function() {
+        var params = {};
+        if (plg.id === 'builtin_dice_roller') {
+          var sEl = modal.querySelector('#aiw-plg-test-sides');
+          var cEl = modal.querySelector('#aiw-plg-test-count');
+          params = {
+            sides: sEl ? Number(sEl.value) : 6,
+            count: cEl ? Number(cEl.value) : 1
+          };
+        } else if (plg.id === 'builtin_calculator') {
+          var eEl = modal.querySelector('#aiw-plg-test-expr');
+          params = { expression: eEl ? String(eEl.value || '') : '' };
+        }
+        var res = await pApi.invokeTool(firstTool.fullName, params, {
+          chatId: _ctx.activeChatId,
+          settings: _ctx.pluginSettings
+        });
+        if (outEl) {
+          outEl.style.display = 'block';
+          if (res && res.ok) {
+            outEl.style.background = 'rgba(5, 150, 105, 0.08)';
+            outEl.style.color = '#065f46';
+            outEl.textContent = '执行成功：\n' + JSON.stringify(res.data, null, 2);
+          } else {
+            outEl.style.background = '#fef2f2';
+            outEl.style.color = '#b91c1c';
+            outEl.textContent = '执行失败：' + ((res && res.error) || '未知错误');
+          }
+        }
+      });
+    }
   }
 
   function openPluginConfigModal(pluginId) {
@@ -651,6 +770,12 @@
         _ctx.pluginSettings = await pApi.setPluginEnabled(pid, mapped, { scope: 'chat', chatId: _ctx.activeChatId });
         renderCurrentView();
         notifyToast('已更新当前聊天的插件覆盖设置');
+      });
+    });
+
+    layer.querySelectorAll('[data-plg-test]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        openPluginTestModal(btn.getAttribute('data-plg-test'));
       });
     });
 

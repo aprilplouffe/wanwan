@@ -510,13 +510,202 @@
     }
   }
 
+  // ===== 第一批内置插件纯函数实现（无 eval / 无外部网络请求） =====
+  function getSecureRandomInt(minInclusive, maxInclusive) {
+    var span = maxInclusive - minInclusive + 1;
+    if (span <= 1) return minInclusive;
+    var cryptoObj = global.crypto || global.msCrypto;
+    if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+      var maxValid = Math.floor(0x100000000 / span) * span;
+      var buf = new Uint32Array(1);
+      for (var attempt = 0; attempt < 32; attempt++) {
+        cryptoObj.getRandomValues(buf);
+        if (buf[0] < maxValid) {
+          return minInclusive + (buf[0] % span);
+        }
+      }
+    }
+    return minInclusive + Math.floor(Math.random() * span);
+  }
+
+  function parseDiceParams(params) {
+    var p = params && typeof params === 'object' ? params : {};
+    var count = p.count !== undefined && p.count !== '' ? Number(p.count) : 1;
+    var sides = p.sides !== undefined && p.sides !== '' ? Number(p.sides) : 6;
+
+    if (p.notation !== undefined && p.notation !== null && String(p.notation).trim() !== '') {
+      var rawNotation = String(p.notation).trim().toLowerCase();
+      var m = rawNotation.match(/^(\d*)d(\d+)$/);
+      if (!m) {
+        throw new Error('骰子表达式格式无效，请使用如 D6、D20 或 2D6');
+      }
+      count = m[1] ? Number(m[1]) : 1;
+      sides = Number(m[2]);
+    }
+
+    if (!Number.isInteger(sides) || sides < 2 || sides > 10000) {
+      throw new Error('骰子面数需为 2 至 10000 之间的整数');
+    }
+    if (!Number.isInteger(count) || count < 1 || count > 100) {
+      throw new Error('投掷次数需为 1 至 100 之间的整数');
+    }
+    return { sides: sides, count: count, notation: count + 'D' + sides };
+  }
+
+  // 纯手写递归下降数学表达式解析器（严格禁止 eval / new Function）
+  function evaluateMathExpression(rawExpr) {
+    var raw = String(rawExpr || '').trim();
+    if (!raw) {
+      throw new Error('请输入要计算的数学表达式');
+    }
+    var normalized = raw
+      .replace(/×/g, '*')
+      .replace(/÷/g, '/')
+      .replace(/（/g, '(')
+      .replace(/）/g, ')')
+      .replace(/\s+/g, '');
+
+    if (/[^0-9.+\-*/()]/.test(normalized)) {
+      throw new Error('表达式包含不支持的字符，仅支持数字、+ - * /、小数点与括号');
+    }
+
+    var pos = 0;
+    var len = normalized.length;
+
+    function peek() {
+      return pos < len ? normalized.charAt(pos) : '';
+    }
+
+    function parseNumber() {
+      var start = pos;
+      var hasDot = false;
+      var hasDigit = false;
+      while (pos < len) {
+        var ch = normalized.charAt(pos);
+        if (ch >= '0' && ch <= '9') {
+          hasDigit = true;
+          pos++;
+        } else if (ch === '.') {
+          if (hasDot) {
+            throw new Error('数字格式错误：存在多余的小数点');
+          }
+          hasDot = true;
+          pos++;
+        } else {
+          break;
+        }
+      }
+      if (!hasDigit) {
+        throw new Error('表达式语法错误，缺少有效数字');
+      }
+      var numStr = normalized.slice(start, pos);
+      var num = Number(numStr);
+      if (!Number.isFinite(num)) {
+        throw new Error('数值超出可计算范围');
+      }
+      return num;
+    }
+
+    function parseFactor() {
+      var ch = peek();
+      if (ch === '+') {
+        pos++;
+        return parseFactor();
+      }
+      if (ch === '-') {
+        pos++;
+        return -parseFactor();
+      }
+      if (ch === '(') {
+        pos++;
+        if (peek() === ')') {
+          throw new Error('括号内不能为空');
+        }
+        var inner = parseExpr();
+        if (peek() !== ')') {
+          throw new Error('括号不匹配，缺少右括号 )');
+        }
+        pos++;
+        return inner;
+      }
+      return parseNumber();
+    }
+
+    function parseTerm() {
+      var left = parseFactor();
+      while (pos < len) {
+        var op = peek();
+        if (op === '*' || op === '/') {
+          pos++;
+          var right = parseFactor();
+          if (op === '/') {
+            if (right === 0) {
+              throw new Error('除数不能为零');
+            }
+            left = left / right;
+          } else {
+            left = left * right;
+          }
+          if (!Number.isFinite(left)) {
+            throw new Error('计算结果溢出');
+          }
+        } else {
+          break;
+        }
+      }
+      return left;
+    }
+
+    function parseExpr() {
+      var left = parseTerm();
+      while (pos < len) {
+        var op = peek();
+        if (op === '+' || op === '-') {
+          pos++;
+          var right = parseTerm();
+          left = op === '+' ? (left + right) : (left - right);
+          if (!Number.isFinite(left)) {
+            throw new Error('计算结果溢出');
+          }
+        } else {
+          break;
+        }
+      }
+      return left;
+    }
+
+    var value = parseExpr();
+    if (pos < len) {
+      throw new Error('表达式存在多余符号或未匹配的括号：' + normalized.slice(pos));
+    }
+    if (!Number.isFinite(value)) {
+      throw new Error('计算结果无效');
+    }
+    var cleanValue = Object.is(value, -0) ? 0 : Number(value.toPrecision(12));
+    return {
+      expression: raw,
+      normalizedExpression: normalized,
+      result: cleanValue,
+      formatted: String(cleanValue)
+    };
+  }
+
+  function formatUtcOffset(dateObj) {
+    var offsetMin = -dateObj.getTimezoneOffset();
+    var sign = offsetMin >= 0 ? '+' : '-';
+    var absMin = Math.abs(offsetMin);
+    var hh = String(Math.floor(absMin / 60)).padStart(2, '0');
+    var mm = String(absMin % 60).padStart(2, '0');
+    return 'UTC' + sign + hh + ':' + mm;
+  }
+
   // ===== 注册默认内置插件与 MCP 框架预留项 =====
   function registerStarterPlugins() {
     registerPlugin({
       id: 'builtin_time_utils',
-      name: '日期与时间助手',
+      name: '时间感知',
       category: CATEGORY_BUILTIN,
-      description: '提供当前本地日期、星期与时间戳只读查询，不修改任何数据。',
+      description: '获取当前本地日期、星期、具体时间及用户所在时区，纯只读不修改任何数据。',
       version: '1.0.0',
       author: '知屿内置',
       defaultEnabled: true,
@@ -532,8 +721,8 @@
       tools: [
         {
           name: 'get_current_datetime',
-          title: '获取当前时间',
-          description: '只读返回当前本地日期、星期及时间字符串。',
+          title: '获取当前日期时间与时区',
+          description: '只读返回当前日期、星期、时间、用户时区与 UTC 偏移量。',
           parameters: {
             type: 'object',
             properties: {},
@@ -542,11 +731,26 @@
           execute: async function(_params, ctx) {
             var now = new Date();
             var weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+            var hourFormat = (ctx && ctx.config && String(ctx.config.hourFormat || '').toLowerCase() === '12h') ? '12h' : '24h';
+            var hh24 = now.getHours();
+            var mm = String(now.getMinutes()).padStart(2, '0');
+            var ss = String(now.getSeconds()).padStart(2, '0');
+            var timeStr = hourFormat === '12h'
+              ? ((hh24 >= 12 ? '下午 ' : '上午 ') + String(hh24 % 12 || 12).padStart(2, '0') + ':' + mm + ':' + ss)
+              : (String(hh24).padStart(2, '0') + ':' + mm + ':' + ss);
+            var tz = '';
+            try {
+              tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+            } catch (_) {}
+            var utcOffset = formatUtcOffset(now);
             return {
-              iso: now.toISOString(),
               date: now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0'),
               weekday: weekdays[now.getDay()] || '',
-              hourFormat: (ctx && ctx.config && ctx.config.hourFormat) || '24h'
+              time: timeStr,
+              timezone: tz || utcOffset,
+              utcOffset: utcOffset,
+              hourFormat: hourFormat,
+              iso: now.toISOString()
             };
           }
         }
@@ -554,10 +758,73 @@
     });
 
     registerPlugin({
-      id: 'builtin_workspace_reader',
-      name: '工作空间只读概览',
+      id: 'builtin_dice_roller',
+      name: '随机骰子',
       category: CATEGORY_BUILTIN,
-      description: '只读统计当前知屿已创建的对话、记忆与插件数量，绝不修改聊天或记忆数据。',
+      description: '支持 D6、D20 等常见骰子及自定义面数与投掷次数，使用加密级随机数生成。',
+      version: '1.0.0',
+      author: '知屿内置',
+      defaultEnabled: true,
+      permissions: {
+        readOnly: true,
+        scopes: [PERMISSION_SCOPES.READ_ONLY],
+        requiresConfirmation: false
+      },
+      configSchema: [
+        { key: 'defaultSides', label: '默认面数（如 6 或 20）', type: 'text', placeholder: '6' }
+      ],
+      defaultConfig: { defaultSides: '6' },
+      tools: [
+        {
+          name: 'roll_dice',
+          title: '投掷骰子',
+          description: '支持传入 notation（如 2D6、D20）或 sides/count 自定义投掷，返回每次点数与总和。',
+          parameters: {
+            type: 'object',
+            properties: {
+              notation: { type: 'string', description: '骰子表达式，如 D6、D20、2D6' },
+              sides: { type: 'number', description: '骰子面数（2~10000）' },
+              count: { type: 'number', description: '投掷次数（1~100）' }
+            },
+            required: []
+          },
+          execute: async function(params, ctx) {
+            var p = Object.assign({}, params || {});
+            if ((p.sides === undefined || p.sides === '') && (!p.notation || !String(p.notation).trim())) {
+              var defSides = Number(ctx && ctx.config && ctx.config.defaultSides);
+              if (Number.isInteger(defSides) && defSides >= 2) p.sides = defSides;
+            }
+            var parsed = parseDiceParams(p);
+            var rolls = [];
+            var total = 0;
+            var minRoll = parsed.sides;
+            var maxRoll = 1;
+            for (var i = 0; i < parsed.count; i++) {
+              var val = getSecureRandomInt(1, parsed.sides);
+              rolls.push(val);
+              total += val;
+              if (val < minRoll) minRoll = val;
+              if (val > maxRoll) maxRoll = val;
+            }
+            return {
+              notation: parsed.notation,
+              sides: parsed.sides,
+              count: parsed.count,
+              rolls: rolls,
+              total: total,
+              min: minRoll,
+              max: maxRoll
+            };
+          }
+        }
+      ]
+    });
+
+    registerPlugin({
+      id: 'builtin_calculator',
+      name: '计算器',
+      category: CATEGORY_BUILTIN,
+      description: '安全计算加减乘除四则运算、括号与小数，采用纯语法解析器，绝不使用 eval。',
       version: '1.0.0',
       author: '知屿内置',
       defaultEnabled: true,
@@ -568,55 +835,18 @@
       },
       tools: [
         {
-          name: 'get_workspace_overview',
-          title: '查询工作空间概览',
-          description: '只读统计当前知屿对话数与长期记忆条数。',
-          parameters: {
-            type: 'object',
-            properties: {},
-            required: []
-          },
-          execute: async function() {
-            var store = S();
-            var chats = (store && typeof store.listChats === 'function') ? await store.listChats() : [];
-            var memories = (store && typeof store.listMemories === 'function') ? await store.listMemories() : [];
-            return {
-              chatCount: Array.isArray(chats) ? chats.length : 0,
-              memoryCount: Array.isArray(memories) ? memories.length : 0,
-              registeredPluginCount: _pluginOrder.length
-            };
-          }
-        }
-      ]
-    });
-
-    registerPlugin({
-      id: 'builtin_sensitive_guard_sample',
-      name: '敏感写入权限守卫示例',
-      category: CATEGORY_BUILTIN,
-      description: '声明了修改记忆的敏感权限，默认停用且必须由用户明确确认后才允许调用。',
-      version: '1.0.0',
-      author: '知屿内置',
-      defaultEnabled: false,
-      permissions: {
-        readOnly: false,
-        scopes: [PERMISSION_SCOPES.MODIFY_MEMORY],
-        requiresConfirmation: true
-      },
-      tools: [
-        {
-          name: 'guarded_action_preview',
-          title: '受保护写入校验',
-          description: '仅在用户确认后返回授权校验结果，不擅自修改记忆。',
+          name: 'calculate_expression',
+          title: '计算数学表达式',
+          description: '支持 + - * /、括号与小数运算，禁止 eval。',
           parameters: {
             type: 'object',
             properties: {
-              note: { type: 'string', description: '操作说明' }
+              expression: { type: 'string', description: '数学表达式，如 (12.5 + 7.5) * 3 / 4' }
             },
-            required: ['note']
+            required: ['expression']
           },
           execute: async function(params) {
-            return { authorized: true, note: String(params.note || '') };
+            return evaluateMathExpression(params && params.expression);
           }
         }
       ]
@@ -625,7 +855,7 @@
     registerMcpDescriptor({
       id: 'mcp_reserved_gateway',
       name: 'MCP 扩展服务（预留）',
-      description: '统一兼容未来外部 MCP Server 工具接入；7-A1 阶段仅预留协议接口与管理界面，暂不连接真实 MCP 服务。',
+      description: '统一兼容未来外部 MCP Server 工具接入；当前仅预留协议接口与管理界面，暂不连接真实 MCP 服务。',
       version: '0.1.0',
       author: 'MCP Protocol',
       defaultEnabled: false,
