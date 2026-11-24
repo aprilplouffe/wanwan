@@ -16,6 +16,7 @@
     DEFAULT_PRESET_ID: 'aiw_default_preset_id',
     API_CONFIG: 'aiw_api_config',
     SUMMARY_API_CONFIG: 'aiw_summary_api_config',
+    API_PRESETS: 'aiw_api_presets',
     SELECTED_MODEL: 'aiw_selected_model',
     CHAT_IDS: 'aiw_chat_ids',
     CHAT_PREFIX: 'aiw_chat:',
@@ -751,6 +752,122 @@
     return empty;
   }
 
+  // ===== 7C. 知屿专属 API 预设管理（独立存储在 aiw_api_presets，不影响弯弯机全局 apiPresets） =====
+  function generateApiPresetId() {
+    return 'ap_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  }
+
+  function normalizeApiPresetRecord(raw, fallbackId) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var id = String(src.id || fallbackId || generateApiPresetId()).trim() || generateApiPresetId();
+    var name = String(src.name || '').trim();
+    var baseUrl = normalizeBaseUrl(src.baseUrl || src.url || '');
+    var apiKey = String(src.apiKey || src.key || '').trim();
+    var model = String(src.model || '').trim();
+    var fetchedModels = Array.isArray(src.fetchedModels)
+      ? src.fetchedModels.filter(Boolean).map(function(m) { return String(m).trim(); }).filter(Boolean)
+      : [];
+    if (model && fetchedModels.indexOf(model) === -1) {
+      fetchedModels.unshift(model);
+    }
+    var temperature = normalizeTemperature(src.temperature, 0.7);
+    var now = Date.now();
+    return {
+      id: id,
+      name: name,
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      model: model,
+      fetchedModels: fetchedModels,
+      temperature: temperature,
+      createdAt: Number(src.createdAt) || now,
+      updatedAt: Number(src.updatedAt) || Number(src.createdAt) || now
+    };
+  }
+
+  function buildApiPresetDedupKey(preset) {
+    if (!preset || typeof preset !== 'object') return '';
+    return [
+      String(preset.name || '').trim().toLowerCase(),
+      normalizeBaseUrl(preset.baseUrl || preset.url || '').toLowerCase(),
+      String(preset.model || '').trim().toLowerCase(),
+      String(preset.apiKey || preset.key || '').trim()
+    ].join('::');
+  }
+
+  async function listApiPresets() {
+    var saved = await dbGetConfig(KEYS.API_PRESETS);
+    if (!Array.isArray(saved)) return [];
+    var seen = {};
+    var result = [];
+    for (var i = 0; i < saved.length; i++) {
+      var item = saved[i];
+      if (!item || typeof item !== 'object') continue;
+      var norm = normalizeApiPresetRecord(item, item.id);
+      if (!norm.name || seen[norm.id]) continue;
+      seen[norm.id] = true;
+      result.push(norm);
+    }
+    return result;
+  }
+
+  async function saveApiPreset(input) {
+    var src = input && typeof input === 'object' ? input : {};
+    var name = String(src.name || '').trim();
+    if (!name) {
+      throw new Error('请输入预设名称');
+    }
+    var baseUrl = normalizeBaseUrl(src.baseUrl || src.url || '');
+    var apiKey = String(src.apiKey || src.key || '').trim();
+    var model = String(src.model || '').trim();
+    if (!baseUrl || !apiKey || !model) {
+      throw new Error('请填写完整的 Base URL、API Key 和模型名称');
+    }
+
+    var list = await listApiPresets();
+    var targetId = String(src.id || '').trim();
+    var idx = -1;
+    if (targetId) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === targetId) {
+          idx = i;
+          break;
+        }
+      }
+    }
+
+    var now = Date.now();
+    var savedItem = normalizeApiPresetRecord({
+      id: idx >= 0 ? list[idx].id : generateApiPresetId(),
+      name: name,
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      model: model,
+      fetchedModels: Array.isArray(src.fetchedModels) ? src.fetchedModels : (idx >= 0 ? list[idx].fetchedModels : []),
+      temperature: src.temperature !== undefined ? src.temperature : (idx >= 0 ? list[idx].temperature : 0.7),
+      createdAt: idx >= 0 ? list[idx].createdAt : now,
+      updatedAt: now
+    });
+
+    if (idx >= 0) {
+      list[idx] = savedItem;
+    } else {
+      list.push(savedItem);
+    }
+    await dbPutConfig(KEYS.API_PRESETS, list);
+    return deepClone(savedItem);
+  }
+
+  async function deleteApiPreset(presetId) {
+    var targetId = String(presetId || '').trim();
+    var list = await listApiPresets();
+    if (!targetId) return false;
+    var nextList = list.filter(function(item) { return item.id !== targetId; });
+    if (nextList.length === list.length) return false;
+    await dbPutConfig(KEYS.API_PRESETS, nextList);
+    return true;
+  }
+
   // ===== 8. 知屿记住的模型选择（仅作用于知屿，不影响其他应用） =====
   async function getSelectedModel() {
     var saved = await dbGetConfig(KEYS.SELECTED_MODEL);
@@ -872,18 +989,37 @@
     }
     var content = String(raw.content || '').trim().slice(0, 1200);
     if (!content) return null;
+    var id = String(raw.id || ('sumseg_' + startIdx + '_' + endIdx + '_' + (idx || 0))).trim();
     var mergedFromIds = Array.isArray(raw.mergedFromIds)
       ? raw.mergedFromIds.filter(Boolean).map(String)
       : [];
-    return {
-      id: String(raw.id || ('sumseg_' + startIdx + '_' + endIdx + '_' + (idx || 0))).trim(),
+    var isManualWritten = !!(raw.isManualWritten || raw.source === 'manual_written' || id.indexOf('manual_') === 0);
+    var source = String(raw.source || '').trim();
+    if (!source) {
+      if (isManualWritten) {
+        source = 'manual_written';
+      } else if (status === 'merged' || id.indexOf('summerge_') === 0) {
+        source = 'merged';
+      } else {
+        source = 'ai';
+      }
+    }
+    var updatedAt = Number(raw.updatedAt) || 0;
+    var normalized = {
+      id: id,
       startMessageIndex: startIdx,
       endMessageIndex: endIdx,
       content: content,
       createdAt: Number(raw.createdAt) || 0,
       status: status,
+      source: source,
+      isManualWritten: isManualWritten,
       mergedFromIds: mergedFromIds
     };
+    if (updatedAt > 0) {
+      normalized.updatedAt = updatedAt;
+    }
+    return normalized;
   }
 
   function normalizeChatRecord(raw, forcedId) {
@@ -3406,7 +3542,8 @@
       dbGetConfig(KEYS.CHAT_IDS),
       dbGetConfig(KEYS.MEMORY_IDS),
       dbGetConfig(KEYS.SELECTED_MODEL),
-      listFavorites()
+      listFavorites(),
+      listApiPresets()
     ]);
 
     var profile = results[0];
@@ -3431,6 +3568,7 @@
     var rawMemoryIds = results[19];
     var rawSelectedModel = results[20];
     var favorites = Array.isArray(results[21]) ? results[21] : [];
+    var apiPresets = Array.isArray(results[22]) ? results[22] : [];
 
     var defaultPreset = presets.find(function(p) { return p && p.isDefault; }) || null;
     var defaultPresetId = String(rawDefaultPresetId || (defaultPreset && defaultPreset.id) || '').trim();
@@ -3509,7 +3647,8 @@
         customApi: deepClone(customApi),
         summaryApi: deepClone(summaryApi),
         selectedModel: String(selectedModel || '').trim(),
-        selectedModelDetail: rawSelectedModel && typeof rawSelectedModel === 'object' ? deepClone(rawSelectedModel) : null
+        selectedModelDetail: rawSelectedModel && typeof rawSelectedModel === 'object' ? deepClone(rawSelectedModel) : null,
+        apiPresets: deepClone(apiPresets)
       },
       counts: {
         chats: chats.length,
@@ -3519,6 +3658,7 @@
         memoryTasks: memoryTasks.length,
         deletedMemorySignatures: deletedSignatures.length,
         presets: presets.length,
+        apiPresets: apiPresets.length,
         worldbooks: worldbooks.length,
         worldbookEntries: worldbookEntryCount
       }
@@ -3757,7 +3897,9 @@
     var apiData = {
       customApi: null,
       summaryApi: null,
-      selectedModel: ''
+      selectedModel: '',
+      apiPresets: [],
+      hasApiPresetsSection: false
     };
     if (hasApiSection) {
       var rawApi = safe.apiConfig;
@@ -3794,6 +3936,25 @@
         apiData.selectedModel = String(rawApi.selectedModel).trim();
       } else if (isPlainObject(rawApi.selectedModelDetail) && rawApi.selectedModelDetail.model != null) {
         apiData.selectedModel = String(rawApi.selectedModelDetail.model).trim();
+      }
+      if (rawApi.apiPresets !== undefined && rawApi.apiPresets !== null) {
+        if (!Array.isArray(rawApi.apiPresets)) {
+          return { ok: false, error: '导入失败：apiConfig.apiPresets 应为数组格式' };
+        }
+        apiData.hasApiPresetsSection = true;
+        for (var apiIdx = 0; apiIdx < rawApi.apiPresets.length; apiIdx++) {
+          var rawAp = rawApi.apiPresets[apiIdx];
+          if (!isPlainObject(rawAp)) {
+            return { ok: false, error: '导入失败：第 ' + (apiIdx + 1) + ' 条 API 预设格式无效' };
+          }
+          var normAp = normalizeApiPresetRecord(rawAp, rawAp.id);
+          if (!normAp.name && (normAp.baseUrl || normAp.apiKey || normAp.model)) {
+            normAp.name = '导入 API 预设 ' + (apiIdx + 1);
+          }
+          if (normAp.name) {
+            apiData.apiPresets.push(normAp);
+          }
+        }
       }
     }
 
@@ -3851,13 +4012,14 @@
         memoriesCount: memoryData.memories.length,
         memoryTasksCount: memoryData.tasks.length,
         presetsCount: presets.length,
+        apiPresetsCount: apiData.apiPresets.length,
         worldbooksCount: worldbooks.length,
         worldbookEntriesCount: worldbookEntryCount,
         hasProfile: !!profile,
         hasPersonalization: !!personalization,
         hasAppearance: !!appearance,
         hasGeneral: !!general,
-        hasApiConfig: !!(apiData.customApi || apiData.summaryApi || apiData.selectedModel)
+        hasApiConfig: !!(apiData.customApi || apiData.summaryApi || apiData.selectedModel || apiData.apiPresets.length)
       },
       data: {
         profile: profile,
@@ -3897,6 +4059,7 @@
       KEYS.DEFAULT_PRESET_ID,
       KEYS.API_CONFIG,
       KEYS.SUMMARY_API_CONFIG,
+      KEYS.API_PRESETS,
       KEYS.SELECTED_MODEL,
       KEYS.CHAT_IDS,
       KEYS.MEMORY_SETTINGS,
@@ -4323,6 +4486,17 @@
             updatedAt: Date.now()
           });
         }
+        var restoredApiPresets = [];
+        if (data.apiConfig.hasApiPresetsSection || (data.apiConfig.apiPresets && data.apiConfig.apiPresets.length)) {
+          var apOverwriteSeen = {};
+          for (var apiOi = 0; apiOi < data.apiConfig.apiPresets.length; apiOi++) {
+            var apItem = normalizeApiPresetRecord(data.apiConfig.apiPresets[apiOi], data.apiConfig.apiPresets[apiOi].id);
+            if (!apItem.name || apOverwriteSeen[apItem.id]) continue;
+            apOverwriteSeen[apItem.id] = true;
+            restoredApiPresets.push(apItem);
+          }
+          await dbPutConfig(KEYS.API_PRESETS, restoredApiPresets);
+        }
 
         // 记忆相关数据
         if (data.memory.settings) {
@@ -4416,6 +4590,7 @@
             favoritesAdded: restoredFavorites.length,
             memoriesAdded: memIds.length,
             presetsAdded: presetIds.length,
+            apiPresetsAdded: restoredApiPresets.length,
             worldbooksAdded: wbIds.length
           }
         };
@@ -4603,6 +4778,33 @@
           await saveSelectedModel(data.apiConfig.selectedModel);
         }
       }
+      var apiPresetsAddedCount = 0;
+      if (data.hasApiSection && Array.isArray(data.apiConfig.apiPresets) && data.apiConfig.apiPresets.length) {
+        var existingApiPresets = await listApiPresets();
+        var apIdSet = {};
+        var apSigSet = {};
+        for (var eapi = 0; eapi < existingApiPresets.length; eapi++) {
+          var eap = existingApiPresets[eapi];
+          apIdSet[eap.id] = true;
+          apSigSet[buildApiPresetDedupKey(eap)] = true;
+        }
+        for (var iapi = 0; iapi < data.apiConfig.apiPresets.length; iapi++) {
+          var incAp = normalizeApiPresetRecord(data.apiConfig.apiPresets[iapi], data.apiConfig.apiPresets[iapi].id);
+          if (!incAp.name) continue;
+          var incApSig = buildApiPresetDedupKey(incAp);
+          if (apSigSet[incApSig]) continue;
+          if (apIdSet[incAp.id]) {
+            incAp.id = generateApiPresetId();
+          }
+          existingApiPresets.push(incAp);
+          apIdSet[incAp.id] = true;
+          apSigSet[incApSig] = true;
+          apiPresetsAddedCount++;
+        }
+        if (apiPresetsAddedCount > 0) {
+          await dbPutConfig(KEYS.API_PRESETS, existingApiPresets);
+        }
+      }
 
       // 5. 记忆相关数据合并与去重
       var memAddedCount = 0;
@@ -4788,6 +4990,7 @@
           favoritesAdded: favAddedCount,
           memoriesAdded: memAddedCount,
           presetsAdded: presetAddedCount,
+          apiPresetsAdded: apiPresetsAddedCount,
           worldbooksAdded: wbAddedCount
         }
       };
@@ -4843,6 +5046,9 @@
     getSummaryApiConfig: getSummaryApiConfig,
     saveSummaryApiConfig: saveSummaryApiConfig,
     clearSummaryApiConfig: clearSummaryApiConfig,
+    listApiPresets: listApiPresets,
+    saveApiPreset: saveApiPreset,
+    deleteApiPreset: deleteApiPreset,
     getSelectedModel: getSelectedModel,
     saveSelectedModel: saveSelectedModel,
     buildPresetSnapshot: buildPresetSnapshot,

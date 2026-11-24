@@ -231,6 +231,37 @@
   }
 
   // ===== 2. 文本规范化、分词与相似度计算 =====
+  function safeSliceMemoryText(text, maxLen) {
+    var src = String(text || '');
+    var limit = Math.floor(Number(maxLen) || 0);
+    if (limit <= 0) return '';
+    if (src.length <= limit) return src;
+    var cut = limit;
+    var lastCode = src.charCodeAt(cut - 1);
+    if (lastCode >= 0xD800 && lastCode <= 0xDBFF) {
+      cut--;
+    }
+    return src.slice(0, cut);
+  }
+
+  function safeSliceMemoryTail(text, maxLen) {
+    var src = String(text || '');
+    var limit = Math.floor(Number(maxLen) || 0);
+    if (limit <= 0) return '';
+    if (src.length <= limit) return src;
+    var start = src.length - limit;
+    var firstCode = src.charCodeAt(start);
+    if (firstCode >= 0xDC00 && firstCode <= 0xDFFF) {
+      start++;
+    }
+    var tail = src.slice(start);
+    var firstNewline = tail.indexOf('\n');
+    if (firstNewline > 0 && firstNewline <= Math.floor(tail.length * 0.25)) {
+      tail = tail.slice(firstNewline + 1);
+    }
+    return tail.trimStart();
+  }
+
   function normalizeMemoryText(text) {
     return String(text || '')
       .toLowerCase()
@@ -549,21 +580,25 @@
       if (chat.projectId && currentProjectId && chat.projectId !== currentProjectId) continue;
       if (chat.projectId && !currentProjectId) continue;
 
+      var hasCleanSummary = false;
       if (chat.summary) {
         var cleanSummary = sanitizeSnippetByDeletedSigs(chat.summary, deletedSigs);
         if (cleanSummary) {
+          hasCleanSummary = true;
           candidates.push({
             id: 'csum:' + chat.id,
             kind: 'summary',
             chatId: chat.id,
             chatTitle: chat.title || '历史对话',
-            content: cleanSummary.slice(0, 320),
+            content: safeSliceMemoryText(cleanSummary, 320),
             updatedAt: chat.summaryUpdatedAt || chat.updatedAt || 0
           });
         }
       }
 
-      var msgs = Array.isArray(chat.messages) ? chat.messages : [];
+      var cleanChatMsgs = getCleanChatMessages(chat);
+      var upTo = hasCleanSummary ? getEffectiveSummaryUpToCount(chat) : 0;
+      var msgs = upTo > 0 ? cleanChatMsgs.slice(upTo) : cleanChatMsgs;
       var userSnippets = [];
       for (var m = msgs.length - 1; m >= 0 && userSnippets.length < 3; m--) {
         var msg = msgs[m];
@@ -575,7 +610,7 @@
         }
         var cleanClause = sanitizeSnippetByDeletedSigs(text, deletedSigs);
         if (cleanClause) {
-          userSnippets.unshift(cleanClause.slice(0, 180));
+          userSnippets.unshift(safeSliceMemoryText(cleanClause, 180));
         }
       }
       if (userSnippets.length > 0) {
@@ -710,10 +745,14 @@
     return upTo;
   }
 
+  function isManualSummarySegment(seg) {
+    return !!(seg && (seg.source === 'manual_written' || seg.isManualWritten === true || String(seg.id || '').indexOf('manual_') === 0));
+  }
+
   function getActiveSummarySegments(chat) {
     var segs = chat && Array.isArray(chat.summarySegments) ? chat.summarySegments : [];
     return segs.filter(function(s) {
-      return s && s.status === 'active' && String(s.content || '').trim();
+      return s && s.status === 'active' && !isManualSummarySegment(s) && String(s.content || '').trim();
     }).sort(function(a, b) {
       return (a.startMessageIndex - b.startMessageIndex) || (a.endMessageIndex - b.endMessageIndex) || ((a.createdAt || 0) - (b.createdAt || 0));
     });
@@ -730,7 +769,11 @@
     var seenRanges = Object.create(null);
     for (var i = 0; i < live.length; i++) {
       var item = live[i];
-      var rk = item.startMessageIndex + ':' + item.endMessageIndex;
+      var isManual = isManualSummarySegment(item);
+      var hasMsgRange = (Number(item.endMessageIndex) || 0) > (Number(item.startMessageIndex) || 0);
+      var rk = (isManual && !hasMsgRange)
+        ? ('manual:' + String(item.id || i))
+        : (item.startMessageIndex + ':' + item.endMessageIndex);
       if (seenRanges[rk]) continue;
       seenRanges[rk] = true;
       deduped.push(item);
@@ -739,8 +782,14 @@
   }
 
   function formatSummarySegmentLine(seg) {
-    var startNum = (Number(seg.startMessageIndex) || 0) + 1;
-    var endNum = Math.max(startNum, Number(seg.endMessageIndex) || startNum);
+    var isManual = isManualSummarySegment(seg);
+    var startIdx = Math.max(0, Math.floor(Number(seg.startMessageIndex) || 0));
+    var endIdx = Math.max(0, Math.floor(Number(seg.endMessageIndex) || 0));
+    if (isManual && endIdx <= startIdx) {
+      return '[手写摘要] ' + String(seg.content || '').trim();
+    }
+    var startNum = startIdx + 1;
+    var endNum = Math.max(startNum, endIdx || startNum);
     var prefix = seg.status === 'merged'
       ? ('【阶段综合摘要（第 ' + startNum + '-' + endNum + ' 条）】')
       : ('[第 ' + startNum + '-' + endNum + ' 条] ');
@@ -750,18 +799,41 @@
   function buildShortTermSummaryContext(chat, maxBudgetChars) {
     if (!chat || typeof chat !== 'object') return '';
     var budget = Math.max(300, Math.floor(Number(maxBudgetChars) || MAX_CONTEXT_SUMMARY_CHARS));
+    var trimLegacyPreserveLatest = function(rawText) {
+      var clean = String(rawText || '').trim();
+      if (!clean || clean.length <= budget) return clean;
+      var lines = clean.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
+      if (lines.length > 1) {
+        var kept = [];
+        var used = 0;
+        for (var li = lines.length - 1; li >= 0; li--) {
+          var line = lines[li];
+          var need = line.length + (kept.length ? 1 : 0);
+          if (used + need <= budget) {
+            kept.unshift(line);
+            used += need;
+          } else if (!kept.length && budget > 40) {
+            kept.unshift('…' + safeSliceMemoryTail(line, budget - 1));
+            break;
+          } else {
+            break;
+          }
+        }
+        var joinedLines = kept.join('\n');
+        return joinedLines.length > budget ? safeSliceMemoryText(joinedLines, budget - 1) + '…' : joinedLines;
+      }
+      return '…' + safeSliceMemoryTail(clean, budget - 1);
+    };
+
     var allSegs = Array.isArray(chat.summarySegments) ? chat.summarySegments : [];
     if (!allSegs.length) {
-      var legacyOnly = String(chat.summary || '').trim();
-      if (!legacyOnly) return '';
-      return legacyOnly.length > budget ? (legacyOnly.slice(0, budget - 1) + '…') : legacyOnly;
+      return trimLegacyPreserveLatest(chat.summary || '');
     }
 
     var legacyBase = String(chat.summaryLegacyBase || '').trim();
     var liveSegs = getLiveSummarySegments(chat);
     if (!legacyBase && !liveSegs.length) {
-      var fallbackLegacy = String(chat.summary || '').trim();
-      return fallbackLegacy.length > budget ? (fallbackLegacy.slice(0, budget - 1) + '…') : fallbackLegacy;
+      return trimLegacyPreserveLatest(chat.summary || '');
     }
 
     var olderBlocks = [];
@@ -795,7 +867,7 @@
         usedOlder += needO;
       } else if (!pickedOlder.length && olderBudget > 40) {
         var availO = olderBudget - 1;
-        pickedOlder.unshift(ob.slice(0, availO) + '…');
+        pickedOlder.unshift(safeSliceMemoryText(ob, availO) + '…');
         usedOlder = olderBudget;
         break;
       } else {
@@ -814,7 +886,7 @@
         usedRecent += needR;
       } else if (!pickedRecent.length && remainingBudget > 40) {
         var availR = remainingBudget - 1;
-        pickedRecent.unshift(rb.slice(0, availR) + '…');
+        pickedRecent.unshift(safeSliceMemoryText(rb, availR) + '…');
         usedRecent = remainingBudget;
         break;
       } else {
@@ -824,7 +896,7 @@
 
     var finalLines = pickedOlder.concat(pickedRecent);
     var out = finalLines.join('\n');
-    return out.length > budget ? (out.slice(0, budget - 1) + '…') : out;
+    return out.length > budget ? (safeSliceMemoryText(out, budget - 1) + '…') : out;
   }
 
   function computeNextSummaryPlan(chat, settings) {
@@ -923,17 +995,18 @@
     var budget = Math.max(400, Number(maxChars) || MAX_SEGMENT_INPUT_CHARS);
     var lines = [];
     var used = 0;
-    var perMsgCap = Math.max(120, Math.min(360, Math.floor(budget / Math.max(1, deltaMsgs.length))));
+    var count = Math.max(1, deltaMsgs.length);
+    var perMsgCap = Math.max(80, Math.min(360, Math.floor((budget - count * 4) / count)));
     for (var i = 0; i < deltaMsgs.length; i++) {
       var m = deltaMsgs[i];
       var roleLabel = m.role === 'user' ? '用户' : '助手';
       var raw = String(m.content || '').trim();
-      var safeContent = containsSensitiveSecret(raw) ? '[已脱敏]' : raw.slice(0, perMsgCap);
+      var safeContent = containsSensitiveSecret(raw) ? '[已脱敏]' : safeSliceMemoryText(raw, perMsgCap);
       var line = roleLabel + '：' + safeContent;
       if (used + line.length + 1 > budget) {
         var rem = budget - used - 1;
         if (rem > 24) {
-          lines.push(line.slice(0, rem - 1) + '…');
+          lines.push(safeSliceMemoryText(line, rem - 1) + '…');
         }
         break;
       }
@@ -1268,11 +1341,16 @@
       var chat = await store.getChat(opts.chatId);
       if (!chat) return null;
 
+      var allActiveSegs = (Array.isArray(chat.summarySegments) ? chat.summarySegments : []).filter(function(s) {
+        return s && s.status === 'active' && String(s.content || '').trim();
+      }).sort(function(a, b) {
+        return (a.startMessageIndex - b.startMessageIndex) || (a.endMessageIndex - b.endMessageIndex) || ((a.createdAt || 0) - (b.createdAt || 0));
+      });
       var activeSegs = getActiveSummarySegments(chat);
       var targetSegs = [];
       if (Array.isArray(opts.segmentIds) && opts.segmentIds.length) {
         var wantedSet = new Set(opts.segmentIds.map(String));
-        targetSegs = activeSegs.filter(function(s) { return wantedSet.has(s.id); });
+        targetSegs = allActiveSegs.filter(function(s) { return wantedSet.has(s.id); });
       } else if (activeSegs.length >= params.summaryMergeThreshold) {
         targetSegs = activeSegs.slice(0, params.summaryMergeThreshold);
       }
@@ -1287,10 +1365,13 @@
       var budget = Math.max(600, Number(opts.maxInputBudgetChars) || MAX_MERGE_INPUT_BUDGET_CHARS);
       var currentItems = targetSegs.map(function(seg) {
         var safeBody = containsSensitiveSecret(seg.content) ? '[已脱敏]' : String(seg.content || '').slice(0, MAX_SINGLE_SEGMENT_CHARS);
+        var labelPrefix = (isManualSummarySegment(seg) && seg.endMessageIndex <= seg.startMessageIndex)
+          ? '[手写摘要] '
+          : ('[第 ' + (seg.startMessageIndex + 1) + '-' + Math.max(seg.startMessageIndex + 1, seg.endMessageIndex) + ' 条] ');
         return {
           startMessageIndex: seg.startMessageIndex,
           endMessageIndex: seg.endMessageIndex,
-          text: '[第 ' + (seg.startMessageIndex + 1) + '-' + seg.endMessageIndex + ' 条] ' + safeBody
+          text: labelPrefix + safeBody
         };
       });
 
@@ -1994,7 +2075,7 @@
     var maxChars = Math.max(240, Number(opts.maxChars) || (maxResults * Math.max(140, params.maxSingleMemoryLength)));
     for (var j = 0; j < scoredMemories.length && chosenMemories.length < maxResults; j++) {
       var item = scoredMemories[j].memory;
-      var len = String(item.content || '').length + 12;
+      var len = measureMemoryContextChars(item);
       if (chosenMemories.length > 0 && usedMemChars + len > maxChars) continue;
       chosenMemories.push(item);
       appendDiagItem(item, 'direct');
@@ -2005,6 +2086,38 @@
       ? await store.listDeletedMemorySignatures()
       : [];
 
+    var isCrossSnippetDuplicate = function(cItem, pickedMemories, summaryText, pickedCross) {
+      if (!cItem || !cItem.content) return true;
+      var cText = String(cItem.content || '').trim();
+      var normCross = normalizeMemoryText(cText);
+      if (!normCross) return true;
+      var normSummary = normalizeMemoryText(summaryText || '');
+      if (normSummary && normCross.length >= 6 && normSummary.indexOf(normCross) !== -1) {
+        return true;
+      }
+      var memList = Array.isArray(pickedMemories) ? pickedMemories : [];
+      for (var mi = 0; mi < memList.length; mi++) {
+        var mContent = String((memList[mi] && memList[mi].content) || '').trim();
+        if (!mContent) continue;
+        var normMem = normalizeMemoryText(mContent);
+        if (normMem && (normMem === normCross || (normMem.length >= 6 && normCross.indexOf(normMem) !== -1 && (normMem.length / normCross.length) >= 0.72) || computeTextSimilarity(cText, mContent) >= 0.78)) {
+          return true;
+        }
+      }
+      var crossList = Array.isArray(pickedCross) ? pickedCross : [];
+      for (var ci = 0; ci < crossList.length; ci++) {
+        var prevContent = String((crossList[ci] && crossList[ci].content) || '').trim();
+        if (!prevContent) continue;
+        if (computeTextSimilarity(cText, prevContent) >= 0.8) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    var maxCrossCount = params.strategy === 'token_saver' ? 2 : (params.strategy === 'recall_more' ? 4 : 3);
+    var maxCrossChars = 720;
+    var usedCrossChars = 0;
     var crossCandidates = [];
     var chosenCross = [];
     if (allowReferenceHistory) {
@@ -2016,8 +2129,8 @@
       var scoredCross = [];
       for (var c = 0; c < crossCandidates.length; c++) {
         var cc = crossCandidates[c];
-        var cRes = scoreTextRelevance(cc.content + ' ' + cc.chatTitle, '', queryFeatures, metaRecall, rawQueryLower, 'user');
-        if (cRes.score >= minScore && (metaRecall || cRes.hasLexicalOrConceptMatch)) {
+        var cRes = scoreTextRelevance(cc.content + ' ' + cc.chatTitle, '', queryFeatures, metaRecall, rawQueryLower, 'cross_chat');
+        if (cRes.score >= minScore && cRes.hasLexicalOrConceptMatch) {
           scoredCross.push({ item: cc, score: cRes.score });
         }
       }
@@ -2025,11 +2138,10 @@
         if (b.score !== a.score) return b.score - a.score;
         return (b.item.updatedAt || 0) - (a.item.updatedAt || 0);
       });
-      var maxCrossCount = params.strategy === 'token_saver' ? 2 : (params.strategy === 'recall_more' ? 4 : 3);
-      var usedCrossChars = 0;
       for (var k = 0; k < scoredCross.length && chosenCross.length < maxCrossCount; k++) {
         var cItem = scoredCross[k].item;
-        if (usedCrossChars + cItem.content.length > 720 && chosenCross.length > 0) continue;
+        if (isCrossSnippetDuplicate(cItem, chosenMemories, emptyResult.shortTermSummary, chosenCross)) continue;
+        if (usedCrossChars + cItem.content.length > maxCrossChars && chosenCross.length > 0) continue;
         chosenCross.push(cItem);
         usedCrossChars += cItem.content.length;
       }
@@ -2067,8 +2179,11 @@
           if (!foundM) return;
           if (!asksHistoryOrCancelled && foundM.archived === true) return;
           if (chosenMemories.length < maxResults) {
+            var mLen = measureMemoryContextChars(foundM);
+            if (chosenMemories.length > 0 && usedMemChars + mLen > maxChars) return;
             pickedMemIdSet.add(key);
             chosenMemories.push(foundM);
+            usedMemChars += mLen;
             appendDiagItem(foundM, 'semantic_fallback');
           }
         });
@@ -2083,9 +2198,15 @@
           var cKey = String(id || '').trim();
           if (!cKey || pickedCrossIdSet.has(cKey)) return;
           var foundC = crossCandidateById.get(cKey);
-          if (foundC && chosenCross.length < 3) {
+          if (
+            foundC &&
+            chosenCross.length < maxCrossCount &&
+            (chosenCross.length === 0 || usedCrossChars + foundC.content.length <= maxCrossChars) &&
+            !isCrossSnippetDuplicate(foundC, chosenMemories, emptyResult.shortTermSummary, chosenCross)
+          ) {
             pickedCrossIdSet.add(cKey);
             chosenCross.push(foundC);
+            usedCrossChars += foundC.content.length;
           }
         });
       }
@@ -2376,13 +2497,15 @@
   }
 
   function buildHistoryContextText(historyMessages) {
-    var list = Array.isArray(historyMessages) ? historyMessages : [];
+    var list = (Array.isArray(historyMessages) ? historyMessages : []).filter(function(m) {
+      return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim();
+    });
     if (!list.length) return '';
     return list.slice(-6).map(function(m) {
-      var role = m && m.role === 'assistant' ? '助手' : '用户';
-      var content = String((m && m.content) || '').trim().slice(0, 260);
-      return content ? (role + '：' + content) : '';
-    }).filter(Boolean).join('\n');
+      var role = m.role === 'assistant' ? '助手' : '用户';
+      var content = String(m.content || '').trim().slice(0, 260);
+      return role + '：' + content;
+    }).join('\n');
   }
 
   function hasIdentifiableHistoryAntecedent(historyMessages) {
@@ -5368,8 +5491,10 @@
       var userText = String(opts.userText || '').trim();
       var turnKey = 'ext:' + String(opts.chatId || '') + ':' + String(opts.userMsgId || Date.now());
       var compactHist = Array.isArray(opts.historyMessages)
-        ? opts.historyMessages.slice(-4).map(function(m) {
-            return { role: m.role, content: String(m.content || '').slice(0, 180) };
+        ? opts.historyMessages.filter(function(m) {
+            return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim();
+          }).slice(-4).map(function(m) {
+            return { role: m.role, content: String(m.content || '').trim().slice(0, 180) };
           })
         : [];
 
