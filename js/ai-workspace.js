@@ -2937,6 +2937,15 @@
         assistantMsg.error = (err && err.message) ? err.message : '请求失败，请检查网络连接与 API 配置';
       }
     } finally {
+      if (Array.isArray(assistantMsg.toolCalls)) {
+        assistantMsg.toolCalls.forEach(function(tc) {
+          if (tc && tc.status === 'running') {
+            tc.status = 'error';
+            tc.error = assistantMsg.aborted ? '已中断' : '未完成';
+            tc.summaryText = tc.error;
+          }
+        });
+      }
       _state.isStreaming = false;
       _state.abortController = null;
       syncComposerButtons(page);

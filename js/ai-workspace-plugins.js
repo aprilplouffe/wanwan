@@ -1245,9 +1245,12 @@
     var id = String(input.id || '').trim() || ('mcp_srv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
     var idx = settings.mcpServers.findIndex(function(item) { return item.id === id; });
     var existing = idx !== -1 ? settings.mcpServers[idx] : null;
-    var nextToken = (input.authToken !== undefined && input.authToken !== '')
-      ? String(input.authToken)
-      : (input.clearAuthToken ? '' : (existing ? existing.authToken : ''));
+    var nextAuthType = input.authType || 'none';
+    var nextToken = nextAuthType === 'none'
+      ? ''
+      : ((input.authToken !== undefined && input.authToken !== '')
+          ? String(input.authToken)
+          : (input.clearAuthToken ? '' : (existing ? existing.authToken : '')));
 
     var record = normalizeMcpServerRecord({
       id: id,

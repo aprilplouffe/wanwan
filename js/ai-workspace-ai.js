@@ -1012,6 +1012,13 @@
       }
       if (parsedJson && parsedJson.error) {
         var jsonErrMsg = (parsedJson.error && parsedJson.error.message) || String(parsedJson.error);
+        if (hasTools && opts.allowToolFallback !== false && /tool|function/i.test(jsonErrMsg)) {
+          return streamChatCompletion(Object.assign({}, opts, {
+            tools: undefined,
+            toolChoice: undefined,
+            allowToolFallback: false
+          }));
+        }
         throw new Error(jsonErrMsg);
       }
       fullText = extractNonStreamText(parsedJson);
