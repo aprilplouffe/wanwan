@@ -1476,7 +1476,7 @@
       autoSummary: typeof src.autoSummary === 'boolean' ? src.autoSummary : (prev.autoSummary !== false),
       summaryModelMode: summaryModelMode,
       customSummaryPrompt: customSummaryPrompt,
-      summaryReadWorldBook: typeof src.summaryReadWorldBook === 'boolean' ? src.summaryReadWorldBook : (prev.summaryReadWorldBook === true),
+      summaryReadWorldBook: false,
       crossChatMemory: typeof src.crossChatMemory === 'boolean' ? src.crossChatMemory : (prev.crossChatMemory !== false),
       useMemory: typeof src.useMemory === 'boolean' ? src.useMemory : (prev.useMemory !== false),
       autoMemory: typeof src.autoMemory === 'boolean' ? src.autoMemory : (prev.autoMemory !== false),

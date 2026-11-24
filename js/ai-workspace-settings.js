@@ -2946,7 +2946,6 @@
     var intervalVal = Number(ms.summaryIntervalMessages) || bounds.summaryIntervalMessages.def;
     var mergeThresholdVal = Number(ms.summaryMergeThreshold) || bounds.summaryMergeThreshold.def;
     var autoSummaryOn = ms.autoSummary !== false;
-    var summaryReadWorldBookOn = ms.summaryReadWorldBook === true;
     var summaryApiCfg = (_ctx.summaryApiConfig && typeof _ctx.summaryApiConfig === 'object')
       ? _ctx.summaryApiConfig
       : { baseUrl: '', apiKey: '', model: '', temperature: 0.1, complete: false };
@@ -3009,16 +3008,6 @@
           '</div>' +
           '<label class="aiw-switch">' +
             '<input type="checkbox" id="aiw-ss-auto-summary"' + (autoSummaryOn ? ' checked' : '') + '>' +
-            '<span class="aiw-switch-track"></span>' +
-          '</label>' +
-        '</div>' +
-        '<div class="aiw-st-row aiw-st-row-static">' +
-          '<div class="aiw-st-row-col">' +
-            '<div class="aiw-st-row-label">摘要读取世界书</div>' +
-            '<div class="aiw-st-row-desc">开启后，生成摘要时可参考当前聊天适用的世界书设定，不会将设定直接当作已发生的事件。</div>' +
-          '</div>' +
-          '<label class="aiw-switch">' +
-            '<input type="checkbox" id="aiw-ss-read-worldbook"' + (summaryReadWorldBookOn ? ' checked' : '') + '>' +
             '<span class="aiw-switch-track"></span>' +
           '</label>' +
         '</div>' +
@@ -3141,7 +3130,17 @@
     var selectorHtml = chats.length
       ? (
         '<div class="aiw-st-card aiw-st-pad" style="margin-top:14px;">' +
-          '<label class="aiw-field-label" for="aiw-ss-chat-select">切换聊天查看摘要</label>' +
+          '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">' +
+            '<label class="aiw-field-label" for="aiw-ss-chat-select" style="margin:0;">切换聊天查看摘要</label>' +
+            '<div style="display:flex; gap:6px;">' +
+              '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ss-trigger-summary" style="display:inline-flex; align-items:center; gap:4px;">' +
+                '<i class="fa-solid fa-wand-magic-sparkles"></i> 立即摘要' +
+              '</button>' +
+              '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ss-manual-summary" style="display:inline-flex; align-items:center; gap:4px;">' +
+                '<i class="fa-solid fa-pen-nib"></i> 手写摘要' +
+              '</button>' +
+            '</div>' +
+          '</div>' +
           '<select class="aiw-api-select" id="aiw-ss-chat-select">' +
             chats.map(function(c) {
               var selected = targetChat && c.id === targetChat.id ? ' selected' : '';
@@ -3275,6 +3274,168 @@
       });
     }
 
+    var manualSummaryBtn = layer.querySelector('#aiw-ss-manual-summary');
+    if (manualSummaryBtn) {
+      manualSummaryBtn.addEventListener('click', function() {
+        var targetChat = resolveSummaryTargetChat();
+        if (!targetChat || !targetChat.id) {
+          notifyToast('请先选择一个有效的聊天');
+          return;
+        }
+
+        var bodyHtml =
+          '<div class="aiw-import-box">' +
+            '<label class="aiw-field-label" for="aiw-manual-summary-input">输入手写摘要内容（支持多行）</label>' +
+            '<textarea class="aiw-field-textarea" id="aiw-manual-summary-input" rows="6" placeholder="在此输入自定义的手写阶段摘要或备注..."></textarea>' +
+          '</div>';
+
+        var footerHtml =
+          '<button type="button" class="aiw-st-btn-secondary" id="aiw-manual-summary-cancel">取消</button>' +
+          '<button type="button" class="aiw-st-btn-primary" id="aiw-manual-summary-save">保存</button>';
+
+        var modal = showCustomModal('手写摘要 · ' + (targetChat.title || '当前聊天'), bodyHtml, footerHtml);
+        if (!modal) return;
+
+        var cancelBtn = modal.querySelector('#aiw-manual-summary-cancel');
+        var saveBtn = modal.querySelector('#aiw-manual-summary-save');
+        var inputEl = modal.querySelector('#aiw-manual-summary-input');
+
+        if (cancelBtn) {
+          cancelBtn.addEventListener('click', closeModalOverlay);
+        }
+
+        var isSaving = false;
+        if (saveBtn && inputEl) {
+          saveBtn.addEventListener('click', async function() {
+            var val = String(inputEl.value || '').trim();
+            if (!val) {
+              notifyToast('摘要内容不能为空');
+              return;
+            }
+            if (isSaving) return;
+            isSaving = true;
+            saveBtn.disabled = true;
+            saveBtn.textContent = '保存中...';
+
+            try {
+              var segments = Array.isArray(targetChat.summarySegments) ? targetChat.summarySegments.slice() : [];
+              var newSeg = {
+                id: 'manual_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+                startMessageIndex: Number(targetChat.summaryUpToCount) || 0,
+                endMessageIndex: Number(targetChat.summaryUpToCount) || 0,
+                content: val,
+                createdAt: Date.now(),
+                status: 'active',
+                source: 'manual_written',
+                isManualWritten: true
+              };
+              segments.push(newSeg);
+
+              await S().saveChat({
+                id: targetChat.id,
+                summarySegments: segments
+              });
+
+              closeModalOverlay();
+              await refreshAllData();
+              notifyWorkspaceStateChanged();
+              renderCurrentView();
+              notifyToast('手写摘要已保存');
+            } catch (err) {
+              console.warn('[AiWorkspaceSettings] save manual summary failed:', err);
+              notifyToast('保存手写摘要失败，请稍后重试');
+              isSaving = false;
+              saveBtn.disabled = false;
+              saveBtn.textContent = '保存';
+            }
+          });
+        }
+      });
+    }
+
+    var triggerSummaryBtn = layer.querySelector('#aiw-ss-trigger-summary');
+    if (triggerSummaryBtn) {
+      triggerSummaryBtn.addEventListener('click', async function() {
+        var targetChat = resolveSummaryTargetChat();
+        if (!targetChat || !targetChat.id) {
+          notifyToast('请先选择一个有效的聊天');
+          return;
+        }
+
+        var existingTasks = Array.isArray(_ctx.memoryTasks) ? _ctx.memoryTasks : [];
+        var activeSumTask = existingTasks.find(function(t) {
+          return t && t.type === 'summarize_chat' && t.chatId === targetChat.id &&
+            (t.status === 'pending' || t.status === 'running' || t.status === 'retry_waiting');
+        });
+        if (activeSumTask) {
+          notifyToast('摘要任务正在处理中，请稍候...');
+          return;
+        }
+
+        var cleanMsgs = targetChat && Array.isArray(targetChat.messages)
+          ? targetChat.messages.filter(function(m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim(); })
+          : [];
+        var alreadyUpTo = Math.max(0, Math.floor(Number(targetChat.summaryUpToCount) || 0));
+        var segs = Array.isArray(targetChat.summarySegments) ? targetChat.summarySegments : [];
+        for (var si = 0; si < segs.length; si++) {
+          var s = segs[si];
+          if (!s || typeof s !== 'object') continue;
+          var endIdx = Math.max(0, Math.floor(Number(s.endMessageIndex) || 0));
+          if (endIdx > alreadyUpTo) alreadyUpTo = endIdx;
+        }
+
+        var ms = _ctx.memorySettings || {};
+        var keepRecent = Number(ms.recentRawMessagesLimit) || 20;
+        var targetUpTo = Math.max(0, cleanMsgs.length - keepRecent);
+
+        if (targetUpTo <= alreadyUpTo) {
+          notifyToast('暂无需要摘要的新消息');
+          return;
+        }
+
+        var prevHtml = triggerSummaryBtn.innerHTML;
+        triggerSummaryBtn.disabled = true;
+        triggerSummaryBtn.textContent = '摘要生成中...';
+
+        try {
+          var intervalMsgs = Number(ms.summaryIntervalMessages) || 20;
+          var chunkCap = Math.max(intervalMsgs, 40);
+          var endIndex = Math.min(targetUpTo, alreadyUpTo + chunkCap);
+
+          await S().enqueueMemoryTask({
+            type: 'summarize_chat',
+            turnKey: 'manual_sum:' + String(targetChat.id) + ':' + alreadyUpTo + ':' + endIndex + ':' + Date.now(),
+            chatId: targetChat.id,
+            chatTitle: targetChat.title || '',
+            projectId: targetChat.projectId || '',
+            userId: 'local_user',
+            status: 'pending',
+            memoryWritten: false,
+            savedMemoryIds: [],
+            payload: {
+              startIndex: alreadyUpTo,
+              endIndex: endIndex,
+              targetUpTo: endIndex
+            }
+          });
+
+          if (M() && typeof M().processMemoryTaskQueue === 'function') {
+            await M().processMemoryTaskQueue();
+          }
+
+          await refreshAllData();
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          notifyToast('立即摘要生成完成');
+        } catch (err) {
+          console.warn('[AiWorkspaceSettings] manual summarize failed:', err);
+          notifyToast('立即摘要生成失败，请稍后重试');
+          triggerSummaryBtn.disabled = false;
+          triggerSummaryBtn.innerHTML = prevHtml;
+        }
+      });
+    }
+
     var autoToggle = layer.querySelector('#aiw-ss-auto-summary');
     if (autoToggle && S() && typeof S().saveMemorySettings === 'function') {
       autoToggle.addEventListener('change', async function() {
@@ -3288,24 +3449,7 @@
       });
     }
 
-    var worldBookToggle = layer.querySelector('#aiw-ss-read-worldbook');
-    if (worldBookToggle && S() && typeof S().saveMemorySettings === 'function') {
-      worldBookToggle.addEventListener('change', async function() {
-        var nextChecked = !!worldBookToggle.checked;
-        try {
-          _ctx.memorySettings = await S().saveMemorySettings({
-            summaryReadWorldBook: nextChecked,
-            applyStrategyPreset: false
-          });
-          notifyWorkspaceStateChanged();
-          renderCurrentView();
-          notifyToast(nextChecked ? '已开启摘要读取世界书' : '已关闭摘要读取世界书');
-        } catch (_) {
-          worldBookToggle.checked = !nextChecked;
-          notifyToast('保存摘要读取世界书设置失败，请稍后重试');
-        }
-      });
-    }
+
 
     var maxCustomPromptLen = (S() && Number(S().MAX_CUSTOM_SUMMARY_PROMPT_LENGTH)) || 1000;
     var customPromptEl = layer.querySelector('#aiw-ss-custom-prompt');
@@ -3344,7 +3488,6 @@
         var intervalEl = layer.querySelector('#aiw-ss-interval-msgs');
         var mergeEl = layer.querySelector('#aiw-ss-merge-threshold');
         var autoEl = layer.querySelector('#aiw-ss-auto-summary');
-        var worldBookEl = layer.querySelector('#aiw-ss-read-worldbook');
         var promptEl = layer.querySelector('#aiw-ss-custom-prompt');
         var promptHintEl = layer.querySelector('#aiw-ss-custom-prompt-hint');
 
@@ -3386,7 +3529,6 @@
         try {
           _ctx.memorySettings = await S().saveMemorySettings({
             autoSummary: autoEl ? autoEl.checked : true,
-            summaryReadWorldBook: worldBookEl ? !!worldBookEl.checked : false,
             recentRawMessagesLimit: rawRecent,
             summaryIntervalMessages: rawInterval,
             summaryMergeThreshold: rawMerge,
