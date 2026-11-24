@@ -5670,3 +5670,64 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* 7-A4: MCP 管理与确认弹窗样式 */
+.aiw-plg-tabs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aiw-mcp-tool-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aiw-plg-tool-item.is-disabled {
+  opacity: 0.55;
+}
+
+.aiw-switch-sm {
+  transform: scale(0.84);
+  transform-origin: right center;
+}
+
+.aiw-st-btn-secondary.is-danger {
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.aiw-mcp-confirm-box {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.aiw-mcp-confirm-warn {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+  padding: 8px 10px;
+  border-radius: 10px;
+  margin-bottom: 10px;
+  font-weight: 500;
+}
+
+.aiw-mcp-confirm-meta {
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.aiw-mcp-confirm-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
