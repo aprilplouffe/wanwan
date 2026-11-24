@@ -242,30 +242,44 @@
       }
     });
 
+    var cleanMcpServers = [];
+    if (Array.isArray(src.mcpServers)) {
+      src.mcpServers.forEach(function(item) {
+        var normSrv = normalizeMcpServerRecord(item);
+        if (normSrv) cleanMcpServers.push(normSrv);
+      });
+    }
     return {
       globalEnabled: src.globalEnabled !== false,
       plugins: pluginsMap,
       chatOverrides: chatOverrides,
+      mcpServers: cleanMcpServers,
       updatedAt: Number(src.updatedAt) || 0
     };
   }
 
   async function loadPluginSettings() {
     var store = S();
+    var norm;
     if (store && typeof store.getPluginSettings === 'function') {
-      return normalizePluginSettings(await store.getPluginSettings());
+      norm = normalizePluginSettings(await store.getPluginSettings());
+    } else {
+      norm = normalizePluginSettings({});
     }
-    return normalizePluginSettings({});
+    syncMcpServersToRegistry(norm);
+    return norm;
   }
 
   async function savePluginSettings(nextSettings) {
     var normalized = normalizePluginSettings(nextSettings);
     normalized.updatedAt = Date.now();
     var store = S();
+    var saved = normalized;
     if (store && typeof store.savePluginSettings === 'function') {
-      return normalizePluginSettings(await store.savePluginSettings(normalized));
+      saved = normalizePluginSettings(await store.savePluginSettings(normalized));
     }
-    return normalized;
+    syncMcpServersToRegistry(saved);
+    return saved;
   }
 
   // 明确优先级解析：
@@ -391,16 +405,24 @@
       if (category && category !== 'all' && t.category !== category) return;
       var st = resolvePluginEffectiveState(t.pluginId, settings, cid);
       if (onlyEnabled && !st.effectiveEnabled) return;
+      var plgRef = _plugins[t.pluginId];
+      var mcpDisabled = !!(t.mcpServerId && isMcpToolDisabledInSettings(settings, t.mcpServerId, t.name));
+      var effectiveToolEnabled = st.effectiveEnabled && !mcpDisabled;
+      if (onlyEnabled && !effectiveToolEnabled) return;
       list.push({
         pluginId: t.pluginId,
         category: t.category,
+        pluginName: (plgRef && plgRef.name) || '',
         name: t.name,
         fullName: t.fullName,
         title: t.title,
         description: t.description,
         parameters: clone(t.parameters),
         permissions: clone(t.permissions),
-        enabled: st.effectiveEnabled
+        executable: typeof t.execute === 'function',
+        mcpServerId: t.mcpServerId || '',
+        mcpToolDisabled: mcpDisabled,
+        enabled: effectiveToolEnabled
       });
     });
     return list;
@@ -465,10 +487,19 @@
       };
     }
 
+    if (tool.mcpServerId && isMcpToolDisabledInSettings(settings, tool.mcpServerId, tool.name)) {
+      return {
+        ok: false,
+        error: '该 MCP 工具已单独停用',
+        code: 'tool_disabled',
+        reason: 'tool_disabled'
+      };
+    }
+
     if (tool.category === CATEGORY_MCP && (!(_plugins[tool.pluginId].mcpMeta && _plugins[tool.pluginId].mcpMeta.connected))) {
       return {
         ok: false,
-        error: 'MCP 插件服务尚未连接（当前仅预留统一协议框架）',
+        error: 'MCP 插件服务尚未连接或测试同步，请先在「MCP 插件」中测试连接',
         code: 'mcp_not_connected'
       };
     }
@@ -485,22 +516,33 @@
 
     if (needsConfirm) {
       var confirmed = opts.confirmed === true;
-      if (!confirmed && typeof opts.requestConfirmation === 'function') {
-        confirmed = !!(await opts.requestConfirmation({
+      var rejectedByUser = false;
+      var confirmFn = typeof opts.requestConfirmation === 'function'
+        ? opts.requestConfirmation
+        : (typeof opts.confirmHandler === 'function' ? opts.confirmHandler : null);
+      if (!confirmed && confirmFn) {
+        var srvInfo = getSanitizedMcpServer(tool.mcpServerId, settings);
+        confirmed = !!(await confirmFn({
           pluginId: tool.pluginId,
+          plugin: sanitizePluginSummary(_plugins[tool.pluginId]),
           toolName: tool.fullName,
           title: tool.title,
+          description: tool.description,
           permissions: clone(perms),
-          params: clone(check.params)
+          params: clone(check.params),
+          server: srvInfo
         }));
+        if (!confirmed) rejectedByUser = true;
       }
       if (!confirmed) {
         return {
           ok: false,
           blocked: true,
           requiresConfirmation: true,
-          code: 'confirmation_required',
-          error: '该操作涉及敏感或写入权限（' + perms.scopes.join(', ') + '），默认拦截，需用户明确确认后方可执行。'
+          code: rejectedByUser ? 'user_rejected' : 'confirmation_required',
+          error: rejectedByUser
+            ? '用户拒绝执行该外部工具'
+            : ('该操作涉及敏感或写入权限（' + perms.scopes.join(', ') + '），默认拦截，需用户明确确认后方可执行。')
         };
       }
     }
@@ -722,6 +764,549 @@
   }
 
   // ===== 注册默认内置插件与 MCP 框架预留项 =====
+
+  // ===== 7-A4: MCP Streamable HTTP 协议接入、SSRF 校验与工具同步 =====
+  function maskSecret(secret) {
+    var raw = String(secret || '').trim();
+    if (!raw) return '';
+    if (raw.length <= 8) return '••••';
+    return raw.slice(0, 3) + '••••' + raw.slice(-4);
+  }
+
+  function isPrivateOrBlockedHostname(hostname, ipv4Override) {
+    var h = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    if (!h) return true;
+    if (
+      h === 'localhost' ||
+      h === 'ip6-localhost' ||
+      h.endsWith('.localhost') ||
+      h.endsWith('.local') ||
+      h.endsWith('.internal') ||
+      h.endsWith('.localdomain')
+    ) {
+      return true;
+    }
+    if (h === '::1' || h === '::' || h.indexOf('fe80:') === 0 || h.indexOf('fc') === 0 || h.indexOf('fd') === 0) {
+      return true;
+    }
+    var ipStr = ipv4Override || h;
+    if (ipStr.indexOf('::ffff:') === 0) {
+      ipStr = ipStr.slice(7);
+    }
+    var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ipStr);
+    if (m) {
+      var a = Number(m[1]), b = Number(m[2]), c = Number(m[3]), d = Number(m[4]);
+      if (a > 255 || b > 255 || c > 255 || d > 255) return true;
+      if (a === 0 || a === 10 || a === 127) return true;
+      if (a === 169 && b === 254) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 100 && b >= 64 && b <= 127) return true;
+    }
+    return false;
+  }
+
+  function validateMcpEndpointUrl(rawUrl, options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var text = String(rawUrl || '').trim();
+    if (!text) {
+      return { ok: false, error: '请填写 MCP 服务器 URL' };
+    }
+    if (/^(stdio:|npx\s|uvx\s|node\s|python\s|ws:|wss:|file:|ftp:|javascript:|data:)/i.test(text)) {
+      return {
+        ok: false,
+        code: 'unsupported_transport',
+        error: '当前仅支持远程 MCP Streamable HTTP 协议（https://...），暂不支持本地 stdio / WebSocket 连接。'
+      };
+    }
+    var parsed;
+    try {
+      parsed = new URL(text);
+    } catch (_) {
+      return { ok: false, code: 'invalid_url', error: 'MCP 服务器 URL 格式无效，请输入完整的 https:// 地址' };
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return {
+        ok: false,
+        code: 'unsupported_transport',
+        error: '不支持的协议「' + parsed.protocol + '」，当前仅支持远程 MCP Streamable HTTP（https:// 或 http://）。'
+      };
+    }
+    if (parsed.username || parsed.password) {
+      return {
+        ok: false,
+        code: 'credentials_in_url',
+        error: '安全校验拦截：禁止在 URL 中直接嵌入账号或密码，请使用下方认证信息字段。'
+      };
+    }
+    if (!opts.allowPrivateNetwork && isPrivateOrBlockedHostname(parsed.hostname)) {
+      return {
+        ok: false,
+        code: 'ssrf_blocked',
+        error: '安全校验拦截：默认禁止访问本机或内网地址（防 SSRF），请使用公网 HTTPS MCP 服务地址。'
+      };
+    }
+    return {
+      ok: true,
+      url: parsed.toString(),
+      origin: parsed.origin
+    };
+  }
+
+  function normalizeMcpCachedTool(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var name = String(raw.name || '').trim();
+    if (!name) return null;
+    var ann = raw.annotations && typeof raw.annotations === 'object' ? raw.annotations : null;
+    return {
+      name: name,
+      title: String(raw.title || name).trim(),
+      description: String(raw.description || '').trim(),
+      inputSchema: normalizeParameters(raw.inputSchema || raw.parameters),
+      annotations: ann ? {
+        readOnlyHint: ann.readOnlyHint === true,
+        destructiveHint: ann.destructiveHint === true,
+        idempotentHint: ann.idempotentHint === true,
+        openWorldHint: ann.openWorldHint === true
+      } : null
+    };
+  }
+
+  function isMcpToolExplicitSafeReadOnly(toolDef) {
+    var ann = toolDef && toolDef.annotations;
+    if (!ann || typeof ann !== 'object') return false;
+    return ann.readOnlyHint === true && ann.destructiveHint !== true && ann.openWorldHint !== true;
+  }
+
+  function normalizeMcpServerRecord(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var id = String(raw.id || '').trim();
+    if (!id) return null;
+    var transport = String(raw.transport || 'streamable_http').trim().toLowerCase();
+    if (transport !== 'streamable_http') transport = 'streamable_http';
+    var authType = String(raw.authType || 'none').trim().toLowerCase();
+    if (['none', 'bearer', 'header'].indexOf(authType) === -1) authType = 'none';
+    var disabledTools = {};
+    if (raw.disabledTools && typeof raw.disabledTools === 'object') {
+      Object.keys(raw.disabledTools).forEach(function(k) {
+        if (raw.disabledTools[k]) disabledTools[String(k)] = true;
+      });
+    }
+    var cachedTools = [];
+    if (Array.isArray(raw.cachedTools)) {
+      raw.cachedTools.forEach(function(t) {
+        var nt = normalizeMcpCachedTool(t);
+        if (nt) cachedTools.push(nt);
+      });
+    }
+    return {
+      id: id,
+      name: String(raw.name || 'MCP 服务器').trim().slice(0, 60),
+      transport: transport,
+      url: String(raw.url || '').trim(),
+      authType: authType,
+      authHeaderName: String(raw.authHeaderName || 'X-API-Key').trim().slice(0, 80) || 'X-API-Key',
+      authToken: String(raw.authToken || ''),
+      enabled: raw.enabled !== false,
+      allowPrivateNetwork: !!raw.allowPrivateNetwork,
+      disabledTools: disabledTools,
+      cachedTools: cachedTools,
+      lastSyncAt: Number(raw.lastSyncAt) || 0,
+      lastError: String(raw.lastError || '').slice(0, 300),
+      sessionId: String(raw.sessionId || '').slice(0, 200)
+    };
+  }
+
+  function sanitizeMcpServer(srv) {
+    if (!srv) return null;
+    var origin = '';
+    try { origin = srv.url ? new URL(srv.url).origin : ''; } catch (_) {}
+    return {
+      id: srv.id,
+      name: srv.name,
+      transport: srv.transport,
+      url: srv.url,
+      origin: origin,
+      authType: srv.authType,
+      authHeaderName: srv.authHeaderName,
+      hasAuthToken: !!srv.authToken,
+      authTokenMasked: maskSecret(srv.authToken),
+      enabled: srv.enabled !== false,
+      allowPrivateNetwork: !!srv.allowPrivateNetwork,
+      disabledTools: clone(srv.disabledTools || {}),
+      cachedTools: clone(srv.cachedTools || []),
+      lastSyncAt: srv.lastSyncAt || 0,
+      lastError: srv.lastError || ''
+    };
+  }
+
+  function getSanitizedMcpServer(serverId, settings) {
+    if (!serverId || !settings || !Array.isArray(settings.mcpServers)) return null;
+    for (var i = 0; i < settings.mcpServers.length; i++) {
+      if (settings.mcpServers[i].id === serverId) {
+        return sanitizeMcpServer(settings.mcpServers[i]);
+      }
+    }
+    return null;
+  }
+
+  function isMcpToolDisabledInSettings(settings, serverId, toolName) {
+    if (!settings || !Array.isArray(settings.mcpServers)) return false;
+    for (var i = 0; i < settings.mcpServers.length; i++) {
+      var srv = settings.mcpServers[i];
+      if (srv.id === serverId) {
+        return !!(srv.disabledTools && srv.disabledTools[toolName]);
+      }
+    }
+    return false;
+  }
+
+  function syncMcpServersToRegistry(settings) {
+    var servers = (settings && Array.isArray(settings.mcpServers)) ? settings.mcpServers : [];
+    Object.keys(_plugins).forEach(function(pid) {
+      if (pid.indexOf('mcp_srv_') === 0) {
+        var oldPlg = _plugins[pid];
+        if (oldPlg && Array.isArray(oldPlg.tools)) {
+          oldPlg.tools.forEach(function(t) { delete _tools[t.fullName]; });
+        }
+        delete _plugins[pid];
+      }
+    });
+
+    if (servers.length > 0 && _plugins['mcp_reserved_gateway']) {
+      var gw = _plugins['mcp_reserved_gateway'];
+      if (Array.isArray(gw.tools)) {
+        gw.tools.forEach(function(t) { delete _tools[t.fullName]; });
+      }
+      delete _plugins['mcp_reserved_gateway'];
+    } else if (servers.length === 0 && !_plugins['mcp_reserved_gateway']) {
+      registerReservedMcpPlaceholder();
+    }
+
+    servers.forEach(function(srv) {
+      var origin = '';
+      try { origin = srv.url ? new URL(srv.url).origin : srv.url; } catch (_) { origin = srv.url; }
+      var toolsForReg = (srv.cachedTools || []).map(function(t) {
+        var safeRo = isMcpToolExplicitSafeReadOnly(t);
+        return {
+          name: t.name,
+          title: t.title || t.name,
+          description: t.description || '外部 MCP 工具',
+          parameters: normalizeParameters(t.inputSchema),
+          mcpServerId: srv.id,
+          permissions: {
+            readOnly: safeRo,
+            scopes: safeRo ? [PERMISSION_SCOPES.READ_ONLY] : [PERMISSION_SCOPES.EXTERNAL_ACTION],
+            requiresConfirmation: !safeRo
+          },
+          execute: async function(params) {
+            return await mcpCallRemoteTool(srv.id, t.name, params);
+          }
+        };
+      });
+
+      registerMcpDescriptor({
+        id: srv.id,
+        name: srv.name,
+        description: '远程 MCP Streamable HTTP 服务（' + (origin || '未配置地址') + '）' + (srv.lastError ? (' · 上次异常：' + srv.lastError) : ''),
+        version: 'MCP',
+        author: origin || 'MCP Server',
+        defaultEnabled: srv.enabled !== false,
+        permissions: {
+          readOnly: false,
+          scopes: [PERMISSION_SCOPES.EXTERNAL_ACTION],
+          requiresConfirmation: true
+        },
+        mcpMeta: {
+          connected: srv.lastSyncAt > 0 && !srv.lastError,
+          transport: 'streamable_http',
+          endpoint: origin,
+          serverId: srv.id,
+          lastSyncAt: srv.lastSyncAt || 0,
+          lastError: srv.lastError || ''
+        },
+        tools: toolsForReg
+      });
+
+      toolsForReg.forEach(function(td) {
+        var fn = buildToolFullName(srv.id, td.name);
+        if (_tools[fn]) {
+          _tools[fn].mcpServerId = srv.id;
+          _tools[fn].permissions = normalizePermissions(td.permissions);
+        }
+      });
+    });
+  }
+
+  function buildMcpAuthHeaders(srv) {
+    var headers = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream'
+    };
+    if (srv.sessionId) {
+      headers['Mcp-Session-Id'] = srv.sessionId;
+    }
+    var token = String(srv.authToken || '').trim();
+    if (token) {
+      if (srv.authType === 'bearer') {
+        headers.Authorization = /^Bearer\s+/i.test(token) ? token : ('Bearer ' + token);
+      } else if (srv.authType === 'header') {
+        var hName = String(srv.authHeaderName || 'X-API-Key').trim();
+        if (hName && !/^(host|content-length|connection)$/i.test(hName)) {
+          headers[hName] = token;
+        }
+      }
+    }
+    return headers;
+  }
+
+  function parseMcpHttpResponseBody(rawText, contentType, expectedId) {
+    var text = String(rawText || '').trim();
+    if (!text) return null;
+    if (/text\/event-stream/i.test(contentType || '') || /^\s*(event:|data:)/m.test(text)) {
+      var lines = text.split(/\r?\n/);
+      var matched = null;
+      var lastJson = null;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.indexOf('data:') !== 0) continue;
+        var payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+          var parsed = JSON.parse(payload);
+          lastJson = parsed;
+          if (expectedId !== undefined && parsed && parsed.id === expectedId) {
+            matched = parsed;
+          }
+        } catch (_) {}
+      }
+      return matched || lastJson;
+    }
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function mcpJsonRpcRequest(srv, method, params, options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    if (srv.transport && srv.transport !== 'streamable_http') {
+      throw new Error('不支持的 MCP 连接方式，当前仅支持远程 Streamable HTTP');
+    }
+    var check = validateMcpEndpointUrl(srv.url, { allowPrivateNetwork: !!srv.allowPrivateNetwork });
+    if (!check.ok) {
+      throw new Error(check.error);
+    }
+    var timeoutMs = Math.max(2000, Math.min(60000, Number(opts.timeoutMs) || 12000));
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var timer = controller ? setTimeout(function() { controller.abort(); }, timeoutMs) : null;
+    var reqId = opts.isNotification ? undefined : (Date.now() + Math.floor(Math.random() * 1000));
+    var payload = opts.isNotification
+      ? { jsonrpc: '2.0', method: method, params: params || {} }
+      : { jsonrpc: '2.0', id: reqId, method: method, params: params || {} };
+
+    var res;
+    try {
+      res = await fetch(check.url, {
+        method: 'POST',
+        headers: buildMcpAuthHeaders(srv),
+        body: JSON.stringify(payload),
+        signal: controller ? controller.signal : undefined
+      });
+    } catch (netErr) {
+      if (timer) clearTimeout(timer);
+      if (netErr && netErr.name === 'AbortError') {
+        throw new Error('MCP 请求超时（' + Math.round(timeoutMs / 1000) + ' 秒）');
+      }
+      throw new Error('无法连接到 MCP 服务器：' + (netErr && netErr.message ? netErr.message : '网络异常'));
+    }
+    if (timer) clearTimeout(timer);
+
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('MCP 认证失败（HTTP ' + res.status + '），请检查认证方式或密钥配置');
+    }
+    if (!res.ok) {
+      throw new Error('MCP 服务返回错误（HTTP ' + res.status + '）');
+    }
+    var nextSid = (res.headers && res.headers.get && res.headers.get('mcp-session-id')) || '';
+    if (opts.isNotification) {
+      return { ok: true, sessionId: nextSid };
+    }
+    var ct = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+    var rawText = await res.text();
+    var rpc = parseMcpHttpResponseBody(rawText, ct, reqId);
+    if (!rpc) {
+      throw new Error('MCP 服务返回了无法解析的响应内容');
+    }
+    if (rpc.error) {
+      throw new Error('MCP 协议错误：' + ((rpc.error && rpc.error.message) || String(rpc.error)));
+    }
+    return { ok: true, result: rpc.result, sessionId: nextSid };
+  }
+
+  async function testAndSyncMcpServer(serverOrId, options) {
+    var settings = await loadPluginSettings();
+    var srv = null;
+    if (typeof serverOrId === 'string') {
+      srv = settings.mcpServers.find(function(item) { return item.id === serverOrId; }) || null;
+    } else if (serverOrId && typeof serverOrId === 'object') {
+      srv = normalizeMcpServerRecord(Object.assign({ id: serverOrId.id || 'mcp_srv_preview' }, serverOrId));
+      if (srv && srv.id && !srv.authToken) {
+        var existing = settings.mcpServers.find(function(item) { return item.id === srv.id; });
+        if (existing && existing.authToken) srv.authToken = existing.authToken;
+      }
+    }
+    if (!srv) return { ok: false, error: '未找到对应的 MCP 服务器配置' };
+
+    var workSrv = Object.assign({}, srv, { sessionId: '' });
+    try {
+      var initRes = await mcpJsonRpcRequest(workSrv, 'initialize', {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'zhiyu-workspace', version: '1.0.0' }
+      }, { timeoutMs: (options && options.timeoutMs) || 12000 });
+      if (initRes.sessionId) workSrv.sessionId = initRes.sessionId;
+
+      try {
+        await mcpJsonRpcRequest(workSrv, 'notifications/initialized', {}, { isNotification: true, timeoutMs: 5000 });
+      } catch (_) {}
+
+      var listRes = await mcpJsonRpcRequest(workSrv, 'tools/list', {}, { timeoutMs: (options && options.timeoutMs) || 12000 });
+      var rawTools = (listRes.result && Array.isArray(listRes.result.tools)) ? listRes.result.tools : [];
+      var normTools = rawTools.map(normalizeMcpCachedTool).filter(Boolean);
+
+      if (typeof serverOrId === 'string' || (options && options.persist && srv.id !== 'mcp_srv_preview')) {
+        var idx = settings.mcpServers.findIndex(function(item) { return item.id === srv.id; });
+        if (idx !== -1) {
+          settings.mcpServers[idx].cachedTools = normTools;
+          settings.mcpServers[idx].lastSyncAt = Date.now();
+          settings.mcpServers[idx].lastError = '';
+          settings.mcpServers[idx].sessionId = workSrv.sessionId || '';
+          settings = await savePluginSettings(settings);
+        }
+      }
+      return {
+        ok: true,
+        server: sanitizeMcpServer(Object.assign({}, workSrv, { cachedTools: normTools, lastSyncAt: Date.now(), lastError: '' })),
+        tools: normTools,
+        settings: settings
+      };
+    } catch (err) {
+      var errMsg = (err && err.message) ? err.message : 'MCP 连接测试失败';
+      if (typeof serverOrId === 'string') {
+        var eIdx = settings.mcpServers.findIndex(function(item) { return item.id === srv.id; });
+        if (eIdx !== -1) {
+          settings.mcpServers[eIdx].lastError = errMsg;
+          settings = await savePluginSettings(settings);
+        }
+      }
+      return { ok: false, error: errMsg, settings: settings };
+    }
+  }
+
+  async function mcpCallRemoteTool(serverId, toolName, params) {
+    var settings = await loadPluginSettings();
+    var srv = settings.mcpServers.find(function(item) { return item.id === serverId; });
+    if (!srv) throw new Error('未找到对应的 MCP 服务器配置');
+    var callRes = await mcpJsonRpcRequest(srv, 'tools/call', {
+      name: toolName,
+      arguments: (params && typeof params === 'object') ? params : {}
+    }, { timeoutMs: 20000 });
+    var result = callRes.result || {};
+    if (result.isError) {
+      var errContent = Array.isArray(result.content)
+        ? result.content.map(function(c) { return c && c.text ? c.text : ''; }).filter(Boolean).join('\n')
+        : '';
+      throw new Error(errContent || 'MCP 工具返回执行错误');
+    }
+    var textParts = Array.isArray(result.content)
+      ? result.content.map(function(c) { return (c && c.type === 'text' && c.text) ? c.text : ''; }).filter(Boolean)
+      : [];
+    return {
+      text: textParts.join('\n'),
+      content: result.content || [],
+      structuredContent: result.structuredContent || null
+    };
+  }
+
+  async function listMcpServers() {
+    var settings = await loadPluginSettings();
+    return (settings.mcpServers || []).map(sanitizeMcpServer);
+  }
+
+  async function saveMcpServer(serverInput) {
+    var input = serverInput && typeof serverInput === 'object' ? serverInput : {};
+    var check = validateMcpEndpointUrl(input.url, { allowPrivateNetwork: !!input.allowPrivateNetwork });
+    if (!check.ok) {
+      throw new Error(check.error);
+    }
+    var settings = await loadPluginSettings();
+    var id = String(input.id || '').trim() || ('mcp_srv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+    var idx = settings.mcpServers.findIndex(function(item) { return item.id === id; });
+    var existing = idx !== -1 ? settings.mcpServers[idx] : null;
+    var nextToken = (input.authToken !== undefined && input.authToken !== '')
+      ? String(input.authToken)
+      : (input.clearAuthToken ? '' : (existing ? existing.authToken : ''));
+
+    var record = normalizeMcpServerRecord({
+      id: id,
+      name: String(input.name || '').trim() || 'MCP 服务器',
+      transport: input.transport || 'streamable_http',
+      url: check.url,
+      authType: input.authType || 'none',
+      authHeaderName: input.authHeaderName || 'X-API-Key',
+      authToken: nextToken,
+      enabled: input.enabled !== undefined ? !!input.enabled : (existing ? existing.enabled : true),
+      allowPrivateNetwork: input.allowPrivateNetwork !== undefined ? !!input.allowPrivateNetwork : (existing ? existing.allowPrivateNetwork : false),
+      disabledTools: existing ? existing.disabledTools : {},
+      cachedTools: Array.isArray(input.cachedTools) ? input.cachedTools : (existing ? existing.cachedTools : []),
+      lastSyncAt: input.lastSyncAt !== undefined ? input.lastSyncAt : (existing ? existing.lastSyncAt : 0),
+      lastError: input.lastError !== undefined ? input.lastError : (existing ? existing.lastError : ''),
+      sessionId: ''
+    });
+
+    if (idx !== -1) {
+      settings.mcpServers[idx] = record;
+    } else {
+      settings.mcpServers.push(record);
+    }
+    var saved = await savePluginSettings(settings);
+    return {
+      server: getSanitizedMcpServer(id, saved),
+      settings: saved
+    };
+  }
+
+  async function deleteMcpServer(serverId) {
+    var settings = await loadPluginSettings();
+    settings.mcpServers = (settings.mcpServers || []).filter(function(item) { return item.id !== serverId; });
+    if (settings.plugins && settings.plugins[serverId]) {
+      delete settings.plugins[serverId];
+    }
+    if (settings.chatOverrides) {
+      Object.keys(settings.chatOverrides).forEach(function(cid) {
+        if (settings.chatOverrides[cid] && settings.chatOverrides[cid].plugins) {
+          delete settings.chatOverrides[cid].plugins[serverId];
+        }
+      });
+    }
+    return await savePluginSettings(settings);
+  }
+
+  async function setMcpToolEnabled(serverId, toolName, enabled) {
+    var settings = await loadPluginSettings();
+    var srv = (settings.mcpServers || []).find(function(item) { return item.id === serverId; });
+    if (!srv) return settings;
+    if (!srv.disabledTools || typeof srv.disabledTools !== 'object') srv.disabledTools = {};
+    if (enabled) {
+      delete srv.disabledTools[toolName];
+    } else {
+      srv.disabledTools[toolName] = true;
+    }
+    return await savePluginSettings(settings);
+  }
+
   function registerStarterPlugins() {
     registerPlugin({
       id: 'builtin_time_utils',
@@ -874,6 +1459,10 @@
       ]
     });
 
+    registerReservedMcpPlaceholder();
+  }
+
+  function registerReservedMcpPlaceholder() {
     registerMcpDescriptor({
       id: 'mcp_reserved_gateway',
       name: 'MCP 扩展服务（预留）',
@@ -926,7 +1515,6 @@
       var rawTool = t ? _tools[t.fullName] : null;
       var rawPlugin = t ? _plugins[t.pluginId] : null;
       if (!t || !t.enabled || !rawTool || typeof rawTool.execute !== 'function') continue;
-      if (t.permissions && t.permissions.requiresConfirmation) continue;
       var apiName = toApiToolName(t.fullName);
       nameMap[apiName] = t.fullName;
       var pName = (rawPlugin && rawPlugin.name) || '';
@@ -966,6 +1554,16 @@
     updatePluginConfig: updatePluginConfig,
     toApiToolName: toApiToolName,
     resolveToolFullName: resolveToolFullName,
-    getEnabledOpenAiTools: getEnabledOpenAiTools
+    getEnabledOpenAiTools: getEnabledOpenAiTools,
+    validateMcpEndpointUrl: validateMcpEndpointUrl,
+    listMcpServers: listMcpServers,
+    saveMcpServer: saveMcpServer,
+    deleteMcpServer: deleteMcpServer,
+    testAndSyncMcpServer: testAndSyncMcpServer,
+    setMcpToolEnabled: setMcpToolEnabled
   };
+
+  if (typeof Promise === 'function') {
+    loadPluginSettings().catch(function() {});
+  }
 })(typeof window !== 'undefined' ? window : globalThis);

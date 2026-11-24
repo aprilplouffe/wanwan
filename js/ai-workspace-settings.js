@@ -430,13 +430,34 @@
             else if (eff.reason === 'disabled_by_chat_plugin') statusText = '本聊天已停用';
           }
 
+          var srvId = (plg.mcpMeta && plg.mcpMeta.serverId) || '';
+          var srvRecord = (srvId && Array.isArray(cfg.mcpServers))
+            ? cfg.mcpServers.find(function(s) { return s.id === srvId; })
+            : null;
           var toolsHtml = (plg.tools || []).map(function(t) {
             var pNames = t.parameters && t.parameters.properties ? Object.keys(t.parameters.properties) : [];
+            var toolDisabled = !!(srvRecord && srvRecord.disabledTools && srvRecord.disabledTools[t.name]);
+            var toolNeedsConfirm = !!(t.permissions && t.permissions.requiresConfirmation);
+            var toolBadge = srvId
+              ? (toolNeedsConfirm
+                  ? '<span class="aiw-plg-badge is-warn">需确认</span>'
+                  : '<span class="aiw-plg-badge is-ro">只读</span>')
+              : '';
+            var toolActions = srvId
+              ? ('<div class="aiw-mcp-tool-actions">' +
+                  toolBadge +
+                  '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-mcp-tool-run="' + escapeHtml(srvId) + '::' + escapeHtml(t.name) + '">测试</button>' +
+                  '<label class="aiw-switch aiw-switch-sm" title="单独启停该工具">' +
+                    '<input type="checkbox" data-mcp-tool-toggle="' + escapeHtml(srvId) + '::' + escapeHtml(t.name) + '"' + (!toolDisabled ? ' checked' : '') + '>' +
+                    '<span class="aiw-switch-track"></span>' +
+                  '</label>' +
+                '</div>')
+              : ('<code class="aiw-plg-tool-id">' + escapeHtml(t.fullName) + '</code>');
             return (
-              '<div class="aiw-plg-tool-item">' +
+              '<div class="aiw-plg-tool-item' + (toolDisabled ? ' is-disabled' : '') + '">' +
                 '<div class="aiw-plg-tool-head">' +
-                  '<span class="aiw-plg-tool-name">' + escapeHtml(t.title || t.name) + '</span>' +
-                  '<code class="aiw-plg-tool-id">' + escapeHtml(t.fullName) + '</code>' +
+                  '<span class="aiw-plg-tool-name">' + escapeHtml(t.title || t.name) + (srvId ? (' <code class="aiw-plg-tool-id">' + escapeHtml(t.name) + '</code>') : '') + '</span>' +
+                  toolActions +
                 '</div>' +
                 '<div class="aiw-plg-tool-desc">' + escapeHtml(t.description || '无描述') + (pNames.length ? (' · 参数：' + escapeHtml(pNames.join(', '))) : '') + '</div>' +
               '</div>'
@@ -466,7 +487,7 @@
                     catBadge +
                     permBadge +
                   '</div>' +
-                  '<div class="aiw-plg-meta">v' + escapeHtml(plg.version || '1.0.0') + ' · ' + escapeHtml(plg.author || '知屿') + ' · ' + escapeHtml(statusText) + (isMcp ? ' · 协议预留（未连线）' : '') + '</div>' +
+                  '<div class="aiw-plg-meta">v' + escapeHtml(plg.version || '1.0.0') + ' · ' + escapeHtml(plg.author || '知屿') + ' · ' + escapeHtml(statusText) + (isMcp ? (srvId ? (plg.mcpMeta.connected ? (' · 已同步 ' + (plg.tools ? plg.tools.length : 0) + ' 个工具') : (plg.mcpMeta.lastError ? ' · 连接失败' : ' · 待测试连接')) : ' · 尚未添加 MCP 服务器') : '') + '</div>' +
                 '</div>' +
                 '<label class="aiw-switch" title="全局启用/停用该插件">' +
                   '<input type="checkbox" data-plg-toggle="' + escapeHtml(plg.id) + '"' + (eff.globalPluginEnabled ? ' checked' : '') + '>' +
@@ -477,13 +498,17 @@
               (toolsHtml ? ('<div class="aiw-plg-tools">' + toolsHtml + '</div>') : '') +
               '<div class="aiw-plg-foot">' +
                 chatOverrideHtml +
-                '<div style="display:flex; gap:6px; margin-left:auto;">' +
-                  '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-test="' + escapeHtml(plg.id) + '">' +
-                    '<i class="fa-solid fa-play"></i> 手动测试' +
-                  '</button>' +
-                  '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-config="' + escapeHtml(plg.id) + '">' +
-                    '<i class="fa-solid fa-sliders"></i> 配置与详情' +
-                  '</button>' +
+                '<div style="display:flex; gap:6px; margin-left:auto; flex-wrap:wrap;">' +
+                  (srvId
+                    ? ('<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-mcp-sync="' + escapeHtml(srvId) + '"><i class="fa-solid fa-plug"></i> 测试连接</button>' +
+                       '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-mcp-edit="' + escapeHtml(srvId) + '"><i class="fa-regular fa-pen-to-square"></i> 编辑</button>' +
+                       '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm is-danger" data-mcp-delete="' + escapeHtml(srvId) + '"><i class="fa-regular fa-trash-can"></i> 删除</button>')
+                    : ('<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-test="' + escapeHtml(plg.id) + '">' +
+                         '<i class="fa-solid fa-play"></i> 手动测试' +
+                       '</button>' +
+                       '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-config="' + escapeHtml(plg.id) + '">' +
+                         '<i class="fa-solid fa-sliders"></i> 配置与详情' +
+                       '</button>')) +
                 '</div>' +
               '</div>' +
             '</div>'
@@ -536,14 +561,17 @@
           chatSwitchHtml +
         '</div>' +
 
-        '<div class="aiw-plg-tabs" role="tablist" aria-label="插件分类">' +
-          '<button type="button" class="aiw-plg-tab' + (catTab === 'all' ? ' is-active' : '') + '" data-plg-tab="all">全部 (' + allPlugins.length + ')</button>' +
-          '<button type="button" class="aiw-plg-tab' + (catTab === 'builtin' ? ' is-active' : '') + '" data-plg-tab="builtin">内置插件 (' + builtinCount + ')</button>' +
-          '<button type="button" class="aiw-plg-tab' + (catTab === 'mcp' ? ' is-active' : '') + '" data-plg-tab="mcp">MCP 插件 (' + mcpCount + ')</button>' +
+        '<div class="aiw-plg-tabs-bar">' +
+          '<div class="aiw-plg-tabs" role="tablist" aria-label="插件分类">' +
+            '<button type="button" class="aiw-plg-tab' + (catTab === 'all' ? ' is-active' : '') + '" data-plg-tab="all">全部 (' + allPlugins.length + ')</button>' +
+            '<button type="button" class="aiw-plg-tab' + (catTab === 'builtin' ? ' is-active' : '') + '" data-plg-tab="builtin">内置插件 (' + builtinCount + ')</button>' +
+            '<button type="button" class="aiw-plg-tab' + (catTab === 'mcp' ? ' is-active' : '') + '" data-plg-tab="mcp">MCP 插件 (' + mcpCount + ')</button>' +
+          '</div>' +
+          '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-plg-add-mcp"><i class="fa-solid fa-plus"></i> 添加 MCP</button>' +
         '</div>' +
 
         '<div class="aiw-plg-list">' + cardsHtml + '</div>' +
-        '<div class="aiw-st-footnote">安全说明：当前已接入「时间感知」「随机骰子」「计算器」三个只读内置插件，支持独立启停与手动测试；已支持在聊天中由 AI 自动调用已启用的内置插件（不支持工具调用的模型会自动兼容普通聊天）；暂未连接真实 MCP 服务。工具默认不得擅自修改聊天、记忆或外部数据。</div>' +
+        '<div class="aiw-st-footnote">安全说明：当前已接入「时间感知」「随机骰子」「计算器」三个只读内置插件，支持独立启停与手动测试；已支持在聊天中由 AI 自动调用已启用的内置插件与远程 MCP Streamable HTTP 工具（暂不支持本地 stdio）。涉及外部操作或数据修改的 MCP 工具，执行前必须经过用户确认。</div>' +
       '</div>'
     );
   }
@@ -783,6 +811,242 @@
       btn.addEventListener('click', function() {
         openPluginConfigModal(btn.getAttribute('data-plg-config'));
       });
+    });
+
+    var addMcpBtn = layer.querySelector('#aiw-plg-add-mcp');
+    if (addMcpBtn) {
+      addMcpBtn.addEventListener('click', function() {
+        openMcpServerModal('');
+      });
+    }
+
+    layer.querySelectorAll('[data-mcp-edit]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        openMcpServerModal(btn.getAttribute('data-mcp-edit'));
+      });
+    });
+
+    layer.querySelectorAll('[data-mcp-sync]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        if (!pApi || typeof pApi.testAndSyncMcpServer !== 'function') return;
+        var sid = btn.getAttribute('data-mcp-sync');
+        btn.disabled = true;
+        btn.textContent = '连接中...';
+        var res = await pApi.testAndSyncMcpServer(sid);
+        _ctx.pluginSettings = res.settings || (await pApi.loadPluginSettings());
+        renderCurrentView();
+        if (res.ok) {
+          notifyToast('连接成功，已同步 ' + (res.tools ? res.tools.length : 0) + ' 个 MCP 工具');
+        } else {
+          notifyToast(res.error || 'MCP 连接失败');
+        }
+      });
+    });
+
+    layer.querySelectorAll('[data-mcp-delete]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        if (!pApi || typeof pApi.deleteMcpServer !== 'function') return;
+        var sid = btn.getAttribute('data-mcp-delete');
+        _ctx.pluginSettings = await pApi.deleteMcpServer(sid);
+        renderCurrentView();
+        notifyToast('已删除 MCP 服务器');
+      });
+    });
+
+    layer.querySelectorAll('[data-mcp-tool-toggle]').forEach(function(chk) {
+      chk.addEventListener('change', async function() {
+        if (!pApi || typeof pApi.setMcpToolEnabled !== 'function') return;
+        var parts = String(chk.getAttribute('data-mcp-tool-toggle') || '').split('::');
+        if (parts.length < 2) return;
+        _ctx.pluginSettings = await pApi.setMcpToolEnabled(parts[0], parts.slice(1).join('::'), chk.checked);
+        renderCurrentView();
+        notifyToast(chk.checked ? '已启用该 MCP 工具' : '已停用该 MCP 工具');
+      });
+    });
+
+    layer.querySelectorAll('[data-mcp-tool-run]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var parts = String(btn.getAttribute('data-mcp-tool-run') || '').split('::');
+        if (parts.length < 2) return;
+        openMcpToolTestModal(parts[0], parts.slice(1).join('::'));
+      });
+    });
+  }
+
+  function openMcpServerModal(serverId) {
+    var pApi = P();
+    if (!pApi) return;
+    var cfg = _ctx.pluginSettings || { mcpServers: [] };
+    var existing = serverId && Array.isArray(cfg.mcpServers)
+      ? cfg.mcpServers.find(function(s) { return s.id === serverId; })
+      : null;
+
+    var authType = (existing && existing.authType) || 'none';
+    var hasToken = !!(existing && existing.authToken);
+    var bodyHtml =
+      '<div class="aiw-import-box">' +
+        '<div style="margin-bottom:8px;">' +
+          '<label class="aiw-field-label" for="aiw-mcp-name">服务器名称</label>' +
+          '<input type="text" class="aiw-field-input" id="aiw-mcp-name" placeholder="例如：天气与工具服务" value="' + escapeHtml((existing && existing.name) || '') + '">' +
+        '</div>' +
+        '<div style="margin-bottom:8px;">' +
+          '<label class="aiw-field-label" for="aiw-mcp-transport">连接协议</label>' +
+          '<select class="aiw-api-select" id="aiw-mcp-transport">' +
+            '<option value="streamable_http" selected>远程 MCP Streamable HTTP（https://...）</option>' +
+            '<option value="stdio_unsupported" disabled>本地 stdio（暂不支持）</option>' +
+          '</select>' +
+        '</div>' +
+        '<div style="margin-bottom:8px;">' +
+          '<label class="aiw-field-label" for="aiw-mcp-url">服务器 URL</label>' +
+          '<input type="url" class="aiw-field-input" id="aiw-mcp-url" placeholder="https://example.com/mcp" value="' + escapeHtml((existing && existing.url) || '') + '">' +
+        '</div>' +
+        '<div style="margin-bottom:8px;">' +
+          '<label class="aiw-field-label" for="aiw-mcp-auth-type">认证方式</label>' +
+          '<select class="aiw-api-select" id="aiw-mcp-auth-type">' +
+            '<option value="none"' + (authType === 'none' ? ' selected' : '') + '>无认证</option>' +
+            '<option value="bearer"' + (authType === 'bearer' ? ' selected' : '') + '>Bearer Token (Authorization)</option>' +
+            '<option value="header"' + (authType === 'header' ? ' selected' : '') + '>自定义请求头</option>' +
+          '</select>' +
+        '</div>' +
+        '<div id="aiw-mcp-header-name-wrap" style="margin-bottom:8px;' + (authType === 'header' ? '' : ' display:none;') + '">' +
+          '<label class="aiw-field-label" for="aiw-mcp-header-name">请求头名称</label>' +
+          '<input type="text" class="aiw-field-input" id="aiw-mcp-header-name" placeholder="X-API-Key" value="' + escapeHtml((existing && existing.authHeaderName) || 'X-API-Key') + '">' +
+        '</div>' +
+        '<div id="aiw-mcp-token-wrap" style="margin-bottom:8px;' + (authType === 'none' ? ' display:none;' : '') + '">' +
+          '<label class="aiw-field-label" for="aiw-mcp-token">认证密钥 / Token</label>' +
+          '<input type="password" class="aiw-field-input" id="aiw-mcp-token" autocomplete="off" placeholder="' + (hasToken ? '已保存密钥，留空保持不变' : '输入访问令牌或密钥') + '">' +
+        '</div>' +
+        '<div id="aiw-mcp-test-status" style="font-size:12px; color:#64748b; margin-top:6px; white-space:pre-wrap; word-break:break-word;"></div>' +
+      '</div>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-mcp-cancel">取消</button>' +
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-mcp-test-btn">测试连接</button>' +
+      '<button type="button" class="aiw-st-btn-primary" id="aiw-mcp-save-btn">保存</button>';
+
+    var modal = showCustomModal(existing ? '编辑 MCP 服务器' : '添加 MCP 服务器', bodyHtml, footerHtml);
+    if (!modal) return;
+
+    var authSel = modal.querySelector('#aiw-mcp-auth-type');
+    var hdrWrap = modal.querySelector('#aiw-mcp-header-name-wrap');
+    var tokWrap = modal.querySelector('#aiw-mcp-token-wrap');
+    var statusEl = modal.querySelector('#aiw-mcp-test-status');
+    var cachedPreviewTools = existing && Array.isArray(existing.cachedTools) ? existing.cachedTools.slice() : null;
+    var lastSyncAtPreview = existing ? (existing.lastSyncAt || 0) : 0;
+
+    if (authSel) {
+      authSel.addEventListener('change', function() {
+        var v = authSel.value;
+        if (hdrWrap) hdrWrap.style.display = v === 'header' ? '' : 'none';
+        if (tokWrap) tokWrap.style.display = v === 'none' ? 'none' : '';
+      });
+    }
+
+    function collectFormDraft() {
+      return {
+        id: existing ? existing.id : '',
+        name: String((modal.querySelector('#aiw-mcp-name') && modal.querySelector('#aiw-mcp-name').value) || '').trim() || 'MCP 服务器',
+        transport: 'streamable_http',
+        url: String((modal.querySelector('#aiw-mcp-url') && modal.querySelector('#aiw-mcp-url').value) || '').trim(),
+        authType: authSel ? authSel.value : 'none',
+        authHeaderName: String((modal.querySelector('#aiw-mcp-header-name') && modal.querySelector('#aiw-mcp-header-name').value) || 'X-API-Key').trim(),
+        authToken: String((modal.querySelector('#aiw-mcp-token') && modal.querySelector('#aiw-mcp-token').value) || '').trim()
+      };
+    }
+
+    var cancelBtn = modal.querySelector('#aiw-mcp-cancel');
+    if (cancelBtn) cancelBtn.addEventListener('click', closeModalOverlay);
+
+    var testBtn = modal.querySelector('#aiw-mcp-test-btn');
+    if (testBtn) {
+      testBtn.addEventListener('click', async function() {
+        var draft = collectFormDraft();
+        var urlCheck = pApi.validateMcpEndpointUrl(draft.url);
+        if (!urlCheck.ok) {
+          statusEl.style.color = '#dc2626';
+          statusEl.textContent = urlCheck.error;
+          return;
+        }
+        statusEl.style.color = '#64748b';
+        statusEl.textContent = '正在连接 MCP 服务器并获取工具列表...';
+        testBtn.disabled = true;
+        var res = await pApi.testAndSyncMcpServer(draft);
+        testBtn.disabled = false;
+        if (res.ok) {
+          cachedPreviewTools = res.tools || [];
+          lastSyncAtPreview = Date.now();
+          statusEl.style.color = '#059669';
+          statusEl.textContent = '连接成功！发现 ' + cachedPreviewTools.length + ' 个工具：' +
+            (cachedPreviewTools.length ? cachedPreviewTools.map(function(t) { return t.name; }).join(', ') : '（无）');
+        } else {
+          statusEl.style.color = '#dc2626';
+          statusEl.textContent = res.error || '连接测试失败';
+        }
+      });
+    }
+
+    var saveBtn = modal.querySelector('#aiw-mcp-save-btn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', async function() {
+        var draft = collectFormDraft();
+        if (cachedPreviewTools !== null) {
+          draft.cachedTools = cachedPreviewTools;
+          draft.lastSyncAt = lastSyncAtPreview;
+          draft.lastError = '';
+        }
+        try {
+          var saved = await pApi.saveMcpServer(draft);
+          _ctx.pluginSettings = saved.settings;
+          _ctx.pluginCategoryTab = 'mcp';
+          closeModalOverlay();
+          renderCurrentView();
+          notifyToast('已保存 MCP 服务器');
+        } catch (err) {
+          statusEl.style.color = '#dc2626';
+          statusEl.textContent = (err && err.message) || '保存失败';
+        }
+      });
+    }
+  }
+
+  function openMcpToolTestModal(serverId, toolName) {
+    var pApi = P();
+    if (!pApi) return;
+    var fullName = serverId + '.' + toolName;
+    var bodyHtml =
+      '<div class="aiw-import-box">' +
+        '<div style="font-size:12px; color:#64748b; margin-bottom:8px;">工具：<code>' + escapeHtml(fullName) + '</code></div>' +
+        '<label class="aiw-field-label" for="aiw-mcp-tool-args">参数（JSON 对象）</label>' +
+        '<textarea class="aiw-field-input" id="aiw-mcp-tool-args" rows="4" style="font-family:monospace;">{}</textarea>' +
+        '<pre id="aiw-mcp-tool-out" style="margin:8px 0 0; padding:10px; border-radius:10px; background:rgba(15,23,42,0.04); font-size:12px; white-space:pre-wrap; word-break:break-all; display:none;"></pre>' +
+      '</div>';
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-mcp-t-close">关闭</button>' +
+      '<button type="button" class="aiw-st-btn-primary" id="aiw-mcp-t-run">执行（已确认）</button>';
+    var modal = showCustomModal('测试 MCP 工具', bodyHtml, footerHtml);
+    if (!modal) return;
+    modal.querySelector('#aiw-mcp-t-close').addEventListener('click', closeModalOverlay);
+    var outEl = modal.querySelector('#aiw-mcp-tool-out');
+    modal.querySelector('#aiw-mcp-t-run').addEventListener('click', async function() {
+      var raw = String((modal.querySelector('#aiw-mcp-tool-args') && modal.querySelector('#aiw-mcp-tool-args').value) || '{}').trim();
+      var args = {};
+      try { args = raw ? JSON.parse(raw) : {}; } catch (e) {
+        outEl.style.display = 'block';
+        outEl.style.color = '#dc2626';
+        outEl.textContent = 'JSON 解析失败：' + e.message;
+        return;
+      }
+      outEl.style.display = 'block';
+      outEl.style.color = '#64748b';
+      outEl.textContent = '正在调用远程 MCP 工具...';
+      var res = await pApi.invokeTool(fullName, args, { chatId: _ctx.activeChatId, confirmed: true });
+      if (res && res.ok) {
+        outEl.style.color = '#059669';
+        outEl.textContent = JSON.stringify(res.data !== undefined ? res.data : res.result, null, 2);
+      } else {
+        outEl.style.color = '#dc2626';
+        outEl.textContent = (res && res.error) || '调用失败';
+      }
     });
   }
 

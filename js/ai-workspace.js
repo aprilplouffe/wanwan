@@ -2393,6 +2393,10 @@
     if (fullName === 'builtin_calculator.calculate_expression') {
       return (resData.expression || '') + ' = ' + (resData.result != null ? resData.result : '');
     }
+    if (resData.text) {
+      var txt = String(resData.text).trim();
+      return txt.length > 90 ? (txt.slice(0, 90) + '…') : txt;
+    }
     return '已完成';
   }
 
@@ -2827,20 +2831,61 @@
             }
             var invokeRes = await pluginApi.invokeTool(resolvedFullName, parsedArgs, {
               chatId: activeChatId,
-              source: 'ai_auto'
+              source: 'ai_auto',
+              requestConfirmation: function(req) {
+                return new Promise(function(resolve) {
+                  var settled = false;
+                  function finish(val) {
+                    if (settled) return;
+                    settled = true;
+                    closeInlineModal(page);
+                    resolve(!!val);
+                  }
+                  var srvName = (req && req.server && req.server.name) || (req && req.plugin && req.plugin.name) || '外部 MCP 服务';
+                  var srvOrigin = (req && req.server && req.server.origin) ? (' (' + req.server.origin + ')') : '';
+                  var toolTitle = (req && req.title) || (req && req.toolName) || resolvedFullName;
+                  var argsPretty = '{}';
+                  try { argsPretty = JSON.stringify((req && req.params) || {}, null, 2); } catch (_) {}
+                  var bodyHtml =
+                    '<div class="aiw-mcp-confirm-box">' +
+                      '<div class="aiw-mcp-confirm-warn"><i class="fa-solid fa-shield-halved"></i> 该外部工具可能涉及数据修改或外部操作，请确认后执行：</div>' +
+                      '<div class="aiw-mcp-confirm-meta"><strong>服务：</strong>' + escapeHtml(srvName + srvOrigin) + '</div>' +
+                      '<div class="aiw-mcp-confirm-meta"><strong>工具：</strong><code>' + escapeHtml(toolTitle) + '</code></div>' +
+                      '<div class="aiw-mcp-confirm-meta"><strong>参数：</strong></div>' +
+                      '<pre class="aiw-mcp-confirm-pre">' + escapeHtml(argsPretty) + '</pre>' +
+                    '</div>';
+                  var footerHtml =
+                    '<button type="button" class="aiw-st-btn-secondary" id="aiw-mcp-confirm-deny">拒绝执行</button>' +
+                    '<button type="button" class="aiw-st-btn-primary" id="aiw-mcp-confirm-allow">允许执行</button>';
+                  var modal = showInlineModal(page, '外部工具执行确认', bodyHtml, footerHtml);
+                  if (!modal) {
+                    resolve(false);
+                    return;
+                  }
+                  var allowBtn = modal.querySelector('#aiw-mcp-confirm-allow');
+                  var denyBtn = modal.querySelector('#aiw-mcp-confirm-deny');
+                  if (allowBtn) allowBtn.addEventListener('click', function() { finish(true); });
+                  if (denyBtn) denyBtn.addEventListener('click', function() { finish(false); });
+                  var closeBtn = modal.querySelector('.aiw-ws-modal-close');
+                  if (closeBtn) closeBtn.addEventListener('click', function() { finish(false); });
+                });
+              }
             });
-            var plgMeta = invokeRes && invokeRes.plugin ? invokeRes.plugin : null;
-            var toolMeta = invokeRes && invokeRes.tool ? invokeRes.tool : null;
+            var resData = invokeRes ? (invokeRes.data !== undefined ? invokeRes.data : invokeRes.result) : null;
+            var plgMeta = (invokeRes && invokeRes.plugin) || (invokeRes && invokeRes.pluginId && pluginApi.getPlugin ? pluginApi.getPlugin(invokeRes.pluginId) : null);
+            var toolMeta = (plgMeta && Array.isArray(plgMeta.tools))
+              ? plgMeta.tools.find(function(t) { return t.fullName === resolvedFullName; })
+              : null;
             return {
               ok: !!(invokeRes && invokeRes.ok),
               fullName: resolvedFullName,
               pluginName: (plgMeta && plgMeta.name) || '',
               toolLabel: (toolMeta && (toolMeta.title || toolMeta.name)) || resolvedFullName,
-              result: invokeRes ? invokeRes.result : null,
+              result: resData,
               error: invokeRes ? invokeRes.error : '工具执行失败',
               summaryText: formatToolCallSummary(
                 resolvedFullName,
-                invokeRes ? invokeRes.result : null,
+                resData,
                 (invokeRes && !invokeRes.ok) ? invokeRes.error : ''
               )
             };
