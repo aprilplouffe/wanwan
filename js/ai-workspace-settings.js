@@ -2622,6 +2622,7 @@
     explicit_delete: '遗忘删除',
     extract_memory: '自动提取',
     summarize_chat: '短期摘要',
+    summarize_range: '指定范围摘要',
     merge_summary: '摘要合并'
   };
 
@@ -3139,7 +3140,7 @@
   function isTimelineMergedSegment(seg) {
     if (!seg || typeof seg !== 'object') return false;
     var id = String(seg.id || '');
-    var isManual = !!(seg.source === 'manual_written' || seg.isManualWritten === true || id.indexOf('manual_') === 0);
+    var isManual = !!(seg.source === 'manual_range' || seg.isManualRange === true || id.indexOf('manual_range_') === 0 || seg.source === 'manual_written' || seg.isManualWritten === true || id.indexOf('manual_') === 0);
     if (isManual) return false;
     return !!(seg.status === 'merged' || seg.source === 'merged' || id.indexOf('summerge_') === 0);
   }
@@ -3169,7 +3170,7 @@
     var aiList = list.filter(function(s) {
       if (!s || typeof s !== 'object') return false;
       var id = String(s.id || '');
-      var isManual = !!(s.source === 'manual_written' || s.isManualWritten === true || id.indexOf('manual_') === 0);
+      var isManual = !!(s.source === 'manual_range' || s.isManualRange === true || id.indexOf('manual_range_') === 0 || s.source === 'manual_written' || s.isManualWritten === true || id.indexOf('manual_') === 0);
       return !isManual && !isTimelineMergedSegment(s);
     }).map(function(s, idx) {
       return { seg: s, origIndex: idx };
@@ -3243,12 +3244,13 @@
   function describeSummarySegment(seg, allOrderedSegments, segNumMap) {
     var s = seg && typeof seg === 'object' ? seg : {};
     var id = String(s.id || '');
-    var isManual = !!(s.source === 'manual_written' || s.isManualWritten === true || id.indexOf('manual_') === 0);
+    var isManualRange = !!(s.source === 'manual_range' || s.isManualRange === true || id.indexOf('manual_range_') === 0);
+    var isManual = isManualRange || !!(s.source === 'manual_written' || s.isManualWritten === true || id.indexOf('manual_') === 0);
     var isMerged = !isManual && isTimelineMergedSegment(s);
     var isCompacted = s.status === 'compacted';
     var startIdx = Math.max(0, Math.floor(Number(s.startMessageIndex) || 0));
     var endIdx = Math.max(0, Math.floor(Number(s.endMessageIndex) || 0));
-    var hasRange = !isManual && endIdx > startIdx;
+    var hasRange = (isManualRange || !isManual) && endIdx > startIdx;
     var rangeText = hasRange ? formatTimelineMessageRangeLabel(startIdx, endIdx) : '';
 
     var numMap = segNumMap || (Array.isArray(allOrderedSegments) ? buildTimelineSegmentNumberMap(allOrderedSegments) : Object.create(null));
@@ -3305,7 +3307,9 @@
     }
 
     var sourceLabel = 'AI 摘要';
-    if (isManual) {
+    if (isManualRange) {
+      sourceLabel = '手动指定范围';
+    } else if (isManual) {
       sourceLabel = '手写摘要';
     } else if (isMerged) {
       var mergedTitle = formatMergedSegmentIndicesLabel(resolvedMergedIndices);
@@ -3515,14 +3519,14 @@
     var activeSegmentCount = chatSegments.filter(function(s) {
       if (!s || s.status !== 'active' || !String(s.content || '').trim()) return false;
       var idStr = String(s.id || '');
-      var isMan = !!(s.source === 'manual_written' || s.isManualWritten === true || idStr.indexOf('manual_') === 0);
+      var isMan = !!(s.source === 'manual_range' || s.isManualRange === true || idStr.indexOf('manual_range_') === 0 || s.source === 'manual_written' || s.isManualWritten === true || idStr.indexOf('manual_') === 0);
       return !isMan;
     }).length;
     var mergedSegmentCount = chatSegments.filter(function(s) { return s && s.status === 'merged'; }).length;
 
     var chatSummaryTasks = targetChat
       ? (Array.isArray(_ctx.memoryTasks) ? _ctx.memoryTasks : []).filter(function(t) {
-          return t && (t.type === 'summarize_chat' || t.type === 'merge_summary') && t.chatId === targetChat.id;
+          return t && (t.type === 'summarize_chat' || t.type === 'summarize_range' || t.type === 'merge_summary') && t.chatId === targetChat.id;
         })
       : [];
     var latestTask = chatSummaryTasks[0] || null;
@@ -3665,9 +3669,12 @@
         '<div class="aiw-st-card aiw-st-pad" style="margin-top:14px;">' +
           '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">' +
             '<label class="aiw-field-label" for="aiw-ss-chat-select" style="margin:0;">切换聊天查看摘要</label>' +
-            '<div style="display:flex; gap:6px;">' +
+            '<div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">' +
               '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ss-trigger-summary" style="display:inline-flex; align-items:center; gap:4px;">' +
                 '<i class="fa-solid fa-wand-magic-sparkles"></i> 立即摘要' +
+              '</button>' +
+              '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ss-range-summary" style="display:inline-flex; align-items:center; gap:4px;">' +
+                '<i class="fa-solid fa-sliders"></i> 指定范围' +
               '</button>' +
               '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ss-manual-summary" style="display:inline-flex; align-items:center; gap:4px;">' +
                 '<i class="fa-solid fa-pen-nib"></i> 手写摘要' +
@@ -3730,15 +3737,36 @@
         )
         : '';
 
+      var hasFailedSummaryTask = chatSummaryTasks.some(function(t) {
+        return t && (t.status === 'failed' || t.status === 'retry_waiting');
+      });
       var taskHistoryHtml = chatSummaryTasks.length
         ? (
-          '<div class="aiw-st-group-title" style="margin-top:16px;">该对话的摘要任务状态</div>' +
+          '<div class="aiw-st-group-title" style="margin-top:16px; display:flex; align-items:center; justify-content:space-between;">' +
+            '<span>该对话的摘要任务状态</span>' +
+            (hasFailedSummaryTask
+              ? '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-ss-retry-tasks"><i class="fa-solid fa-rotate-right"></i> 重试失败</button>'
+              : '') +
+          '</div>' +
           '<div class="aiw-st-card aiw-st-pad">' +
             '<div class="aiw-mem-task-list">' +
               chatSummaryTasks.slice(0, 6).map(function(t) {
                 var stText = MEMORY_TASK_STATUS_MAP[t.status] || t.status || '等待中';
                 var tTime = formatMemoryDate(t.updatedAt || t.createdAt);
-                var taskTitle = t.type === 'merge_summary' ? '摘要合并任务' : '短期摘要任务';
+                var taskTitle = t.type === 'merge_summary' ? '摘要合并任务' : (t.type === 'summarize_range' ? '指定范围摘要任务' : '短期摘要任务');
+                var fallbackResultText = t.status === 'saved'
+                  ? '摘要已更新'
+                  : (t.status === 'failed'
+                    ? '执行失败'
+                    : (t.status === 'retry_waiting'
+                      ? '等待自动重试'
+                      : (t.status === 'running'
+                        ? '执行中'
+                        : (t.status === 'skipped' ? '已跳过' : '等待执行'))));
+                var rawSummaryText = String(t.resultSummary || '').trim();
+                var displayResultText = (rawSummaryText && !(rawSummaryText === '等待执行' && t.status && t.status !== 'pending'))
+                  ? rawSummaryText
+                  : fallbackResultText;
                 return (
                   '<div class="aiw-mem-task-item is-' + escapeHtml(t.status || 'pending') + '">' +
                     '<div class="aiw-mem-task-top">' +
@@ -3747,7 +3775,7 @@
                     '</div>' +
                     '<div class="aiw-mem-task-meta">' +
                       '<span>' + (tTime ? escapeHtml(tTime) : '刚刚') + '</span>' +
-                      '<span>' + escapeHtml(t.resultSummary || (t.status === 'saved' ? '摘要已更新' : '等待执行')) + '</span>' +
+                      '<span>' + escapeHtml(displayResultText) + '</span>' +
                     '</div>' +
                     ((t.status === 'failed' || t.status === 'retry_waiting') && t.lastError
                       ? '<div class="aiw-mem-task-err">失败原因：' + escapeHtml(t.lastError) + '</div>'
@@ -4097,6 +4125,232 @@
               saveBtn.textContent = '保存';
             }
           });
+        }
+      });
+    }
+
+    var rangeSummaryBtn = layer.querySelector('#aiw-ss-range-summary');
+    if (rangeSummaryBtn) {
+      rangeSummaryBtn.addEventListener('click', async function() {
+        var targetChat = resolveSummaryTargetChat();
+        if (!targetChat || !targetChat.id) {
+          notifyToast('请先选择一个有效的聊天');
+          return;
+        }
+        var freshChat = typeof S().getChat === 'function' ? (await S().getChat(targetChat.id) || targetChat) : targetChat;
+        var cleanMsgs = freshChat && Array.isArray(freshChat.messages)
+          ? freshChat.messages.filter(function(m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim(); })
+          : [];
+        var totalCount = cleanMsgs.length;
+        if (!totalCount) {
+          notifyToast('当前对话暂无有效消息，无法指定范围摘要');
+          return;
+        }
+
+        var defEnd = totalCount;
+        var defStart = Math.max(1, totalCount - 19);
+        var bodyHtml =
+          '<div class="aiw-import-box" style="display:flex; flex-direction:column; gap:10px;">' +
+            '<div style="font-size:12px; color:#666;">当前对话共 <strong>' + totalCount + '</strong> 条有效消息（编号 1～' + totalCount + '，仅统计有效对话消息）。生成后将作为独立「手动指定范围」片段保存，不覆盖已有摘要，也不影响自动摘要进度。</div>' +
+            '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">' +
+              '<div>' +
+                '<label class="aiw-field-label" for="aiw-ss-range-start">起始消息编号</label>' +
+                '<input type="number" inputmode="numeric" class="aiw-field-input" id="aiw-ss-range-start" min="1" max="' + totalCount + '" value="' + defStart + '">' +
+              '</div>' +
+              '<div>' +
+                '<label class="aiw-field-label" for="aiw-ss-range-end">结束消息编号</label>' +
+                '<input type="number" inputmode="numeric" class="aiw-field-input" id="aiw-ss-range-end" min="1" max="' + totalCount + '" value="' + defEnd + '">' +
+              '</div>' +
+            '</div>' +
+            '<div id="aiw-ss-range-feedback" style="font-size:12px; line-height:1.5; display:none; padding:8px 10px; border-radius:8px;"></div>' +
+          '</div>';
+
+        var footerHtml =
+          '<button type="button" class="aiw-st-btn-secondary" id="aiw-ss-range-cancel">取消</button>' +
+          '<button type="button" class="aiw-st-btn-primary" id="aiw-ss-range-submit">开始生成</button>';
+
+        var modal = showCustomModal('指定范围摘要 · ' + (freshChat.title || '当前聊天'), bodyHtml, footerHtml);
+        if (!modal) return;
+
+        var startEl = modal.querySelector('#aiw-ss-range-start');
+        var endEl = modal.querySelector('#aiw-ss-range-end');
+        var fbEl = modal.querySelector('#aiw-ss-range-feedback');
+        var cancelBtn = modal.querySelector('#aiw-ss-range-cancel');
+        var submitBtn = modal.querySelector('#aiw-ss-range-submit');
+
+        function inspectRange() {
+          var sVal = Number(startEl && startEl.value);
+          var eVal = Number(endEl && endEl.value);
+          if (!Number.isInteger(sVal) || !Number.isInteger(eVal) || sVal < 1 || eVal < 1 || sVal > totalCount || eVal > totalCount || sVal > eVal) {
+            return {
+              valid: false,
+              error: '请输入有效的整数范围：1 ≤ 起始编号 ≤ 结束编号 ≤ ' + totalCount
+            };
+          }
+          var sIdx = sVal - 1;
+          var eIdx = eVal;
+          var segs = Array.isArray(freshChat.summarySegments) ? freshChat.summarySegments : [];
+          var overlapSegs = segs.filter(function(seg) {
+            if (!seg || (seg.status !== 'active' && seg.status !== 'merged')) return false;
+            var segStart = Math.max(0, Math.floor(Number(seg.startMessageIndex) || 0));
+            var segEnd = Math.max(0, Math.floor(Number(seg.endMessageIndex) || 0));
+            return segEnd > segStart && segEnd > sIdx && segStart < eIdx;
+          });
+          var upTo = Math.max(0, Math.floor(Number(freshChat.summaryUpToCount) || 0));
+          var overlapsCursor = sIdx < upTo;
+          var warning = '';
+          if (overlapSegs.length || overlapsCursor) {
+            warning = '提示：所选第 ' + sVal + '～' + eVal + ' 条与已有摘要范围存在重叠，生成后将新增独立片段，不会覆盖或修改原有摘要。';
+          }
+          return {
+            valid: true,
+            startNumber: sVal,
+            endNumber: eVal,
+            warning: warning
+          };
+        }
+
+        function refreshRangeFeedback() {
+          if (!fbEl) return;
+          var info = inspectRange();
+          if (!info.valid) {
+            fbEl.style.display = 'block';
+            fbEl.style.background = '#fef2f2';
+            fbEl.style.color = '#b91c1c';
+            fbEl.textContent = info.error;
+            if (submitBtn) submitBtn.disabled = true;
+          } else if (info.warning) {
+            fbEl.style.display = 'block';
+            fbEl.style.background = '#fffbeb';
+            fbEl.style.color = '#b45309';
+            fbEl.textContent = info.warning;
+            if (submitBtn) submitBtn.disabled = false;
+          } else {
+            fbEl.style.display = 'none';
+            fbEl.textContent = '';
+            if (submitBtn) submitBtn.disabled = false;
+          }
+        }
+
+        if (startEl) startEl.addEventListener('input', refreshRangeFeedback);
+        if (endEl) endEl.addEventListener('input', refreshRangeFeedback);
+        refreshRangeFeedback();
+
+        if (cancelBtn) {
+          cancelBtn.addEventListener('click', closeModalOverlay);
+        }
+
+        var isSubmitting = false;
+        if (submitBtn) {
+          submitBtn.addEventListener('click', async function() {
+            if (isSubmitting) return;
+            var info = inspectRange();
+            if (!info.valid) {
+              refreshRangeFeedback();
+              notifyToast(info.error);
+              return;
+            }
+            isSubmitting = true;
+            submitBtn.disabled = true;
+            submitBtn.textContent = '生成中...';
+
+            try {
+              var liveTasks = typeof S().listMemoryTasks === 'function'
+                ? await S().listMemoryTasks()
+                : (Array.isArray(_ctx.memoryTasks) ? _ctx.memoryTasks : []);
+              var dupTask = liveTasks.find(function(t) {
+                return t && t.type === 'summarize_range' && t.chatId === freshChat.id &&
+                  (t.status === 'pending' || t.status === 'running' || t.status === 'retry_waiting') &&
+                  t.payload && Number(t.payload.startNumber) === info.startNumber && Number(t.payload.endNumber) === info.endNumber;
+              });
+              if (dupTask) {
+                notifyToast('该范围的摘要任务已在队列中，请勿重复提交');
+                isSubmitting = false;
+                submitBtn.disabled = false;
+                submitBtn.textContent = '开始生成';
+                return;
+              }
+
+              await S().enqueueMemoryTask({
+                type: 'summarize_range',
+                turnKey: 'range_sum:' + String(freshChat.id) + ':' + info.startNumber + ':' + info.endNumber + ':' + Date.now(),
+                chatId: freshChat.id,
+                chatTitle: freshChat.title || '',
+                projectId: freshChat.projectId || '',
+                userId: 'local_user',
+                status: 'pending',
+                memoryWritten: false,
+                savedMemoryIds: [],
+                payload: {
+                  startNumber: info.startNumber,
+                  endNumber: info.endNumber
+                }
+              });
+
+              var qRes = null;
+              if (M() && typeof M().processMemoryTaskQueue === 'function') {
+                qRes = await M().processMemoryTaskQueue();
+              }
+
+              closeModalOverlay();
+              await refreshAllData();
+              notifyWorkspaceStateChanged();
+              renderCurrentView();
+
+              if (qRes && qRes.busy) {
+                notifyToast('后台摘要任务正在运行，已加入队列稍后完成');
+              } else {
+                var failedForChat = qRes && Array.isArray(qRes.failedTasks)
+                  ? qRes.failedTasks.find(function(t) { return t && t.chatId === freshChat.id && t.type === 'summarize_range'; })
+                  : null;
+                var summarizedForChat = qRes && Array.isArray(qRes.summarizedChats)
+                  ? qRes.summarizedChats.some(function(c) { return c && c.id === freshChat.id; })
+                  : false;
+                if (failedForChat) {
+                  notifyToast('指定范围摘要失败：' + (failedForChat.lastError || '请检查摘要模型配置或稍后重试'));
+                } else if (summarizedForChat) {
+                  notifyToast('已生成第 ' + info.startNumber + '～' + info.endNumber + ' 条指定范围摘要');
+                } else {
+                  notifyToast('指定范围摘要已加入处理');
+                }
+              }
+            } catch (err) {
+              console.warn('[AiWorkspaceSettings] range summary failed:', err);
+              notifyToast((err && err.message) || '指定范围摘要失败，请稍后重试');
+              isSubmitting = false;
+              submitBtn.disabled = false;
+              submitBtn.textContent = '开始生成';
+            }
+          });
+        }
+      });
+    }
+
+    var ssRetryBtn = layer.querySelector('#aiw-ss-retry-tasks');
+    if (ssRetryBtn) {
+      ssRetryBtn.addEventListener('click', async function() {
+        if (!M() || typeof M().retryFailedMemoryTasks !== 'function') return;
+        ssRetryBtn.disabled = true;
+        ssRetryBtn.textContent = '重试中...';
+        try {
+          var res = await M().retryFailedMemoryTasks(_ctx.effectiveApi);
+          await refreshAllData();
+          notifyWorkspaceStateChanged();
+          renderCurrentView();
+          var targetChat = resolveSummaryTargetChat();
+          var failedForChat = res && Array.isArray(res.failedTasks) && targetChat
+            ? res.failedTasks.find(function(t) { return t && t.chatId === targetChat.id && (t.type === 'summarize_chat' || t.type === 'summarize_range' || t.type === 'merge_summary'); })
+            : null;
+          if (failedForChat) {
+            notifyToast('摘要重试失败：' + (failedForChat.lastError || '请检查 API 配置或稍后重试'));
+          } else if (res && Array.isArray(res.failedTasks) && res.failedTasks.length) {
+            notifyToast('仍有 ' + res.failedTasks.length + ' 条任务失败，请检查 API 配置或网络');
+          } else {
+            notifyToast('摘要任务重试完成');
+          }
+        } catch (err) {
+          notifyToast((err && err.message) || '重试失败');
+          renderCurrentView();
         }
       });
     }
