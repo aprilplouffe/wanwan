@@ -5428,3 +5428,156 @@
   line-height: 1.5;
   color: var(--aiw-hint);
 }
+
+/* 7-A1：统一插件管理界面样式 */
+.aiw-plg-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+
+.aiw-plg-tab {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: var(--aiw-card, #ffffff);
+  color: var(--aiw-muted, #64748b);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.aiw-plg-tab.is-active {
+  background: var(--aiw-accent, #ec4899);
+  border-color: var(--aiw-accent, #ec4899);
+  color: #ffffff;
+}
+
+.aiw-plg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aiw-plg-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aiw-plg-title-wrap {
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-plg-name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.aiw-plg-name {
+  font-size: 14px;
+  color: var(--aiw-text, #1e293b);
+}
+
+.aiw-plg-badge {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 2px 6px;
+  line-height: 1.3;
+}
+
+.aiw-plg-badge.is-builtin {
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+}
+
+.aiw-plg-badge.is-mcp {
+  background: rgba(124, 58, 237, 0.1);
+  color: #6d28d9;
+}
+
+.aiw-plg-badge.is-ro {
+  background: rgba(5, 150, 105, 0.1);
+  color: #047857;
+}
+
+.aiw-plg-badge.is-warn {
+  background: rgba(217, 119, 6, 0.12);
+  color: #b45309;
+}
+
+.aiw-plg-meta {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--aiw-muted, #64748b);
+}
+
+.aiw-plg-desc {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--aiw-text, #334155);
+}
+
+.aiw-plg-tools {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.aiw-plg-tool-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aiw-plg-tool-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.aiw-plg-tool-id {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.aiw-plg-tool-desc {
+  font-size: 11px;
+  color: var(--aiw-muted, #64748b);
+  margin-top: 2px;
+}
+
+.aiw-plg-foot {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aiw-plg-chat-ov {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--aiw-muted, #64748b);
+}
+
+.aiw-plg-ov-select {
+  width: auto;
+  min-width: 96px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
