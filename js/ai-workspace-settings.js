@@ -3136,19 +3136,191 @@
     return list.map(function(item) { return item.seg; });
   }
 
-  function describeSummarySegment(seg) {
+  function isTimelineMergedSegment(seg) {
+    if (!seg || typeof seg !== 'object') return false;
+    var id = String(seg.id || '');
+    var isManual = !!(seg.source === 'manual_written' || seg.isManualWritten === true || id.indexOf('manual_') === 0);
+    if (isManual) return false;
+    return !!(seg.status === 'merged' || seg.source === 'merged' || id.indexOf('summerge_') === 0);
+  }
+
+  function buildTimelineSegmentNumberMap(segments) {
+    var list = Array.isArray(segments) ? segments : [];
+    var idToSeg = Object.create(null);
+    for (var i = 0; i < list.length; i++) {
+      var seg = list[i];
+      if (seg && seg.id) idToSeg[seg.id] = seg;
+    }
+
+    var untrackedLegacyGaps = [];
+    for (var j = 0; j < list.length; j++) {
+      var item = list[j];
+      if (!item || typeof item !== 'object') continue;
+      if (isTimelineMergedSegment(item)) {
+        var hasStoredIndices = Array.isArray(item.mergedFromIndices) && item.mergedFromIndices.length > 0;
+        var fromIds = Array.isArray(item.mergedFromIds) ? item.mergedFromIds : [];
+        var allIdsPresent = fromIds.length > 0 && fromIds.every(function(id) { return !!idToSeg[id]; });
+        if (!hasStoredIndices && !allIdsPresent) {
+          untrackedLegacyGaps.push(Math.max(0, Math.floor(Number(item.endMessageIndex) || 0)));
+        }
+      }
+    }
+
+    var aiList = list.filter(function(s) {
+      if (!s || typeof s !== 'object') return false;
+      var id = String(s.id || '');
+      var isManual = !!(s.source === 'manual_written' || s.isManualWritten === true || id.indexOf('manual_') === 0);
+      return !isManual && !isTimelineMergedSegment(s);
+    }).map(function(s, idx) {
+      return { seg: s, origIndex: idx };
+    });
+
+    aiList.sort(function(a, b) {
+      var sa = Number(a.seg.startMessageIndex) || 0;
+      var sb = Number(b.seg.startMessageIndex) || 0;
+      if (sa !== sb) return sa - sb;
+      var ea = Number(a.seg.endMessageIndex) || 0;
+      var eb = Number(b.seg.endMessageIndex) || 0;
+      if (ea !== eb) return ea - eb;
+      var ca = Number(a.seg.createdAt) || 0;
+      var cb = Number(b.seg.createdAt) || 0;
+      if (ca && cb && ca !== cb) return ca - cb;
+      return a.origIndex - b.origIndex;
+    });
+
+    var numMap = Object.create(null);
+    var nextOrdinal = 1;
+    for (var ai = 0; ai < aiList.length; ai++) {
+      var cur = aiList[ai].seg;
+      var storedNum = Math.floor(Number(cur.segmentNumber) || 0);
+      if (storedNum >= 1) {
+        if (cur.id) numMap[cur.id] = storedNum;
+        if (storedNum >= nextOrdinal) nextOrdinal = storedNum + 1;
+        continue;
+      }
+      var curStart = Math.max(0, Math.floor(Number(cur.startMessageIndex) || 0));
+      var hasPriorUntrackedGap = untrackedLegacyGaps.some(function(gapEnd) {
+        return gapEnd > 0 && gapEnd <= curStart;
+      });
+      if (!hasPriorUntrackedGap) {
+        if (cur.id) numMap[cur.id] = nextOrdinal;
+        nextOrdinal++;
+      }
+    }
+    return numMap;
+  }
+
+  function formatMergedSegmentIndicesLabel(indices) {
+    var clean = Array.from(new Set((Array.isArray(indices) ? indices : []).map(function(n) {
+      return Math.floor(Number(n) || 0);
+    }).filter(function(n) { return n >= 1; }))).sort(function(a, b) { return a - b; });
+    if (!clean.length) return '';
+    var parts = [];
+    var runStart = clean[0];
+    var runEnd = clean[0];
+    for (var i = 1; i < clean.length; i++) {
+      if (clean[i] === runEnd + 1) {
+        runEnd = clean[i];
+      } else {
+        parts.push(runStart === runEnd ? String(runStart) : (runStart + '～' + runEnd));
+        runStart = clean[i];
+        runEnd = clean[i];
+      }
+    }
+    parts.push(runStart === runEnd ? String(runStart) : (runStart + '～' + runEnd));
+    return '合并第 ' + parts.join('、') + ' 段摘要';
+  }
+
+  function formatTimelineMessageRangeLabel(startIdx, endIdx) {
+    if (!(endIdx > startIdx)) return '';
+    var startNum = startIdx + 1;
+    var endNum = Math.max(startNum, endIdx);
+    return startNum === endNum
+      ? ('第 ' + startNum + ' 条消息')
+      : ('第 ' + startNum + '～' + endNum + ' 条消息');
+  }
+
+  function describeSummarySegment(seg, allOrderedSegments, segNumMap) {
     var s = seg && typeof seg === 'object' ? seg : {};
     var id = String(s.id || '');
     var isManual = !!(s.source === 'manual_written' || s.isManualWritten === true || id.indexOf('manual_') === 0);
-    var isMerged = !isManual && (s.status === 'merged' || s.source === 'merged' || id.indexOf('summerge_') === 0);
+    var isMerged = !isManual && isTimelineMergedSegment(s);
     var isCompacted = s.status === 'compacted';
     var startIdx = Math.max(0, Math.floor(Number(s.startMessageIndex) || 0));
     var endIdx = Math.max(0, Math.floor(Number(s.endMessageIndex) || 0));
-    var hasRange = endIdx > startIdx;
-    var rangeText = hasRange ? ('第 ' + (startIdx + 1) + '–' + endIdx + ' 条消息') : '';
-    var sourceLabel = isManual ? '手写摘要' : (isMerged ? 'AI 合并摘要' : 'AI 摘要');
+    var hasRange = !isManual && endIdx > startIdx;
+    var rangeText = hasRange ? formatTimelineMessageRangeLabel(startIdx, endIdx) : '';
+
+    var numMap = segNumMap || (Array.isArray(allOrderedSegments) ? buildTimelineSegmentNumberMap(allOrderedSegments) : Object.create(null));
+    var segmentNumber = 0;
+    if (!isManual && !isMerged) {
+      segmentNumber = Math.floor(Number(s.segmentNumber) || 0) || (id ? (numMap[id] || 0) : 0);
+    }
+    var segmentNumberLabel = segmentNumber >= 1 ? ('第 ' + segmentNumber + ' 段') : '';
+
+    var mergedFromIds = Array.isArray(s.mergedFromIds) ? s.mergedFromIds.filter(Boolean).map(String) : [];
+    var resolvedMergedIndices = Array.isArray(s.mergedFromIndices)
+      ? Array.from(new Set(s.mergedFromIndices.map(function(n) {
+          return Math.floor(Number(n) || 0);
+        }).filter(function(n) { return n >= 1; }))).sort(function(a, b) { return a - b; })
+      : [];
+
+    if (isMerged && !resolvedMergedIndices.length && mergedFromIds.length && Array.isArray(allOrderedSegments)) {
+      var idLookup = Object.create(null);
+      for (var li = 0; li < allOrderedSegments.length; li++) {
+        var item = allOrderedSegments[li];
+        if (item && item.id) idLookup[item.id] = item;
+      }
+      var allFound = mergedFromIds.every(function(fid) { return !!idLookup[fid]; });
+      if (allFound) {
+        var collected = [];
+        var allResolved = true;
+        for (var fi = 0; fi < mergedFromIds.length; fi++) {
+          var srcSeg = idLookup[mergedFromIds[fi]];
+          var srcManual = !!(srcSeg.source === 'manual_written' || srcSeg.isManualWritten === true || String(srcSeg.id || '').indexOf('manual_') === 0);
+          if (srcManual) continue;
+          var srcNum = Math.floor(Number(srcSeg.segmentNumber) || 0) || (srcSeg.id ? (numMap[srcSeg.id] || 0) : 0);
+          if (srcNum >= 1) {
+            collected.push(srcNum);
+          } else {
+            allResolved = false;
+          }
+        }
+        if (allResolved && collected.length > 0) {
+          resolvedMergedIndices = Array.from(new Set(collected)).sort(function(a, b) { return a - b; });
+        }
+      }
+    }
+
+    var mergedSourceCount = 0;
+    if (isMerged) {
+      var rawSrcCount = Math.floor(Number(s.mergedSourceCount) || 0);
+      if (rawSrcCount >= 1) {
+        mergedSourceCount = rawSrcCount;
+      } else if (mergedFromIds.length > 0) {
+        mergedSourceCount = mergedFromIds.length;
+      } else if (resolvedMergedIndices.length > 0) {
+        mergedSourceCount = resolvedMergedIndices.length;
+      }
+    }
+
+    var sourceLabel = 'AI 摘要';
+    if (isManual) {
+      sourceLabel = '手写摘要';
+    } else if (isMerged) {
+      var mergedTitle = formatMergedSegmentIndicesLabel(resolvedMergedIndices);
+      if (mergedTitle) {
+        sourceLabel = mergedTitle;
+      } else if (mergedSourceCount > 0) {
+        sourceLabel = '合并 ' + mergedSourceCount + ' 段摘要';
+      } else {
+        sourceLabel = 'AI 合并摘要';
+      }
+    }
+
     var sourceClass = isManual ? 'is-manual' : (isMerged ? 'is-merged' : 'is-ai');
-    var statusLabel = isCompacted ? '已合并压缩' : (isMerged ? '阶段综合' : '');
+    var sourceCountLabel = (isMerged && mergedSourceCount > 0) ? ('来源 ' + mergedSourceCount + ' 段') : '';
+    var statusLabel = isCompacted ? '已合并压缩' : ((isMerged && !sourceCountLabel) ? '阶段综合' : '');
     var createdAt = Number(s.createdAt) || 0;
     var updatedAt = Number(s.updatedAt) || 0;
     var timeText = createdAt ? formatMemoryDate(createdAt) : '暂无时间记录';
@@ -3159,12 +3331,29 @@
       isCompacted: isCompacted,
       hasRange: hasRange,
       rangeText: rangeText,
+      segmentNumber: segmentNumber,
+      segmentNumberLabel: segmentNumberLabel,
+      mergedSourceCount: mergedSourceCount,
+      sourceCountLabel: sourceCountLabel,
+      mergedIndices: resolvedMergedIndices,
       sourceLabel: sourceLabel,
       sourceClass: sourceClass,
       statusLabel: statusLabel,
       timeText: timeText,
       isEdited: isEdited
     };
+  }
+
+  function safeSliceTimelineText(text, maxLen) {
+    var str = String(text || '');
+    if (maxLen <= 0) return '';
+    if (str.length <= maxLen) return str;
+    var end = maxLen;
+    var code = str.charCodeAt(end - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      end -= 1;
+    }
+    return str.slice(0, Math.max(0, end));
   }
 
   function buildTimelinePreviewText(text, maxChars) {
@@ -3174,7 +3363,7 @@
     var truncatedByLines = lines.length > 3;
     var sliceBase = truncatedByLines ? lines.slice(0, 3).join('\n') : clean;
     if (sliceBase.length > limit) {
-      return sliceBase.slice(0, limit).trimEnd() + '…';
+      return safeSliceTimelineText(sliceBase, limit).trimEnd() + '…';
     }
     return truncatedByLines ? (sliceBase.trimEnd() + '…') : clean;
   }
@@ -3192,13 +3381,12 @@
         summary: '',
         summaryLegacyBase: legacyBase,
         summarySegments: Array.isArray(nextSegments) ? nextSegments : []
-      }, 1000);
+      }, 1400);
     } else {
-      compiled = (Array.isArray(nextSegments) ? nextSegments : [])
+      compiled = safeSliceTimelineText((Array.isArray(nextSegments) ? nextSegments : [])
         .filter(function(s) { return s && (s.status === 'active' || s.status === 'merged') && String(s.content || '').trim(); })
         .map(function(s) { return String(s.content || '').trim(); })
-        .join('\n')
-        .slice(0, 1000);
+        .join('\n'), 1400);
     }
     return {
       summary: compiled,
@@ -3224,9 +3412,10 @@
       );
     }
 
+    var segNumMap = buildTimelineSegmentNumberMap(ordered);
     var expandedMap = _ctx.summaryTimelineExpandedIds || {};
     var itemsHtml = ordered.map(function(seg) {
-      var meta = describeSummarySegment(seg);
+      var meta = describeSummarySegment(seg, ordered, segNumMap);
       var fullText = String(seg.content || '').trim();
       var longFlag = isTimelineContentLong(fullText);
       var isExpanded = !!expandedMap[seg.id];
@@ -3239,7 +3428,9 @@
             '<div class="aiw-ss-tl-head">' +
               '<div class="aiw-ss-tl-badges">' +
                 '<span class="aiw-ss-tl-source ' + escapeHtml(meta.sourceClass) + '">' + escapeHtml(meta.sourceLabel) + '</span>' +
+                (meta.segmentNumberLabel ? '<span class="aiw-ss-tl-status">' + escapeHtml(meta.segmentNumberLabel) + '</span>' : '') +
                 (meta.rangeText ? '<span class="aiw-ss-tl-range">' + escapeHtml(meta.rangeText) + '</span>' : '') +
+                (meta.sourceCountLabel ? '<span class="aiw-ss-tl-status">' + escapeHtml(meta.sourceCountLabel) + '</span>' : '') +
                 (meta.statusLabel ? '<span class="aiw-ss-tl-status">' + escapeHtml(meta.statusLabel) + '</span>' : '') +
               '</div>' +
               '<span class="aiw-ss-tl-time">' + escapeHtml(meta.timeText) + (meta.isEdited ? ' · 已编辑' : '') + '</span>' +
@@ -3622,9 +3813,14 @@
       notifyToast('未找到要编辑的摘要片段');
       return;
     }
-    var meta = describeSummarySegment(seg);
-    var metaChips = [meta.sourceLabel, meta.timeText];
+    var orderedSegs = sortSummarySegmentsChronologically(segments);
+    var segNumMap = buildTimelineSegmentNumberMap(orderedSegs);
+    var meta = describeSummarySegment(seg, orderedSegs, segNumMap);
+    var metaChips = [meta.sourceLabel];
+    if (meta.segmentNumberLabel) metaChips.push(meta.segmentNumberLabel);
     if (meta.rangeText) metaChips.push(meta.rangeText);
+    if (meta.sourceCountLabel) metaChips.push(meta.sourceCountLabel);
+    metaChips.push(meta.timeText);
 
     var bodyHtml =
       '<div class="aiw-ss-edit-meta">' + escapeHtml(metaChips.join(' · ')) + '</div>' +
@@ -3727,9 +3923,14 @@
       notifyToast('未找到要删除的摘要片段');
       return;
     }
-    var meta = describeSummarySegment(seg);
+    var orderedSegs = sortSummarySegmentsChronologically(segments);
+    var segNumMap = buildTimelineSegmentNumberMap(orderedSegs);
+    var meta = describeSummarySegment(seg, orderedSegs, segNumMap);
+    var detailParts = [];
+    if (meta.rangeText) detailParts.push(meta.rangeText);
+    if (meta.sourceCountLabel) detailParts.push(meta.sourceCountLabel);
     var msgText = '确定要删除这条' + meta.sourceLabel +
-      (meta.rangeText ? ('（' + meta.rangeText + '）') : '') +
+      (detailParts.length ? ('（' + detailParts.join(' · ') + '）') : '') +
       '吗？删除后仅移除选中的摘要片段，不会修改已摘要消息进度，旧消息不会被重复摘要。';
 
     showConfirmModal('删除摘要片段', msgText, '确认删除', true, async function() {
@@ -3757,7 +3958,7 @@
           summaryLegacyBase: compiled.summaryLegacyBase,
           summarySegments: nextSegs,
           summaryUpToCount: preservedUpToCount,
-          summaryUpdatedAt: hasLiveOrLegacy ? (latestChat.summaryUpdatedAt || Date.now()) : 0,
+          summaryUpdatedAt: hasLiveOrLegacy ? Date.now() : 0,
           updatedAt: latestChat.updatedAt || Date.now()
         });
 
