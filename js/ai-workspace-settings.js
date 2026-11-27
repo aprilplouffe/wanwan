@@ -6390,6 +6390,13 @@
     var curTab = _ctx.memoryLifecycleTab || 'active';
     var filtered = getFilteredMemories();
 
+    var currentScopeProjId = _ctx.memoryScopeProjectId || '';
+    var projectsList = Array.isArray(_ctx.projects) ? _ctx.projects : [];
+    var scopeOptionsHtml = '<option value="">普通聊天（全局记忆）</option>' + projectsList.map(function(pr) {
+      var sel = pr.id === currentScopeProjId ? ' selected' : '';
+      return '<option value="' + escapeHtml(pr.id) + '"' + sel + '>项目：' + escapeHtml(pr.name) + '</option>';
+    }).join('');
+
     var tabsSpec = [
       { id: 'active', label: '当前有效', count: counts.active },
       { id: 'historical', label: '历史记忆', count: counts.historical },
@@ -6411,11 +6418,15 @@
         '<button type="button" class="aiw-circle-btn" id="aiw-st-sub-back" aria-label="返回记忆设置">' +
           '<i class="fa-solid fa-arrow-left"></i>' +
         '</button>' +
-        '<div class="aiw-st-topbar-title">长期记忆</div>' +
+        '<div class="aiw-st-topbar-title">长期记忆管理</div>' +
         '<button type="button" class="aiw-st-top-action" id="aiw-mem-add-btn"><i class="fa-solid fa-plus"></i> 新增</button>' +
       '</div>' +
 
       '<div class="aiw-st-scroll">' +
+        '<div class="aiw-form-group" style="margin-bottom: 12px; background: var(--aiw-card); padding: 12px; border-radius: 12px; border: 1px solid var(--aiw-border);">' +
+          '<label class="aiw-field-label" style="margin-bottom: 4px; display: block; font-weight: 600;">记忆范围</label>' +
+          '<select class="aiw-input" id="aiw-mem-scope-select">' + scopeOptionsHtml + '</select>' +
+        '</div>' +
         '<div class="aiw-mem-toolbar is-top">' +
           '<div class="aiw-mem-search-wrap">' +
             '<i class="fa-solid fa-magnifying-glass"></i>' +
@@ -6453,6 +6464,15 @@
     var previewExpiredBtn = layer.querySelector('#aiw-mem-expired-preview-btn');
     var organizeBtn = layer.querySelector('#aiw-mem-organize-btn');
     var clearAllBtn = layer.querySelector('#aiw-mem-clear-all');
+    var scopeSelect = layer.querySelector('#aiw-mem-scope-select');
+
+    if (scopeSelect) {
+      scopeSelect.addEventListener('change', async function() {
+        _ctx.memoryScopeProjectId = scopeSelect.value || '';
+        _ctx.memories = typeof S().listMemories === 'function' ? await S().listMemories({ projectId: _ctx.memoryScopeProjectId }) : [];
+        renderCurrentView();
+      });
+    }
 
     layer.querySelectorAll('[data-mem-tab]').forEach(function(tabBtn) {
       tabBtn.addEventListener('click', function() {
@@ -7057,12 +7077,14 @@
         if (typeof S().removeDeletedMemorySignatureByContent === 'function') {
           await S().removeDeletedMemorySignatureByContent(content);
         }
+        var activeScopeProjId = _ctx.memoryScopeProjectId || '';
         var newDraft = { content: content, category: draftCat, importance: draftImp, manualImportance: true, userConfirmed: true, status: 'active' };
         var newScore = (mgr && typeof mgr.computeDynamicScore === 'function') ? mgr.computeDynamicScore(newDraft) : (draftImp * 18);
         var createdMem = await S().createMemory({
           content: content,
           category: draftCat,
-          scope: draftScope,
+          scope: activeScopeProjId ? 'project' : 'user',
+          projectId: activeScopeProjId,
           importance: draftImp,
           manualImportance: true,
           dynamicScore: newScore,
@@ -7078,7 +7100,8 @@
       if (savedId && mgr && typeof mgr.syncRelationsForMemory === 'function') {
         await mgr.syncRelationsForMemory(savedId, 'local_user');
       }
-      _ctx.memories = await S().listMemories();
+      var activeScopeProjIdForList = _ctx.memoryScopeProjectId || '';
+      _ctx.memories = await S().listMemories({ projectId: activeScopeProjIdForList });
       clearExpiredArchivePreviewState();
       closeModalOverlay();
       notifyWorkspaceStateChanged();
@@ -8457,6 +8480,10 @@
       btn.addEventListener('click', function() {
         var act = btn.getAttribute('data-st-action');
         if (act === 'plugins-entry') {
+          if (typeof window.openCustomPluginsPage === 'function') {
+            window.openCustomPluginsPage();
+            return;
+          }
           showCustomModal(
             '插件',
             '<p class="aiw-st-modal-msg">「插件」入口已预留，插件调用与扩展能力将在后续阶段正式接入。</p>',

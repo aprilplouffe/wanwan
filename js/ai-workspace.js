@@ -3372,6 +3372,15 @@
           openSettingsView(page, 'plugins');
           return;
         }
+        if (key === 'projects') {
+          setSidebarOpen(page, false);
+          if (global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openProjectsCenter === 'function') {
+            global.AiWorkspaceProjects.openProjectsCenter(page);
+          } else {
+            notifyToast('项目模块尚未加载');
+          }
+          return;
+        }
         var label = NAV_LABELS[key] || '该功能';
         notifyToast('「' + label + '」将在后续阶段接入');
       });
@@ -3548,6 +3557,74 @@
     }
   }
 
+  async function createNewChatInProject(page, projectId) {
+    if (_state.isStreaming && _state.abortController) {
+      try { _state.abortController.abort(); } catch (_) {}
+    }
+    var proj = S() ? await S().getProject(projectId) : null;
+    var preset = null;
+    if (proj && proj.defaultPresetId && S()) {
+      var allPresets = await S().listPresets();
+      preset = allPresets.find(function(p) { return p.id === proj.defaultPresetId; }) || null;
+    }
+    if (!preset) {
+      preset = resolveEffectivePresetForState();
+    }
+
+    _state.activeChatId = null;
+    _state.activeChat = await S().createChat({
+      title: '新对话' + (proj ? ('（' + proj.name + '）') : ''),
+      projectId: projectId || '',
+      presetId: preset ? preset.id : '',
+      presetSnapshot: preset ? S().buildPresetSnapshot(preset) : null,
+      messages: []
+    });
+    _state.activeChatId = _state.activeChat.id;
+    _state.messages = [];
+    _state.quotedMessage = null;
+    _state.explicitNoPreset = false;
+    _state.activePreset = preset;
+
+    syncQuoteBarUI(page);
+    await refreshEffectiveApi();
+    syncContextStrip(page);
+    updateMainStage(page);
+    renderSidebarChats(page);
+    notifyToast(proj ? ('已在项目「' + proj.name + '」中创建新对话') : '已开启新对话');
+  }
+
+  async function loadChatIntoState(page, chatId) {
+    if (_state.isStreaming && _state.abortController) {
+      try { _state.abortController.abort(); } catch (_) {}
+    }
+    var chat = S() ? await S().getChat(chatId) : null;
+    if (!chat) {
+      notifyToast('未找到该对话记录');
+      return;
+    }
+    _state.activeChat = chat;
+    _state.activeChatId = chat.id;
+    _state.messages = Array.isArray(chat.messages) ? chat.messages.slice() : [];
+    _state.quotedMessage = null;
+    if (chat.presetId || chat.presetSnapshot) {
+      _state.explicitNoPreset = false;
+      _state.activePreset = (_state.presets || []).find(function(p) { return p && p.id === chat.presetId; }) || chat.presetSnapshot || null;
+    } else {
+      _state.explicitNoPreset = true;
+      _state.activePreset = null;
+    }
+    await refreshEffectiveApi();
+    syncQuoteBarUI(page);
+    syncContextStrip(page);
+    updateMainStage(page);
+    renderSidebarChats(page);
+    notifyToast('已打开对话：' + (chat.title || '新对话'));
+  }
+
   global.showAiWorkspacePage = showAiWorkspacePage;
   global.showZhiyuPage = showAiWorkspacePage;
+  global.AiWorkspace = {
+    createNewChatInProject: createNewChatInProject,
+    loadChatIntoState: loadChatIntoState
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

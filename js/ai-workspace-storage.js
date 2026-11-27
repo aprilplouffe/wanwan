@@ -28,7 +28,9 @@
     WORLDBOOK_IDS: 'aiw_worldbook_ids',
     WORLDBOOK_PREFIX: 'aiw_worldbook:',
     FAVORITES: 'aiw_favorites',
-    PLUGIN_SETTINGS: 'aiw_plugin_settings'
+    PLUGIN_SETTINGS: 'aiw_plugin_settings',
+    PROJECT_IDS: 'aiw_project_ids',
+    PROJECT_PREFIX: 'aiw_project:'
   };
 
   var MEMORY_STRATEGY_PRESETS = {
@@ -201,13 +203,7 @@
 
   async function waitForConfigDB(timeoutMs) {
     if (global.db && global.db.config) return global.db;
-    var maxWait = typeof timeoutMs === 'number' ? timeoutMs : 1200;
-    var started = Date.now();
-    while (Date.now() - started < maxWait) {
-      if (global.db && global.db.config) return global.db;
-      await new Promise(function(resolve) { setTimeout(resolve, 40); });
-    }
-    return (global.db && global.db.config) ? global.db : null;
+    return null;
   }
 
   async function dbGetConfig(key) {
@@ -5194,6 +5190,195 @@
     removeFavoriteByMessage: removeFavoriteByMessage,
     toggleMessageFavorite: toggleMessageFavorite,
     searchFavorites: searchFavorites,
-    syncFavoriteMessageContent: syncFavoriteMessageContent
+    syncFavoriteMessageContent: syncFavoriteMessageContent,
+    listProjects: listProjects,
+    getProject: getProject,
+    createProject: createProject,
+    updateProject: updateProject,
+    deleteProject: deleteProject,
+    listProjectDocuments: listProjectDocuments,
+    getProjectDocument: getProjectDocument,
+    saveProjectDocument: saveProjectDocument,
+    renameProjectDocument: renameProjectDocument,
+    deleteProjectDocument: deleteProjectDocument
   };
+
+  // ===== 项目基础管理存储实现（8-A1） =====
+  function generateProjectId() {
+    return 'proj_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function normalizeProjectRecord(raw, forcedId) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var now = Date.now();
+    return {
+      id: String(forcedId || src.id || generateProjectId()),
+      name: String(src.name || '新项目').trim() || '新项目',
+      description: String(src.description || '').trim(),
+      icon: String(src.icon || 'fa-solid fa-folder').trim(),
+      color: String(src.color || '#ec4899').trim(),
+      defaultPresetId: String(src.defaultPresetId || '').trim(),
+      instructions: String(src.instructions || '').trim(),
+      createdAt: Number(src.createdAt) || now,
+      updatedAt: Number(src.updatedAt) || now
+    };
+  }
+
+  async function listProjects() {
+    var ids = await dbGetConfig(KEYS.PROJECT_IDS);
+    if (!Array.isArray(ids)) ids = [];
+    var items = [];
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      var raw = await dbGetConfig(KEYS.PROJECT_PREFIX + id);
+      if (raw && typeof raw === 'object') {
+        items.push(normalizeProjectRecord(raw, id));
+      }
+    }
+    items.sort(function(a, b) {
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
+    return items;
+  }
+
+  async function getProject(id) {
+    if (!id) return null;
+    var raw = await dbGetConfig(KEYS.PROJECT_PREFIX + id);
+    if (!raw || typeof raw !== 'object') return null;
+    return normalizeProjectRecord(raw, id);
+  }
+
+  async function createProject(data) {
+    var ids = await dbGetConfig(KEYS.PROJECT_IDS);
+    if (!Array.isArray(ids)) ids = [];
+    var now = Date.now();
+    var src = data && typeof data === 'object' ? data : {};
+    var proj = normalizeProjectRecord(Object.assign({}, src, {
+      createdAt: now,
+      updatedAt: now
+    }));
+    await dbPutConfig(KEYS.PROJECT_PREFIX + proj.id, proj);
+    if (ids.indexOf(proj.id) === -1) {
+      ids.unshift(proj.id);
+      await dbPutConfig(KEYS.PROJECT_IDS, ids);
+    }
+    return proj;
+  }
+
+  async function updateProject(id, patch) {
+    if (!id) return null;
+    var existing = await getProject(id);
+    if (!existing) return null;
+    var src = patch && typeof patch === 'object' ? patch : {};
+    var updated = normalizeProjectRecord(Object.assign({}, existing, src, {
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now()
+    }), existing.id);
+    await dbPutConfig(KEYS.PROJECT_PREFIX + updated.id, updated);
+    return updated;
+  }
+
+  async function deleteProject(id, deleteChatsFlag) {
+    if (!id) return false;
+    var ids = await dbGetConfig(KEYS.PROJECT_IDS);
+    if (!Array.isArray(ids)) ids = [];
+    var idx = ids.indexOf(id);
+    if (idx !== -1) {
+      ids.splice(idx, 1);
+      await dbPutConfig(KEYS.PROJECT_IDS, ids);
+    }
+    await dbDeleteConfig(KEYS.PROJECT_PREFIX + id);
+
+    var chats = await listChats();
+    for (var i = 0; i < chats.length; i++) {
+      var c = chats[i];
+      if (c.projectId === id) {
+        if (deleteChatsFlag) {
+          await deleteChat(c.id);
+        } else {
+          c.projectId = '';
+          c.updatedAt = Date.now();
+          await saveChat(c);
+        }
+      }
+    }
+
+    var map = await dbGetConfig('aiw_all_project_docs') || {};
+    var changed = false;
+    Object.keys(map).forEach(function(did) {
+      if (map[did] && map[did].projectId === id) {
+        delete map[did];
+        changed = true;
+      }
+    });
+    if (changed) {
+      await dbPutConfig('aiw_all_project_docs', map);
+    }
+
+    return true;
+  }
+
+  async function listProjectDocuments(projectId) {
+    if (!projectId) return [];
+    var map = await dbGetConfig('aiw_all_project_docs') || {};
+    var list = [];
+    Object.keys(map).forEach(function(did) {
+      var doc = map[did];
+      if (doc && doc.projectId === projectId) {
+        list.push(doc);
+      }
+    });
+    list.sort(function(a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+    return list;
+  }
+
+  async function getProjectDocument(docId) {
+    if (!docId) return null;
+    var map = await dbGetConfig('aiw_all_project_docs') || {};
+    return map[docId] || null;
+  }
+
+  async function saveProjectDocument(docData) {
+    var src = docData && typeof docData === 'object' ? docData : {};
+    var projectId = String(src.projectId || '').trim();
+    if (!projectId) throw new Error('资料未绑定项目');
+    var map = await dbGetConfig('aiw_all_project_docs') || {};
+    var docId = src.id || ('doc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+    var now = Date.now();
+    var doc = {
+      id: docId,
+      projectId: projectId,
+      name: String(src.name || '未命名文档'),
+      type: String(src.type || 'txt'),
+      size: Number(src.size) || 0,
+      content: String(src.content || ''),
+      createdAt: src.createdAt || now,
+      updatedAt: now
+    };
+    map[docId] = doc;
+    await dbPutConfig('aiw_all_project_docs', map);
+    return doc;
+  }
+
+  async function renameProjectDocument(docId, newName) {
+    var map = await dbGetConfig('aiw_all_project_docs') || {};
+    var doc = map[docId];
+    if (!doc) return null;
+    doc.name = String(newName || '').trim().slice(0, 100) || '未命名文档';
+    doc.updatedAt = Date.now();
+    map[docId] = doc;
+    await dbPutConfig('aiw_all_project_docs', map);
+    return doc;
+  }
+
+  async function deleteProjectDocument(docId) {
+    if (!docId) return false;
+    var map = await dbGetConfig('aiw_all_project_docs') || {};
+    if (map[docId]) {
+      delete map[docId];
+      await dbPutConfig('aiw_all_project_docs', map);
+    }
+    return true;
+  }
 })(typeof window !== 'undefined' ? window : globalThis);

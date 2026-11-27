@@ -48,6 +48,15 @@
   <!-- JSZip -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 
+  <!-- PDF.js & Mammoth for Document Parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+
   <!-- CSS 引用顺序 -->
   <link rel="stylesheet" href="css/base.css?v=1.0.14">
   <link rel="stylesheet" href="css/home.css?v=1.3.0">
@@ -91,7 +100,7 @@
   <link rel="stylesheet" href="css/heartbeat-live.css?v=1.0.0">
   <link rel="stylesheet" href="css/fan-community.css?v=1.0.1">
   <link rel="stylesheet" href="css/fan-community-chat.css?v=1.0.5">
-  <link rel="stylesheet" href="css/ai-workspace.css?v=1.9.0">
+  <link rel="stylesheet" href="css/ai-workspace.css?v=1.7.0">
 </head>
 <body>
   <!-- 开屏页 -->
@@ -200,13 +209,15 @@
   <script src="js/time-calendar-companion.js?v=1.0.0"></script>
   <script src="js/time-calendar-ai.js?v=1.0.0"></script>
   <script src="js/time-calendar.js?v=1.0.0"></script>
-  <script src="js/ai-workspace-storage.js?v=2.2.0"></script>
-  <script src="js/ai-workspace-ai.js?v=2.1.0"></script>
+  <script src="js/ai-workspace-storage.js?v=2.0.0"></script>
+  <script src="js/ai-workspace-ai.js?v=2.0.0"></script>
   <script src="js/ai-workspace-semantic.js?v=1.1.0"></script>
   <script src="js/ai-workspace-memory-manager.js?v=1.0.0"></script>
-  <script src="js/ai-workspace-memory.js?v=2.1.0"></script>
-  <script src="js/ai-workspace-plugins.js?v=1.4.0"></script>
-  <script src="js/ai-workspace-settings.js?v=2.4.0"></script>
-  <script src="js/ai-workspace.js?v=2.2.0"></script>
+  <script src="js/ai-workspace-memory.js?v=2.0.0"></script>
+  <script src="js/ai-workspace-settings.js?v=2.0.0"></script>
+  <script src="js/custom-plugins.js?v=1.0.0"></script>
+  <script src="js/plugin-presets.js?v=1.0.0"></script>
+  <script src="js/ai-workspace-projects.js?v=1.0.0"></script>
+  <script src="js/ai-workspace.js?v=1.8.0"></script>
 </body>
 </html>

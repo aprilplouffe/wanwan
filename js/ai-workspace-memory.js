@@ -405,12 +405,14 @@
       var memUserId = String(mem.userId || 'local_user').trim() || 'local_user';
       if (memUserId !== userId) return false;
 
+      var memProjectId = String(mem.projectId || '').trim();
+      if (projectId !== memProjectId) return false;
+
       var scope = String(mem.scope || 'user').toLowerCase();
       if (scope === 'chat') {
         return !!(chatId && mem.sourceChatId && mem.sourceChatId === chatId);
       }
       if (scope === 'project') {
-        if (!projectId || !mem.projectId || mem.projectId !== projectId) return false;
         if (!allowCrossChat && mem.sourceChatId && mem.sourceChatId !== chatId) return false;
         return true;
       }
