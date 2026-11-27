@@ -54,6 +54,7 @@
     abortController: null,
     favorites: [],
     quotedMessage: null,
+    pendingAttachments: [],
     translatingMap: {},
     activeTranslationLangMap: {},
     userProfile: {
@@ -616,6 +617,8 @@
       '</div>' +
 
       '<div class="aiw-composer-wrap">' +
+        '<input type="file" id="aiw-chat-attach-input" multiple style="display:none;">' +
+        '<div class="aiw-attach-bar" id="aiw-attach-bar" hidden></div>' +
         '<div class="aiw-quote-bar" id="aiw-quote-bar" hidden>' +
           '<div class="aiw-quote-bar-body">' +
             '<div class="aiw-quote-bar-role" id="aiw-quote-bar-role">引用消息</div>' +
@@ -1717,6 +1720,12 @@
             '<div class="aiw-msg-quote-ref-text">' + escapeHtml(qText) + '</div>' +
           '</div>';
       }
+      var attHtml = '';
+      if (Array.isArray(m.attachments) && m.attachments.length > 0) {
+        attHtml = '<div class="aiw-msg-att-list">' + m.attachments.map(function(att) {
+          return '<span class="aiw-msg-att-chip"><i class="fa-regular fa-file"></i> ' + escapeHtml(att.name) + ' <small>(' + escapeHtml(att.category || '文件') + ')</small></span>';
+        }).join('') + '</div>';
+      }
       var userMetaHtml = m.editedAt ? '<span class="aiw-msg-edited-tag">已编辑</span>' : '';
       var userActionsHtml =
         '<div class="aiw-msg-actions is-user-actions">' +
@@ -1729,6 +1738,7 @@
         '<div class="aiw-msg-row is-user" data-msg-id="' + escapeHtml(m.id) + '">' +
           badge +
           quoteHtml +
+          attHtml +
           '<div class="aiw-msg-bubble">' + escapeHtml(m.content) + '</div>' +
           userActionsHtml +
         '</div>'
@@ -1810,6 +1820,124 @@
     } catch (_) {
       notifyToast('当前环境不支持下载，请使用复制功能');
       return false;
+    }
+  }
+
+
+  function syncAttachBarUI(page) {
+    if (!page) return;
+    var bar = page.querySelector('#aiw-attach-bar');
+    if (!bar) return;
+    var list = Array.isArray(_state.pendingAttachments) ? _state.pendingAttachments : [];
+    if (list.length === 0) {
+      bar.hidden = true;
+      bar.innerHTML = '';
+      return;
+    }
+    bar.hidden = false;
+    bar.innerHTML = list.map(function(att) {
+      var statusBadge = '';
+      if (att.archiveStatus === 'archiving') {
+        statusBadge = '<span class="aiw-att-status is-ing">归档中…</span>';
+      } else if (att.archiveStatus === 'archived') {
+        statusBadge = '<span class="aiw-att-status is-ok" title="已自动归档至全局资料库">已归档</span>';
+      } else if (att.archiveStatus === 'failed') {
+        statusBadge = '<button type="button" class="aiw-att-retry-btn" data-att-retry="' + escapeHtml(att.localId) + '" title="' + escapeHtml(att.archiveError || '归档失败') + '">归档失败·重试</button>';
+      }
+      return (
+        '<div class="aiw-att-chip" data-att-id="' + escapeHtml(att.localId) + '">' +
+          '<i class="fa-regular fa-file-lines"></i>' +
+          '<span class="aiw-att-name" title="' + escapeHtml(att.name) + '">' + escapeHtml(att.name) + '</span>' +
+          statusBadge +
+          '<button type="button" class="aiw-att-remove" data-att-remove="' + escapeHtml(att.localId) + '" aria-label="移除附件"><i class="fa-solid fa-xmark"></i></button>' +
+        '</div>'
+      );
+    }).join('');
+
+    bar.querySelectorAll('[data-att-remove]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var lid = btn.getAttribute('data-att-remove');
+        removePendingAttachment(page, lid);
+      });
+    });
+
+    bar.querySelectorAll('[data-att-retry]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var lid = btn.getAttribute('data-att-retry');
+        var item = (_state.pendingAttachments || []).find(function(a) { return a && a.localId === lid; });
+        if (item && item.fileObj) {
+          runArchiveForAttachment(page, item);
+        }
+      });
+    });
+  }
+
+  function removePendingAttachment(page, localId) {
+    // 从聊天移除附件，绝不删除已归档到全局资料库的文件
+    _state.pendingAttachments = (_state.pendingAttachments || []).filter(function(a) {
+      return a && a.localId !== localId;
+    });
+    syncAttachBarUI(page);
+    syncComposerButtons(page);
+  }
+
+  async function runArchiveForAttachment(page, attItem) {
+    if (!attItem || !attItem.fileObj || !S() || typeof S().archiveChatFileToGlobalLibrary !== 'function') return;
+    attItem.archiveStatus = 'archiving';
+    attItem.archiveError = '';
+    syncAttachBarUI(page);
+    try {
+      var res = await S().archiveChatFileToGlobalLibrary(attItem.fileObj, {
+        chatId: attItem.chatId || (_state.activeChat ? _state.activeChat.id : '') || '',
+        projectId: attItem.projectId || (_state.activeChat ? _state.activeChat.projectId : '') || _state.activeProjectHomeId || '',
+        userId: 'local_user'
+      });
+      if (res && res.doc) {
+        attItem.fileId = res.doc.fileId || '';
+        attItem.globalDocId = res.doc.id || '';
+        attItem.category = res.doc.category || '';
+        attItem.mimeType = res.doc.mimeType || '';
+        attItem.parseStatus = res.doc.parseStatus || 'parsed';
+      }
+      attItem.archiveStatus = 'archived';
+      if (res && res.doc && res.doc.parseStatus === 'unsupported') {
+        notifyToast('已归档至全局资料库（' + res.doc.category + '，该格式暂不支持文本解析）');
+      }
+    } catch (err) {
+      attItem.archiveStatus = 'failed';
+      attItem.archiveError = (err && err.message) ? err.message : '归档失败';
+      notifyToast('附件「' + attItem.name + '」自动归档失败：' + attItem.archiveError);
+    }
+    syncAttachBarUI(page);
+  }
+
+  async function handleChatFilesSelected(page, fileList) {
+    if (!fileList || !fileList.length) return;
+    var curChatId = _state.activeChat ? _state.activeChat.id : '';
+    var curProjId = (_state.activeChat && _state.activeChat.projectId) ? _state.activeChat.projectId : (_state.activeProjectHomeId || '');
+    for (var i = 0; i < fileList.length; i++) {
+      var f = fileList[i];
+      if (!f) continue;
+      var item = {
+        localId: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        name: f.name || '未命名文件',
+        size: Number(f.size) || 0,
+        fileObj: f,
+        chatId: curChatId,
+        projectId: curProjId,
+        archiveStatus: 'archiving',
+        archiveError: '',
+        fileId: '',
+        globalDocId: '',
+        category: '',
+        mimeType: f.type || '',
+        parseStatus: ''
+      };
+      _state.pendingAttachments.push(item);
+      syncAttachBarUI(page);
+      syncComposerButtons(page);
+      // 立即异步归档至全局资料库，无需等待发送消息，且不阻塞聊天界面
+      runArchiveForAttachment(page, item);
     }
   }
 
@@ -4139,6 +4267,7 @@
       ? { id: _state.quotedMessage.id, role: _state.quotedMessage.role, content: _state.quotedMessage.content }
       : null;
     var promptForAI = buildQuotedPromptText(text, activeQuote);
+    var pendingAtts = Array.isArray(_state.pendingAttachments) ? _state.pendingAttachments.slice() : [];
     var userMsg = {
       id: S() ? S().generateMessageId() : ('msg_' + Date.now() + '_u'),
       role: 'user',
@@ -4147,6 +4276,21 @@
       deepThink: _state.deepThinkEnabled
     };
     if (activeQuote) userMsg.quote = activeQuote;
+    if (pendingAtts.length > 0) {
+      userMsg.attachments = pendingAtts.map(function(a) {
+        return {
+          fileId: a.fileId || '',
+          globalDocId: a.globalDocId || '',
+          name: a.name,
+          category: a.category || '',
+          mimeType: a.mimeType || '',
+          size: a.size || 0,
+          parseStatus: a.parseStatus || ''
+        };
+      });
+      _state.pendingAttachments = [];
+      syncAttachBarUI(page);
+    }
 
     var assistantMsg = {
       id: S() ? S().generateMessageId() : ('msg_' + Date.now() + '_a'),
@@ -4517,6 +4661,17 @@
       plugins: '插件'
     };
 
+    var chatAttachInput = page.querySelector('#aiw-chat-attach-input');
+    if (chatAttachInput) {
+      chatAttachInput.addEventListener('change', function() {
+        var files = chatAttachInput.files;
+        if (files && files.length > 0) {
+          handleChatFilesSelected(page, files);
+        }
+        chatAttachInput.value = '';
+      });
+    }
+
     page.querySelectorAll('[data-attach]').forEach(function(btn) {
       btn.addEventListener('click', function() {
         var type = btn.getAttribute('data-attach');
@@ -4530,6 +4685,15 @@
         if (type === 'plugins') {
           setAttachOpen(page, false);
           openSettingsView(page, 'plugins');
+          return;
+        }
+        if (type === 'files' || type === 'photos') {
+          setAttachOpen(page, false);
+          var chatFileInput = page.querySelector('#aiw-chat-attach-input');
+          if (chatFileInput) {
+            chatFileInput.accept = type === 'photos' ? 'image/*' : '';
+            chatFileInput.click();
+          }
           return;
         }
         setAttachOpen(page, false);
@@ -4739,6 +4903,8 @@
     openProjectHome: openProjectHome,
     buildProjectSourceTools: buildProjectSourceTools,
     executeBuiltInProjectSourceTool: executeBuiltInProjectSourceTool,
+    handleChatFilesSelected: handleChatFilesSelected,
+    removePendingAttachment: removePendingAttachment,
     syncAfterProjectChange: syncAfterProjectChange,
     reloadChatList: reloadChatList
   };

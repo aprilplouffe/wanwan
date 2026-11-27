@@ -35,7 +35,9 @@
     PROJECT_DOC_IDS_PREFIX: 'aiw_proj_doc_ids:',
     PROJECT_DOC_PREFIX: 'aiw_proj_doc:',
     GLOBAL_DOC_IDS: 'aiw_global_doc_ids',
-    GLOBAL_DOC_PREFIX: 'aiw_global_doc:'
+    GLOBAL_DOC_PREFIX: 'aiw_global_doc:',
+    FILE_ASSET_PREFIX: 'aiw_file_asset:',
+    FILE_ASSET_HASH_INDEX: 'aiw_file_asset_hash_index'
   };
 
   var MEMORY_STRATEGY_PRESETS = {
@@ -1211,6 +1213,7 @@
   }
 
   async function deleteChat(id) {
+    try { await unlinkChatFromGlobalDocs(id); } catch (_) {}
     if (!id) return false;
     var ids = await dbGetConfig(KEYS.CHAT_IDS);
     if (!Array.isArray(ids)) ids = [];
@@ -5252,7 +5255,13 @@
     saveGlobalDocument: saveGlobalDocument,
     renameGlobalDocument: renameGlobalDocument,
     updateGlobalDocumentMeta: updateGlobalDocumentMeta,
-    deleteGlobalDocument: deleteGlobalDocument
+    deleteGlobalDocument: deleteGlobalDocument,
+    classifyFileCategory: classifyFileCategory,
+    detectRealFileType: detectRealFileType,
+    computeFileHash: computeFileHash,
+    archiveChatFileToGlobalLibrary: archiveChatFileToGlobalLibrary,
+    getFileAsset: getFileAsset,
+    unlinkChatFromGlobalDocs: unlinkChatFromGlobalDocs
   };
 
   // ===== 项目基础管理存储实现（8-A1） =====
@@ -5845,44 +5854,201 @@
     return picked;
   }
 
-  // ===== 全局资料库存储实现（第一阶段：独立于项目的用户级资料，不混入项目来源） =====
+  // ===== 全局资料库与统一文件资产存储实现（支持聊天附件自动归档与哈希去重） =====
   function generateGlobalDocId() {
     return 'gdoc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
   }
 
-  function inferGlobalDocCategory(type, name) {
-    var t = String(type || '').toLowerCase();
-    if (t === 'pdf') return 'PDF 文档';
-    if (t === 'docx') return 'Word 文档';
-    if (t === 'md' || t === 'markdown') return 'Markdown 笔记';
-    return '文本资料';
+  function generateFileAssetId() {
+    return 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function detectRealFileType(file, headerBytes) {
+    var name = String((file && file.name) || '').trim();
+    var ext = name.indexOf('.') !== -1 ? name.split('.').pop().toLowerCase() : '';
+    var mime = String((file && file.type) || '').toLowerCase().trim();
+
+    if (headerBytes && headerBytes.length >= 4) {
+      var b0 = headerBytes[0], b1 = headerBytes[1], b2 = headerBytes[2], b3 = headerBytes[3];
+      // %PDF-
+      if (b0 === 0x25 && b1 === 0x50 && b2 === 0x44 && b3 === 0x46) {
+        return { ext: 'pdf', mimeType: mime || 'application/pdf' };
+      }
+      // PNG
+      if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4E && b3 === 0x47) {
+        return { ext: 'png', mimeType: mime || 'image/png' };
+      }
+      // JPEG
+      if (b0 === 0xFF && b1 === 0xD8 && b2 === 0xFF) {
+        return { ext: (ext === 'jpeg' ? 'jpeg' : 'jpg'), mimeType: mime || 'image/jpeg' };
+      }
+      // GIF
+      if (b0 === 0x47 && b1 === 0x49 && b2 === 0x46 && b3 === 0x38) {
+        return { ext: 'gif', mimeType: mime || 'image/gif' };
+      }
+      // WEBP (RIFF....WEBP)
+      if (b0 === 0x52 && b1 === 0x49 && b2 === 0x46 && b3 === 0x46 && headerBytes.length >= 12 &&
+          headerBytes[8] === 0x57 && headerBytes[9] === 0x45 && headerBytes[10] === 0x42 && headerBytes[11] === 0x50) {
+        return { ext: 'webp', mimeType: mime || 'image/webp' };
+      }
+      // ZIP-based Office formats (PK) -> distinguish by mime or ext
+      if (b0 === 0x50 && b1 === 0x4B && b2 === 0x03 && b3 === 0x04) {
+        if (mime.indexOf('wordprocessingml') !== -1 || ext === 'docx') return { ext: 'docx', mimeType: mime || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+        if (mime.indexOf('spreadsheetml') !== -1 || ext === 'xlsx') return { ext: 'xlsx', mimeType: mime || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+        if (mime.indexOf('presentationml') !== -1 || ext === 'pptx') return { ext: 'pptx', mimeType: mime || 'application/vnd.openxmlformats-officedocument.presentationml.presentation' };
+      }
+      // Legacy OLE2 Office (.doc/.xls/.ppt)
+      if (b0 === 0xD0 && b1 === 0xCF && b2 === 0x11 && b3 === 0xE0) {
+        if (mime.indexOf('msword') !== -1 || ext === 'doc') return { ext: 'doc', mimeType: mime || 'application/msword' };
+        if (mime.indexOf('ms-excel') !== -1 || ext === 'xls') return { ext: 'xls', mimeType: mime || 'application/vnd.ms-excel' };
+        if (mime.indexOf('ms-powerpoint') !== -1 || ext === 'ppt') return { ext: 'ppt', mimeType: mime || 'application/vnd.ms-powerpoint' };
+      }
+    }
+
+    if (mime === 'application/pdf') return { ext: 'pdf', mimeType: mime };
+    if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return { ext: 'docx', mimeType: mime };
+    if (mime === 'application/msword') return { ext: 'doc', mimeType: mime };
+    if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return { ext: 'xlsx', mimeType: mime };
+    if (mime === 'application/vnd.ms-excel') return { ext: 'xls', mimeType: mime };
+    if (mime === 'text/csv') return { ext: 'csv', mimeType: mime };
+    if (mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return { ext: 'pptx', mimeType: mime };
+    if (mime === 'application/vnd.ms-powerpoint') return { ext: 'ppt', mimeType: mime };
+    if (mime === 'text/markdown') return { ext: 'md', mimeType: mime };
+    if (mime === 'text/plain' && ext !== 'md' && ext !== 'markdown' && ext !== 'csv') return { ext: 'txt', mimeType: mime };
+    if (mime.indexOf('image/') === 0) return { ext: ext || mime.split('/')[1] || 'png', mimeType: mime };
+
+    return { ext: ext || 'bin', mimeType: mime || 'application/octet-stream' };
+  }
+
+  function classifyFileCategory(ext, mimeType) {
+    var e = String(ext || '').toLowerCase().trim();
+    var m = String(mimeType || '').toLowerCase().trim();
+    if (e === 'pdf' || m === 'application/pdf') return 'PDF';
+    if (e === 'doc' || e === 'docx' || m.indexOf('word') !== -1) return 'Word';
+    if (e === 'txt' || (m === 'text/plain' && e !== 'md' && e !== 'markdown' && e !== 'csv')) return 'TXT';
+    if (e === 'md' || e === 'markdown' || m === 'text/markdown') return 'Markdown';
+    if (e === 'xls' || e === 'xlsx' || e === 'csv' || m.indexOf('excel') !== -1 || m.indexOf('spreadsheet') !== -1 || m === 'text/csv') return 'Excel';
+    if (e === 'ppt' || e === 'pptx' || m.indexOf('powerpoint') !== -1 || m.indexOf('presentation') !== -1) return 'PowerPoint';
+    if (e === 'png' || e === 'jpg' || e === 'jpeg' || e === 'webp' || e === 'gif' || m.indexOf('image/') === 0) return '图片';
+    return '其他';
+  }
+
+  async function computeFileHash(bytesOrText) {
+    var bytes = null;
+    if (typeof bytesOrText === 'string') {
+      var arr = [];
+      for (var i = 0; i < bytesOrText.length; i++) {
+        arr.push(bytesOrText.charCodeAt(i) & 0xff);
+      }
+      bytes = new Uint8Array(arr);
+    } else if (bytesOrText instanceof Uint8Array) {
+      bytes = bytesOrText;
+    } else if (bytesOrText && bytesOrText.byteLength !== undefined) {
+      bytes = new Uint8Array(bytesOrText);
+    } else {
+      bytes = new Uint8Array(0);
+    }
+
+    if (global.crypto && global.crypto.subtle && typeof global.crypto.subtle.digest === 'function') {
+      try {
+        var digest = await global.crypto.subtle.digest('SHA-256', bytes);
+        var hashArr = Array.from(new Uint8Array(digest));
+        return hashArr.map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+      } catch (_) {}
+    }
+
+    // FNV-1a 64-bit style fallback for offline / non-secure contexts
+    var h1 = 0x811c9dc5;
+    var h2 = 0x01000193;
+    for (var j = 0; j < bytes.length; j++) {
+      h1 ^= bytes[j];
+      h1 = Math.imul(h1, 0x01000193) >>> 0;
+      h2 ^= (bytes[j] + (j & 0xff));
+      h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+    }
+    return 'fnv_' + h1.toString(16) + '_' + h2.toString(16) + '_' + bytes.length;
   }
 
   function normalizeGlobalDocRecord(raw, forcedId) {
     var src = raw && typeof raw === 'object' ? raw : {};
-    var content = String(src.content || '');
+    var content = String(src.content || src.extractedText || '');
     var type = String(src.type || 'txt').toLowerCase();
-    var name = String(src.name || '未命名资料').trim() || '未命名资料';
+    var mimeType = String(src.mimeType || 'application/octet-stream').toLowerCase();
+    var name = String(src.name || src.originalName || '未命名资料').trim() || '未命名资料';
     var pages = Array.isArray(src.pages) ? src.pages : null;
+    var category = String(src.category || classifyFileCategory(type, mimeType)).trim() || '其他';
+    var linkedChatIds = Array.isArray(src.sourceChatIds) ? src.sourceChatIds.slice() : [];
+    if (src.sourceChatId && linkedChatIds.indexOf(src.sourceChatId) === -1) {
+      linkedChatIds.push(src.sourceChatId);
+    }
+    var parseStatus = src.parseStatus === 'failed'
+      ? 'failed'
+      : (src.parseStatus === 'unsupported' ? 'unsupported' : 'parsed');
+
     return {
       id: String(forcedId || src.id || generateGlobalDocId()),
+      fileId: String(src.fileId || ''),
       scope: 'global',
       userId: String(src.userId || 'local_user').trim() || 'local_user',
       projectId: '',
+      sourceChatId: String(src.sourceChatId || ''),
+      sourceProjectId: String(src.sourceProjectId || ''),
+      sourceChatIds: linkedChatIds,
+      contentHash: String(src.contentHash || ''),
       name: name,
+      originalName: String(src.originalName || name),
       type: type,
+      mimeType: mimeType,
       size: Number(src.size) || 0,
-      category: String(src.category || inferGlobalDocCategory(type, name)).trim() || '未分类',
+      category: category,
       tags: Array.isArray(src.tags) ? src.tags.slice() : [],
       content: content,
+      extractedText: content,
       pageCount: Number(src.pageCount) || (pages ? pages.length : 0),
       pages: pages,
-      chunks: Array.isArray(src.chunks) ? src.chunks : chunkProjectDocumentText(content),
-      parseStatus: src.parseStatus === 'failed' ? 'failed' : 'parsed',
+      chunks: Array.isArray(src.chunks) ? src.chunks : (content ? chunkProjectDocumentText(content) : []),
+      parseStatus: parseStatus,
       parseError: String(src.parseError || ''),
-      createdAt: Number(src.createdAt) || Date.now(),
+      uploadTime: Number(src.uploadTime || src.createdAt) || Date.now(),
+      createdAt: Number(src.createdAt || src.uploadTime) || Date.now(),
       updatedAt: Number(src.updatedAt) || Date.now()
     };
+  }
+
+  async function getFileAsset(fileId) {
+    if (!fileId) return null;
+    return await dbGetConfig(KEYS.FILE_ASSET_PREFIX + fileId);
+  }
+
+  async function saveFileAssetWithDedup(params) {
+    var p = params && typeof params === 'object' ? params : {};
+    var hashKey = String(p.contentHash || '') + ':' + String(Number(p.size) || 0);
+    var hashIndex = await dbGetConfig(KEYS.FILE_ASSET_HASH_INDEX) || {};
+    if (p.contentHash && hashIndex[hashKey]) {
+      var existingAsset = await getFileAsset(hashIndex[hashKey]);
+      if (existingAsset && existingAsset.id) {
+        return { asset: existingAsset, deduplicated: true };
+      }
+    }
+
+    var fileId = generateFileAssetId();
+    var asset = {
+      id: fileId,
+      userId: String(p.userId || 'local_user'),
+      originalName: String(p.originalName || '未命名文件'),
+      mimeType: String(p.mimeType || 'application/octet-stream'),
+      ext: String(p.ext || 'bin'),
+      size: Number(p.size) || 0,
+      contentHash: String(p.contentHash || ''),
+      rawDataUrl: String(p.rawDataUrl || ''),
+      createdAt: Date.now()
+    };
+    await dbPutConfig(KEYS.FILE_ASSET_PREFIX + fileId, asset);
+    if (p.contentHash) {
+      hashIndex[hashKey] = fileId;
+      await dbPutConfig(KEYS.FILE_ASSET_HASH_INDEX, hashIndex);
+    }
+    return { asset: asset, deduplicated: false };
   }
 
   async function listGlobalDocuments(options) {
@@ -5909,7 +6075,7 @@
             continue;
           }
         }
-        if (catFilter && doc.category !== catFilter) continue;
+        if (catFilter && catFilter !== '全部文件' && doc.category !== catFilter) continue;
         if (q && String(doc.name || '').toLowerCase().indexOf(q) === -1) continue;
         list.push(doc);
       }
@@ -5933,8 +6099,9 @@
 
   async function saveGlobalDocument(docData) {
     var src = docData && typeof docData === 'object' ? docData : {};
-    var rawContent = String(src.content || '').trim();
-    if (!rawContent && src.parseStatus !== 'failed') {
+    var rawContent = String(src.content || src.extractedText || '').trim();
+    var allowNoText = src.parseStatus === 'failed' || src.parseStatus === 'unsupported';
+    if (!rawContent && !allowNoText) {
       throw new Error('文件内容为空，无法保存');
     }
     if (rawContent.length > MAX_PROJECT_DOC_CHARS) {
@@ -5949,11 +6116,18 @@
 
     var doc = normalizeGlobalDocRecord({
       id: docId,
+      fileId: src.fileId || '',
       scope: 'global',
       userId: src.userId || 'local_user',
       projectId: '',
+      sourceChatId: src.sourceChatId || '',
+      sourceProjectId: src.sourceProjectId || '',
+      sourceChatIds: src.sourceChatIds || [],
+      contentHash: src.contentHash || '',
       name: src.name || '未命名资料',
+      originalName: src.originalName || src.name || '未命名资料',
       type: src.type || 'txt',
+      mimeType: src.mimeType || 'application/octet-stream',
       size: Number(src.size) || rawContent.length,
       category: src.category,
       tags: src.tags,
@@ -5963,6 +6137,7 @@
       chunks: chunks,
       parseStatus: src.parseStatus || 'parsed',
       parseError: src.parseError || '',
+      uploadTime: src.uploadTime || now,
       createdAt: src.createdAt || now,
       updatedAt: now
     }, docId);
@@ -5985,6 +6160,151 @@
     return doc;
   }
 
+  async function archiveChatFileToGlobalLibrary(file, context) {
+    var ctx = context && typeof context === 'object' ? context : {};
+    if (!file) throw new Error('无效文件');
+    var chatId = String(ctx.chatId || '').trim();
+    var projectId = String(ctx.projectId || '').trim();
+    var userId = String(ctx.userId || 'local_user').trim() || 'local_user';
+    var name = String(file.name || '未命名文件').trim() || '未命名文件';
+    var size = Number(file.size) || 0;
+
+    if (size > 15 * 1024 * 1024) {
+      throw new Error('文件体积超过 15MB 上限');
+    }
+
+    var arrayBuf = null;
+    if (typeof file.arrayBuffer === 'function') {
+      arrayBuf = await file.arrayBuffer();
+    } else if (typeof file.text === 'function') {
+      var t = await file.text();
+      var enc = [];
+      for (var ti = 0; ti < t.length; ti++) enc.push(t.charCodeAt(ti) & 0xff);
+      arrayBuf = new Uint8Array(enc).buffer;
+    } else {
+      arrayBuf = new ArrayBuffer(0);
+    }
+
+    var bytes = new Uint8Array(arrayBuf);
+    var detected = detectRealFileType(file, bytes.subarray(0, 16));
+    var category = classifyFileCategory(detected.ext, detected.mimeType);
+    var contentHash = await computeFileHash(bytes);
+
+    // 原始文件编码（<= 2MB 时保留 dataURL 以便预览图片或下载，超大二进制仅保留元数据与哈希避免撑爆 localStorage）
+    var rawDataUrl = '';
+    if (bytes.length > 0 && bytes.length <= 2 * 1024 * 1024 && typeof global.btoa === 'function') {
+      try {
+        var bin = '';
+        for (var bi = 0; bi < bytes.length; bi += 8192) {
+          bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(bi, bi + 8192)));
+        }
+        rawDataUrl = 'data:' + detected.mimeType + ';base64,' + global.btoa(bin);
+      } catch (_) {}
+    }
+
+    // 1. 保存统一文件资产（哈希去重，避免重复存储原始内容）
+    var assetRes = await saveFileAssetWithDedup({
+      userId: userId,
+      originalName: name,
+      mimeType: detected.mimeType,
+      ext: detected.ext,
+      size: size,
+      contentHash: contentHash,
+      rawDataUrl: rawDataUrl
+    });
+
+    // 2. 若全局资料库已存在同 fileId 记录，则仅追加来源聊天关联，不重复创建冗余资料
+    var existingDocs = await listGlobalDocuments({ userId: userId });
+    var dupDoc = existingDocs.find(function(d) { return d && d.fileId === assetRes.asset.id; });
+    if (dupDoc) {
+      if (chatId && dupDoc.sourceChatIds.indexOf(chatId) === -1) {
+        dupDoc.sourceChatIds.push(chatId);
+        dupDoc.updatedAt = Date.now();
+        await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + dupDoc.id, dupDoc);
+      }
+      return { doc: dupDoc, asset: assetRes.asset, deduplicated: true };
+    }
+
+    // 3. 解析文本（仅对支持解析的 TXT/MD/PDF/DOCX 调用解析器，不支持的如 .doc/Excel/PPT/图片诚实标记 unsupported）
+    var parseStatus = 'unsupported';
+    var parseError = '';
+    var extractedText = '';
+    var pageCount = 0;
+    var pages = null;
+
+    var parseableExts = { txt: true, md: true, markdown: true, pdf: true, docx: true };
+    if (parseableExts[detected.ext]) {
+      var parser = global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.parseUploadedFile === 'function'
+        ? global.AiWorkspaceProjects.parseUploadedFile
+        : null;
+      if (parser) {
+        try {
+          var parsed = await parser(file);
+          extractedText = String(parsed.content || '');
+          pageCount = Number(parsed.pageCount) || 0;
+          pages = Array.isArray(parsed.pages) ? parsed.pages : null;
+          parseStatus = 'parsed';
+        } catch (parseErr) {
+          parseStatus = 'failed';
+          parseError = (parseErr && parseErr.message) ? parseErr.message : '文件解析失败';
+        }
+      } else {
+        parseStatus = 'failed';
+        parseError = '文件解析器未就绪';
+      }
+    } else {
+      parseStatus = 'unsupported';
+      parseError = '暂不支持提取 .' + detected.ext + ' 文本内容，已保留原始文件归档';
+    }
+
+    var savedDoc = await saveGlobalDocument({
+      fileId: assetRes.asset.id,
+      userId: userId,
+      sourceChatId: chatId,
+      sourceProjectId: projectId,
+      sourceChatIds: chatId ? [chatId] : [],
+      contentHash: contentHash,
+      name: name,
+      originalName: name,
+      type: detected.ext,
+      mimeType: detected.mimeType,
+      size: size,
+      category: category,
+      content: extractedText,
+      pageCount: pageCount,
+      pages: pages,
+      parseStatus: parseStatus,
+      parseError: parseError,
+      uploadTime: Date.now()
+    });
+
+    return { doc: savedDoc, asset: assetRes.asset, deduplicated: false };
+  }
+
+  async function unlinkChatFromGlobalDocs(chatId) {
+    var cid = String(chatId || '').trim();
+    if (!cid) return;
+    var docs = await listGlobalDocuments();
+    for (var i = 0; i < docs.length; i++) {
+      var d = docs[i];
+      if (d && Array.isArray(d.sourceChatIds)) {
+        var idx = d.sourceChatIds.indexOf(cid);
+        var changed = false;
+        if (idx !== -1) {
+          d.sourceChatIds.splice(idx, 1);
+          changed = true;
+        }
+        if (d.sourceChatId === cid) {
+          d.sourceChatId = '';
+          changed = true;
+        }
+        if (changed) {
+          await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + d.id, d);
+        }
+      }
+    }
+  }
+
   async function renameGlobalDocument(docId, newName) {
     var doc = await getGlobalDocument(docId);
     if (!doc) return null;
@@ -6000,7 +6320,7 @@
     var doc = await getGlobalDocument(docId);
     if (!doc) return null;
     var src = patch && typeof patch === 'object' ? patch : {};
-    if (typeof src.category === 'string') doc.category = src.category.trim() || '未分类';
+    if (typeof src.category === 'string') doc.category = src.category.trim() || '其他';
     if (Array.isArray(src.tags)) doc.tags = src.tags.slice();
     doc.updatedAt = Date.now();
     await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + docId, doc);
@@ -6009,6 +6329,7 @@
 
   async function deleteGlobalDocument(docId) {
     if (!docId) return false;
+    var existing = await getGlobalDocument(docId);
     await dbDeleteConfig(KEYS.GLOBAL_DOC_PREFIX + docId);
     var ids = await dbGetConfig(KEYS.GLOBAL_DOC_IDS);
     if (Array.isArray(ids)) {
@@ -6016,6 +6337,17 @@
       if (idx !== -1) {
         ids.splice(idx, 1);
         await dbPutConfig(KEYS.GLOBAL_DOC_IDS, ids);
+      }
+    }
+    if (existing && existing.fileId) {
+      await dbDeleteConfig(KEYS.FILE_ASSET_PREFIX + existing.fileId);
+      if (existing.contentHash) {
+        var hashIndex = await dbGetConfig(KEYS.FILE_ASSET_HASH_INDEX) || {};
+        var hashKey = String(existing.contentHash) + ':' + String(Number(existing.size) || 0);
+        if (hashIndex[hashKey] === existing.fileId) {
+          delete hashIndex[hashKey];
+          await dbPutConfig(KEYS.FILE_ASSET_HASH_INDEX, hashIndex);
+        }
       }
     }
     return true;

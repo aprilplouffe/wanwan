@@ -4,7 +4,7 @@
   'use strict';
 
   var UI_STATE_KEY = 'wanwan_aiw_library_ui_v1';
-  var GLOBAL_CATEGORIES = ['文本资料', 'Markdown 笔记', 'PDF 文档', 'Word 文档', '工作文档', '学习资料', '技术文档', '个人笔记', '未分类'];
+  var GLOBAL_CATEGORIES = ['全部文件', 'PDF', 'Word', 'TXT', 'Markdown', 'Excel', 'PowerPoint', '图片', '其他'];
 
   var _ui = {
     open: false,
@@ -99,17 +99,44 @@
     page.classList.remove('is-library-open');
   }
 
-  function getFileIconClass(type) {
+  function getFileIconClass(type, category) {
+    var c = String(category || '');
     var t = String(type || '').toLowerCase();
-    if (t === 'pdf') return 'fa-solid fa-file-pdf';
-    if (t === 'docx') return 'fa-solid fa-file-word';
-    if (t === 'md' || t === 'markdown') return 'fa-solid fa-file-code';
+    if (c === 'PDF' || t === 'pdf') return 'fa-solid fa-file-pdf';
+    if (c === 'Word' || t === 'doc' || t === 'docx') return 'fa-solid fa-file-word';
+    if (c === 'Markdown' || t === 'md' || t === 'markdown') return 'fa-solid fa-file-code';
+    if (c === 'Excel' || t === 'xls' || t === 'xlsx' || t === 'csv') return 'fa-solid fa-file-excel';
+    if (c === 'PowerPoint' || t === 'ppt' || t === 'pptx') return 'fa-solid fa-file-powerpoint';
+    if (c === '图片' || t === 'png' || t === 'jpg' || t === 'jpeg' || t === 'webp' || t === 'gif') return 'fa-regular fa-image';
     return 'fa-solid fa-file-lines';
   }
 
-  function openGlobalDocPreviewModal(page, doc) {
+  async function openGlobalDocPreviewModal(page, doc) {
     if (!page || !doc) return;
-    if (doc.parseStatus === 'failed' || !String(doc.content || '').trim()) {
+    if (doc.category === '图片' && doc.fileId && S() && typeof S().getFileAsset === 'function') {
+      var imgAsset = await S().getFileAsset(doc.fileId);
+      if (imgAsset && imgAsset.rawDataUrl) {
+        var imgWrap = document.createElement('div');
+        imgWrap.className = 'aiw-ws-modal-backdrop open aiw-proj-submodal-backdrop';
+        imgWrap.innerHTML =
+          '<div class="aiw-ws-modal aiw-projects-center-modal" role="dialog" aria-modal="true">' +
+            '<div class="aiw-ws-modal-head">' +
+              '<div class="aiw-ws-modal-title"><i class="fa-regular fa-image" style="color:var(--aiw-pink-deep); margin-right:8px;"></i>' + escapeHtml(doc.name) + '</div>' +
+              '<button type="button" class="aiw-ws-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
+            '</div>' +
+            '<div class="aiw-ws-modal-body" style="text-align:center;">' +
+              '<img src="' + escapeHtml(imgAsset.rawDataUrl) + '" alt="' + escapeHtml(doc.name) + '" style="max-width:100%; max-height:58vh; border-radius:12px;">' +
+            '</div>' +
+            '<div class="aiw-ws-modal-foot"><button type="button" class="aiw-primary-btn" id="aiw-lib-img-close">关闭</button></div>' +
+          '</div>';
+        page.appendChild(imgWrap);
+        imgWrap.querySelector('.aiw-ws-modal-close').addEventListener('click', function() { imgWrap.remove(); });
+        imgWrap.querySelector('#aiw-lib-img-close').addEventListener('click', function() { imgWrap.remove(); });
+        imgWrap.addEventListener('click', function(e) { if (e.target === imgWrap) imgWrap.remove(); });
+        return;
+      }
+    }
+    if (doc.parseStatus === 'failed' || doc.parseStatus === 'unsupported' || !String(doc.content || '').trim()) {
       var errWrap = document.createElement('div');
       errWrap.className = 'aiw-ws-modal-backdrop open aiw-proj-submodal-backdrop';
       errWrap.innerHTML =
@@ -168,7 +195,7 @@
     modalWrap.innerHTML =
       '<div class="aiw-ws-modal aiw-projects-center-modal" role="dialog" aria-modal="true">' +
         '<div class="aiw-ws-modal-head">' +
-          '<div class="aiw-ws-modal-title"><i class="' + getFileIconClass(doc.type) + '" style="color:var(--aiw-pink-deep); margin-right:8px;"></i>' + escapeHtml(doc.name) + '</div>' +
+          '<div class="aiw-ws-modal-title"><i class="' + getFileIconClass(doc.type, doc.category) + '" style="color:var(--aiw-pink-deep); margin-right:8px;"></i>' + escapeHtml(doc.name) + '</div>' +
           '<button type="button" class="aiw-ws-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
         '</div>' +
         '<div class="aiw-ws-modal-body">' +
@@ -307,7 +334,7 @@
           '<button type="button" class="aiw-ws-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
         '</div>' +
         '<div class="aiw-ws-modal-body">' +
-          '<p class="aiw-st-modal-msg">确定要删除「<strong>' + escapeHtml(doc.name) + '</strong>」吗？删除后将同时清理其解析文本与关联数据，且不可恢复。</p>' +
+          '<p class="aiw-st-modal-msg">确定要删除「<strong>' + escapeHtml(doc.name) + '</strong>」吗？' + ((Array.isArray(doc.sourceChatIds) && doc.sourceChatIds.length > 0) ? ('<br><span style="color:#d97706;">提示：该文件当前关联了 ' + doc.sourceChatIds.length + ' 个对话，删除后可能影响这些对话后续对该文件的访问。</span><br>') : '') + '删除后将同步清理原始内容、解析文本及关联数据，且不可恢复。</p>' +
         '</div>' +
         '<div class="aiw-ws-modal-foot">' +
           '<button type="button" class="aiw-secondary-btn" id="aiw-lib-del-cancel">取消</button>' +
@@ -407,10 +434,18 @@
     if (!stage) return;
 
     var allDocs = await S().listGlobalDocuments();
+    var catCounts = { '全部文件': allDocs.length };
+    GLOBAL_CATEGORIES.forEach(function(c) { if (c !== '全部文件') catCounts[c] = 0; });
+    allDocs.forEach(function(d) {
+      var c = d && d.category ? d.category : '其他';
+      if (catCounts[c] === undefined) c = '其他';
+      catCounts[c] = (catCounts[c] || 0) + 1;
+    });
+    var activeCat = _ui.category || '全部文件';
     var filteredDocs = await S().listGlobalDocuments({
       query: _ui.query,
       type: _ui.type,
-      category: _ui.category,
+      category: activeCat,
       sort: _ui.sort
     });
 
@@ -435,12 +470,13 @@
         '<div class="aiw-lib-list">' +
           filteredDocs.map(function(doc) {
             var isFailed = doc.parseStatus === 'failed';
-            var statusCls = isFailed ? 'is-failed' : 'is-parsed';
-            var statusLabel = isFailed ? '解析失败' : '已解析';
+            var isUnsupported = doc.parseStatus === 'unsupported';
+            var statusCls = isFailed ? 'is-failed' : (isUnsupported ? 'is-unsupported' : 'is-parsed');
+            var statusLabel = isFailed ? '解析失败' : (isUnsupported ? '暂不支持解析（已归档原文件）' : '已解析');
             return (
               '<div class="aiw-lib-row" data-lib-doc-id="' + escapeHtml(doc.id) + '">' +
                 '<div class="aiw-lib-row-main">' +
-                  '<div class="aiw-lib-row-icon"><i class="' + getFileIconClass(doc.type) + '"></i></div>' +
+                  '<div class="aiw-lib-row-icon"><i class="' + getFileIconClass(doc.type, doc.category) + '"></i></div>' +
                   '<div class="aiw-lib-row-info">' +
                     '<div class="aiw-lib-row-title" title="' + escapeHtml(doc.name) + '">' + escapeHtml(doc.name) + '</div>' +
                     '<div class="aiw-lib-row-meta">' +
@@ -459,9 +495,10 @@
         '</div>';
     }
 
-    var catOptionsHtml = '<option value="">全部分类</option>' + GLOBAL_CATEGORIES.map(function(cat) {
-      var sel = _ui.category === cat ? ' selected' : '';
-      return '<option value="' + escapeHtml(cat) + '"' + sel + '>' + escapeHtml(cat) + '</option>';
+    var catTabsHtml = GLOBAL_CATEGORIES.map(function(cat) {
+      var isAct = activeCat === cat ? ' active' : '';
+      var cnt = catCounts[cat] || 0;
+      return '<button type="button" class="aiw-lib-cat-tab' + isAct + '" data-lib-cat-tab="' + escapeHtml(cat) + '">' + escapeHtml(cat) + ' <span>' + cnt + '</span></button>';
     }).join('');
 
     stage.innerHTML =
@@ -475,27 +512,20 @@
             '</div>' +
           '</div>' +
           '<div class="aiw-lib-header-actions">' +
-            '<input type="file" id="aiw-lib-file-input" accept=".txt,.md,.markdown,.pdf,.docx" multiple style="display:none;">' +
+            '<input type="file" id="aiw-lib-file-input" multiple style="display:none;">' +
             '<button type="button" class="aiw-primary-btn aiw-btn-sm" id="aiw-lib-add-btn"><i class="fa-solid fa-plus"></i> 添加资料</button>' +
           '</div>' +
         '</div>' +
 
         '<div class="aiw-lib-upload-status" id="aiw-lib-upload-status" hidden></div>' +
 
+        '<div class="aiw-lib-cat-nav" role="tablist">' + catTabsHtml + '</div>' +
         '<div class="aiw-lib-toolbar">' +
           '<div class="aiw-search-box aiw-lib-search">' +
             '<i class="fa-solid fa-magnifying-glass"></i>' +
             '<input type="search" id="aiw-lib-search-input" value="' + escapeHtml(_ui.query) + '" placeholder="按文件名称搜索..." aria-label="搜索资料">' +
           '</div>' +
           '<div class="aiw-lib-filters">' +
-            '<select class="aiw-ph-sort-select" id="aiw-lib-type-filter" aria-label="按文件类型筛选">' +
-              '<option value=""' + (_ui.type === '' ? ' selected' : '') + '>全部类型</option>' +
-              '<option value="txt"' + (_ui.type === 'txt' ? ' selected' : '') + '>TXT</option>' +
-              '<option value="md"' + (_ui.type === 'md' ? ' selected' : '') + '>Markdown</option>' +
-              '<option value="pdf"' + (_ui.type === 'pdf' ? ' selected' : '') + '>PDF</option>' +
-              '<option value="docx"' + (_ui.type === 'docx' ? ' selected' : '') + '>DOCX</option>' +
-            '</select>' +
-            '<select class="aiw-ph-sort-select" id="aiw-lib-cat-filter" aria-label="按分类筛选">' + catOptionsHtml + '</select>' +
             '<select class="aiw-ph-sort-select" id="aiw-lib-sort-select" aria-label="排序方式">' +
               '<option value="time_desc"' + (_ui.sort === 'time_desc' ? ' selected' : '') + '>最新上传</option>' +
               '<option value="time_asc"' + (_ui.sort === 'time_asc' ? ' selected' : '') + '>最早上传</option>' +
@@ -534,14 +564,13 @@
       });
     }
 
-    var catSel = stage.querySelector('#aiw-lib-cat-filter');
-    if (catSel) {
-      catSel.addEventListener('change', function() {
-        _ui.category = catSel.value || '';
+    stage.querySelectorAll('[data-lib-cat-tab]').forEach(function(tabBtn) {
+      tabBtn.addEventListener('click', function() {
+        _ui.category = tabBtn.getAttribute('data-lib-cat-tab') || '全部文件';
         saveUiState();
         renderLibraryStage(page, opts);
       });
-    }
+    });
 
     var sortSel = stage.querySelector('#aiw-lib-sort-select');
     if (sortSel) {
@@ -577,16 +606,7 @@
             statusBar.textContent = '正在解析 (' + (i + 1) + '/' + files.length + ')：' + (f && f.name ? f.name : '文件') + '...';
           }
           try {
-            var parsed = await parser(f);
-            await S().saveGlobalDocument({
-              name: parsed.name,
-              type: parsed.type,
-              size: parsed.size,
-              content: parsed.content,
-              pageCount: parsed.pageCount || 0,
-              pages: parsed.pages || null,
-              parseStatus: 'parsed'
-            });
+            await S().archiveChatFileToGlobalLibrary(f, { userId: 'local_user' });
             okCount++;
           } catch (err) {
             errors.push((f && f.name ? f.name : '文件') + '：' + (err && err.message ? err.message : '解析失败'));
