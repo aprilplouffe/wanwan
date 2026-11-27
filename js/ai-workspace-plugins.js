@@ -6,7 +6,8 @@
 
   var CATEGORY_BUILTIN = 'builtin';
   var CATEGORY_MCP = 'mcp';
-  var VALID_CATEGORIES = [CATEGORY_BUILTIN, CATEGORY_MCP];
+  var CATEGORY_CUSTOM = 'custom';
+  var VALID_CATEGORIES = [CATEGORY_BUILTIN, CATEGORY_MCP, CATEGORY_CUSTOM];
 
   var PERMISSION_SCOPES = {
     READ_ONLY: 'read_only',
@@ -124,7 +125,7 @@
       id: id,
       name: String(def.name || id).trim(),
       category: category,
-      categoryLabel: category === CATEGORY_MCP ? 'MCP 插件' : '内置插件',
+      categoryLabel: category === CATEGORY_MCP ? 'MCP 插件' : (category === CATEGORY_CUSTOM ? '自定义插件' : '内置插件'),
       description: String(def.description || '').trim(),
       version: String(def.version || '1.0.0').trim(),
       author: String(def.author || '知屿').trim(),
@@ -249,11 +250,19 @@
         if (normSrv) cleanMcpServers.push(normSrv);
       });
     }
+    var cleanCustomPlugins = [];
+    if (Array.isArray(src.customPlugins)) {
+      src.customPlugins.forEach(function(item) {
+        var normCp = normalizeCustomPluginRecord(item);
+        if (normCp) cleanCustomPlugins.push(normCp);
+      });
+    }
     return {
       globalEnabled: src.globalEnabled !== false,
       plugins: pluginsMap,
       chatOverrides: chatOverrides,
       mcpServers: cleanMcpServers,
+      customPlugins: cleanCustomPlugins,
       updatedAt: Number(src.updatedAt) || 0
     };
   }
@@ -267,6 +276,7 @@
       norm = normalizePluginSettings({});
     }
     syncMcpServersToRegistry(norm);
+    syncCustomPluginsToRegistry(norm);
     return norm;
   }
 
@@ -279,6 +289,7 @@
       saved = normalizePluginSettings(await store.savePluginSettings(normalized));
     }
     syncMcpServersToRegistry(saved);
+    syncCustomPluginsToRegistry(saved);
     return saved;
   }
 
@@ -1844,9 +1855,353 @@
     };
   }
 
+  // ===== 自费/自研自定义插件管理与安全能力实现 =====
+  function normalizeCustomPluginRecord(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var id = String(raw.id || '').trim();
+    if (!id) return null;
+    var name = String(raw.name || '').trim().slice(0, 60) || '自定义插件';
+    var description = String(raw.description || '').trim().slice(0, 300);
+    var icon = String(raw.icon || 'fa-solid fa-wand-magic-sparkles').trim();
+    var version = String(raw.version || '1.0.0').trim();
+    var author = String(raw.author || '用户自定义').trim();
+    var defaultEnabled = raw.defaultEnabled !== false;
+    var capabilityType = String(raw.capabilityType || 'template').trim();
+    var templateResponse = String(raw.templateResponse || '').trim();
+    var toolDef = raw.tool && typeof raw.tool === 'object' ? raw.tool : {};
+    var toolName = String(toolDef.name || 'custom_action').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    var toolTitle = String(toolDef.title || name).trim();
+    var toolDesc = String(toolDef.description || description).trim();
+    var parameters = normalizeParameters(toolDef.parameters);
+    var permissions = normalizePermissions(toolDef.permissions);
+
+    return {
+      id: id,
+      name: name,
+      description: description,
+      icon: icon,
+      version: version,
+      author: author,
+      defaultEnabled: defaultEnabled,
+      capabilityType: capabilityType,
+      templateResponse: templateResponse,
+      tool: {
+        name: toolName,
+        title: toolTitle,
+        description: toolDesc,
+        parameters: parameters,
+        permissions: permissions
+      }
+    };
+  }
+
+  async function executeCustomPluginTool(customDef, params, execContext) {
+    var cap = customDef.capabilityType;
+    var p = params && typeof params === 'object' ? params : {};
+    if (cap === 'calculator') {
+      var expr = String(p.expression || p.query || p.value || '').trim();
+      return evaluateMathExpression(expr);
+    } else if (cap === 'dice') {
+      var parsed = parseDiceParams(p);
+      var rolls = [];
+      var total = 0;
+      var minRoll = parsed.sides;
+      var maxRoll = 1;
+      for (var i = 0; i < parsed.count; i++) {
+        var val = getSecureRandomInt(1, parsed.sides);
+        rolls.push(val);
+        total += val;
+        if (val < minRoll) minRoll = val;
+        if (val > maxRoll) maxRoll = val;
+      }
+      return {
+        notation: parsed.notation,
+        sides: parsed.sides,
+        count: parsed.count,
+        rolls: rolls,
+        total: total,
+        min: minRoll,
+        max: maxRoll
+      };
+    } else if (cap === 'time') {
+      var now = new Date();
+      return {
+        iso: now.toISOString(),
+        local: now.toLocaleString(),
+        utcOffset: formatUtcOffset(now),
+        timestamp: now.getTime()
+      };
+    } else {
+      var tmpl = customDef.templateResponse || '自定义插件执行成功';
+      var resultText = tmpl;
+      Object.keys(p).forEach(function(k) {
+        var rx = new RegExp('\\{' + k + '\\}', 'g');
+        resultText = resultText.replace(rx, String(p[k] !== undefined ? p[k] : ''));
+      });
+      return {
+        pluginId: customDef.id,
+        pluginName: customDef.name,
+        result: resultText,
+        parameters: p
+      };
+    }
+  }
+
+  async function listCustomPlugins() {
+    var settings = await loadPluginSettings();
+    return (Array.isArray(settings.customPlugins) ? settings.customPlugins : []).map(normalizeCustomPluginRecord).filter(Boolean);
+  }
+
+  async function saveCustomPlugin(input) {
+    var src = input && typeof input === 'object' ? input : {};
+    var id = String(src.id || '').trim() || ('custom_plugin_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+    var norm = normalizeCustomPluginRecord(Object.assign({}, src, { id: id }));
+    if (!norm.name) throw new Error('插件名称不能为空');
+    if (!norm.tool.name) throw new Error('工具标识名不能为空');
+
+    var settings = await loadPluginSettings();
+    var list = Array.isArray(settings.customPlugins) ? settings.customPlugins : [];
+    var idx = list.findIndex(function(item) { return item && item.id === id; });
+    if (idx >= 0) {
+      list[idx] = norm;
+    } else {
+      list.push(norm);
+    }
+    settings.customPlugins = list;
+    var savedSettings = await savePluginSettings(settings);
+    return { plugin: norm, settings: savedSettings };
+  }
+
+  async function deleteCustomPlugin(customPluginId) {
+    var pid = String(customPluginId || '').trim();
+    if (!pid) return await loadPluginSettings();
+    var settings = await loadPluginSettings();
+    var list = Array.isArray(settings.customPlugins) ? settings.customPlugins : [];
+    settings.customPlugins = list.filter(function(item) { return item && item.id !== pid; });
+
+    var oldPlg = _plugins[pid];
+    if (oldPlg && Array.isArray(oldPlg.tools)) {
+      oldPlg.tools.forEach(function(t) { delete _tools[t.fullName]; });
+    }
+    delete _plugins[pid];
+    var pIdx = _pluginOrder.indexOf(pid);
+    if (pIdx >= 0) _pluginOrder.splice(pIdx, 1);
+
+    return await savePluginSettings(settings);
+  }
+
+  function syncCustomPluginsToRegistry(settings) {
+    Object.keys(_plugins).forEach(function(pid) {
+      var plg = _plugins[pid];
+      if (plg && plg.category === CATEGORY_CUSTOM) {
+        if (Array.isArray(plg.tools)) {
+          plg.tools.forEach(function(t) { delete _tools[t.fullName]; });
+        }
+        delete _plugins[pid];
+        var oIdx = _pluginOrder.indexOf(pid);
+        if (oIdx >= 0) _pluginOrder.splice(oIdx, 1);
+      }
+    });
+
+    var customList = (settings && Array.isArray(settings.customPlugins)) ? settings.customPlugins : [];
+    customList.forEach(function(raw) {
+      var norm = normalizeCustomPluginRecord(raw);
+      if (!norm) return;
+      registerPlugin({
+        id: norm.id,
+        name: norm.name,
+        category: CATEGORY_CUSTOM,
+        description: norm.description,
+        version: norm.version,
+        author: norm.author,
+        defaultEnabled: norm.defaultEnabled !== false,
+        permissions: norm.tool.permissions,
+        tools: [
+          {
+            name: norm.tool.name,
+            title: norm.tool.title,
+            description: norm.tool.description,
+            parameters: norm.tool.parameters,
+            permissions: norm.tool.permissions,
+            execute: async function(params, execContext) {
+              return await executeCustomPluginTool(norm, params, execContext);
+            }
+          }
+        ]
+      });
+    });
+  }
+
+  var PLUGIN_TEMPLATES = [
+    {
+      id: 'tpl_story_dice',
+      name: '剧情骰子',
+      category: 'roleplay',
+      categoryLabel: '角色扮演',
+      description: '用于跑团或角色扮演的骰子投掷工具，支持 D6、D20 等面数与次数投掷。',
+      icon: 'fa-solid fa-dice',
+      capabilityType: 'dice',
+      tool: {
+        name: 'story_dice_roll',
+        title: '剧情骰子投掷',
+        description: '投掷指定面数与次数的骰子并返回结果。',
+        parameters: {
+          type: 'object',
+          properties: {
+            sides: { type: 'integer', description: '骰子面数，如 6、20、100' },
+            count: { type: 'integer', description: '投掷次数，默认 1' }
+          },
+          required: []
+        },
+        permissions: { readOnly: true, scopes: ['read_only'], requiresConfirmation: false }
+      }
+    },
+    {
+      id: 'tpl_random_event',
+      name: '随机事件',
+      category: 'roleplay',
+      categoryLabel: '角色扮演',
+      description: '结合当前聊天氛围生成不破坏主线的随机事件建议。',
+      icon: 'fa-solid fa-wand-magic-sparkles',
+      capabilityType: 'template',
+      templateResponse: '触发随机事件建议：在当前场景中，周边环境出现了一个自然而生的小插曲（如微风拂过、远处的声响或突发的互动契机），可供角色与用户自然延伸对话。',
+      tool: {
+        name: 'random_plot_event',
+        title: '生成随机事件',
+        description: '生成贴合当前情境的随机事件建议。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '当前场景或情境提示' }
+          },
+          required: ['query']
+        },
+        permissions: { readOnly: true, scopes: ['read_only'], requiresConfirmation: false }
+      }
+    },
+    {
+      id: 'tpl_char_schedule',
+      name: '角色日程',
+      category: 'roleplay',
+      categoryLabel: '角色扮演',
+      description: '查询或生成当前时间节点的角色日常活动与安排。',
+      icon: 'fa-solid fa-calendar-days',
+      capabilityType: 'template',
+      templateResponse: '角色当前日程安排：上午处理核心事务，中午进行短暂休息与简餐，下午与用户进行互动或外出探索。',
+      tool: {
+        name: 'character_schedule',
+        title: '查询角色日程',
+        description: '获取角色的当前日程与活动安排。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '关注的时间段或事项' }
+          },
+          required: []
+        },
+        permissions: { readOnly: true, scopes: ['read_only'], requiresConfirmation: false }
+      }
+    },
+    {
+      id: 'tpl_time_query',
+      name: '时间查询',
+      category: 'utility',
+      categoryLabel: '实用工具',
+      description: '安全读取当前系统时间、日期、星期与用户时区。',
+      icon: 'fa-solid fa-clock',
+      capabilityType: 'time',
+      tool: {
+        name: 'current_time_query',
+        title: '查询当前时间',
+        description: '获取当前时间、日期与时区信息。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '可选参数' }
+          },
+          required: []
+        },
+        permissions: { readOnly: true, scopes: ['read_only'], requiresConfirmation: false }
+      }
+    },
+    {
+      id: 'tpl_calculator',
+      name: '计算器',
+      category: 'utility',
+      categoryLabel: '实用工具',
+      description: '安全计算加减乘除、括号与小数的数学表达式，绝不使用 eval。',
+      icon: 'fa-solid fa-calculator',
+      capabilityType: 'calculator',
+      tool: {
+        name: 'safe_calculator',
+        title: '数学计算器',
+        description: '计算数学表达式（支持加减乘除与括号）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            expression: { type: 'string', description: '数学表达式，如 (15 + 25) * 2' }
+          },
+          required: ['expression']
+        },
+        permissions: { readOnly: true, scopes: ['read_only'], requiresConfirmation: false }
+      }
+    },
+    {
+      id: 'tpl_random_choice',
+      name: '随机选择',
+      category: 'life',
+      categoryLabel: '生活娱乐',
+      description: '从备选方案或选项中通过安全随机机制抽选决策建议。',
+      icon: 'fa-solid fa-shuffle',
+      capabilityType: 'template',
+      templateResponse: '随机选择结果：经过安全随机抽签，当前建议优先采纳方案 A 或按直觉推进。',
+      tool: {
+        name: 'random_choice_picker',
+        title: '随机决策选择',
+        description: '根据输入的内容进行随机抽签选择。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '待选择的选项或问题描述' }
+          },
+          required: ['query']
+        },
+        permissions: { readOnly: true, scopes: ['read_only'], requiresConfirmation: false }
+      }
+    },
+    {
+      id: 'tpl_healing_quotes',
+      name: '治愈语录',
+      category: 'life',
+      categoryLabel: '生活娱乐',
+      description: '获取一句温暖治愈的文字陪伴与正向鼓励语录。',
+      icon: 'fa-solid fa-heart',
+      capabilityType: 'template',
+      templateResponse: '治愈陪伴语录：“星光不问赶路人，岁月不负有心人。愿你历经千帆，归来仍有热烈而温柔的初心。”',
+      tool: {
+        name: 'healing_quote',
+        title: '获取治愈语录',
+        description: '输出一句治愈心灵的正能量语录。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '心情或期望的主题' }
+          },
+          required: []
+        },
+        permissions: { readOnly: true, scopes: ['read_only'], requiresConfirmation: false }
+      }
+    }
+  ];
+
+  function listPluginTemplates() {
+    return clone(PLUGIN_TEMPLATES);
+  }
+
   global.AiWorkspacePlugins = {
     CATEGORY_BUILTIN: CATEGORY_BUILTIN,
     CATEGORY_MCP: CATEGORY_MCP,
+    CATEGORY_CUSTOM: CATEGORY_CUSTOM,
     PERMISSION_SCOPES: clone(PERMISSION_SCOPES),
     registerPlugin: registerPlugin,
     registerMcpDescriptor: registerMcpDescriptor,
@@ -1870,7 +2225,11 @@
     saveMcpServer: saveMcpServer,
     deleteMcpServer: deleteMcpServer,
     testAndSyncMcpServer: testAndSyncMcpServer,
-    setMcpToolEnabled: setMcpToolEnabled
+    setMcpToolEnabled: setMcpToolEnabled,
+    listCustomPlugins: listCustomPlugins,
+    saveCustomPlugin: saveCustomPlugin,
+    deleteCustomPlugin: deleteCustomPlugin,
+    listPluginTemplates: listPluginTemplates
   };
 
   if (typeof Promise === 'function') {

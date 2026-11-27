@@ -406,9 +406,11 @@
 
     var allPlugins = pApi ? pApi.listPlugins('all') : [];
     var builtinCount = allPlugins.filter(function(p) { return p.category === 'builtin'; }).length;
+    var customCount = allPlugins.filter(function(p) { return p.category === 'custom'; }).length;
     var mcpCount = allPlugins.filter(function(p) { return p.category === 'mcp'; }).length;
     var shownPlugins = allPlugins.filter(function(p) {
       if (catTab === 'builtin') return p.category === 'builtin';
+      if (catTab === 'custom') return p.category === 'custom';
       if (catTab === 'mcp') return p.category === 'mcp';
       return true;
     });
@@ -417,12 +419,13 @@
       ? shownPlugins.map(function(plg) {
           var eff = pApi.resolvePluginEffectiveState(plg.id, cfg, activeChatId);
           var isMcp = plg.category === 'mcp';
+          var isCustom = plg.category === 'custom';
           var permBadge = plg.permissions && plg.permissions.readOnly
             ? '<span class="aiw-plg-badge is-ro">只读</span>'
             : '<span class="aiw-plg-badge is-warn">需用户确认</span>';
           var catBadge = isMcp
             ? '<span class="aiw-plg-badge is-mcp">MCP 插件</span>'
-            : '<span class="aiw-plg-badge is-builtin">内置插件</span>';
+            : (isCustom ? '<span class="aiw-plg-badge is-custom" style="background:#8b5cf6; color:#fff;">自定义插件</span>' : '<span class="aiw-plg-badge is-builtin">内置插件</span>');
           var statusText = eff.effectiveEnabled ? '已生效' : '未启用';
           if (!eff.effectiveEnabled) {
             if (eff.reason === 'disabled_by_chat_master') statusText = '本聊天已禁用';
@@ -503,12 +506,17 @@
                     ? ('<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-mcp-sync="' + escapeHtml(srvId) + '"><i class="fa-solid fa-plug"></i> 测试连接</button>' +
                        '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-mcp-edit="' + escapeHtml(srvId) + '"><i class="fa-regular fa-pen-to-square"></i> 编辑</button>' +
                        '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm is-danger" data-mcp-delete="' + escapeHtml(srvId) + '"><i class="fa-regular fa-trash-can"></i> 删除</button>')
-                    : ('<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-test="' + escapeHtml(plg.id) + '">' +
-                         '<i class="fa-solid fa-play"></i> 手动测试' +
-                       '</button>' +
-                       '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-config="' + escapeHtml(plg.id) + '">' +
-                         '<i class="fa-solid fa-sliders"></i> 配置与详情' +
-                       '</button>')) +
+                    : (isCustom
+                        ? ('<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-custom-edit="' + escapeHtml(plg.id) + '"><i class="fa-regular fa-pen-to-square"></i> 编辑</button>' +
+                           '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-custom-export="' + escapeHtml(plg.id) + '"><i class="fa-solid fa-download"></i> 导出</button>' +
+                           '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-custom-share="' + escapeHtml(plg.id) + '"><i class="fa-solid fa-copy"></i> 复制配置</button>' +
+                           '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm is-danger" data-custom-delete="' + escapeHtml(plg.id) + '"><i class="fa-regular fa-trash-can"></i> 删除</button>')
+                        : ('<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-test="' + escapeHtml(plg.id) + '">' +
+                             '<i class="fa-solid fa-play"></i> 手动测试' +
+                           '</button>' +
+                           '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" data-plg-config="' + escapeHtml(plg.id) + '">' +
+                             '<i class="fa-solid fa-sliders"></i> 配置与详情' +
+                           '</button>'))) +
                 '</div>' +
               '</div>' +
             '</div>'
@@ -565,9 +573,15 @@
           '<div class="aiw-plg-tabs" role="tablist" aria-label="插件分类">' +
             '<button type="button" class="aiw-plg-tab' + (catTab === 'all' ? ' is-active' : '') + '" data-plg-tab="all">全部 (' + allPlugins.length + ')</button>' +
             '<button type="button" class="aiw-plg-tab' + (catTab === 'builtin' ? ' is-active' : '') + '" data-plg-tab="builtin">内置插件 (' + builtinCount + ')</button>' +
+            '<button type="button" class="aiw-plg-tab' + (catTab === 'custom' ? ' is-active' : '') + '" data-plg-tab="custom">自定义插件 (' + customCount + ')</button>' +
             '<button type="button" class="aiw-plg-tab' + (catTab === 'mcp' ? ' is-active' : '') + '" data-plg-tab="mcp">MCP 插件 (' + mcpCount + ')</button>' +
           '</div>' +
-          '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-plg-add-mcp"><i class="fa-solid fa-plus"></i> 添加 MCP</button>' +
+          '<div style="display:flex; gap:6px; flex-wrap:wrap;">' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-plg-template-lib"><i class="fa-solid fa-book-bookmark"></i> 模板库</button>' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm" id="aiw-plg-import-cp"><i class="fa-solid fa-upload"></i> 导入</button>' +
+            '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-plg-add-custom"><i class="fa-solid fa-plus"></i> 自定义</button>' +
+            '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" id="aiw-plg-add-mcp"><i class="fa-solid fa-plus"></i> 添加 MCP</button>' +
+          '</div>' +
         '</div>' +
 
         '<div class="aiw-plg-list">' + cardsHtml + '</div>' +
@@ -899,6 +913,475 @@
         openMcpToolTestModal(parts[0], parts.slice(1).join('::'));
       });
     });
+
+    var templateLibBtn = layer.querySelector('#aiw-plg-template-lib');
+    if (templateLibBtn) {
+      templateLibBtn.addEventListener('click', function() {
+        openPluginTemplateLibraryModal();
+      });
+    }
+
+    var addCustomBtn = layer.querySelector('#aiw-plg-add-custom');
+    if (addCustomBtn) {
+      addCustomBtn.addEventListener('click', function() {
+        openCustomPluginModal('');
+      });
+    }
+
+    var importCpBtn = layer.querySelector('#aiw-plg-import-cp');
+    if (importCpBtn) {
+      importCpBtn.addEventListener('click', function() {
+        openImportCustomPluginModal();
+      });
+    }
+
+    function sanitizePluginForExport(plg) {
+      return {
+        format: 'wanwan-aiw-custom-plugin',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        plugin: {
+          name: plg.name,
+          description: plg.description,
+          icon: plg.icon,
+          version: plg.version,
+          author: plg.author,
+          defaultEnabled: false,
+          capabilityType: plg.capabilityType,
+          templateResponse: plg.templateResponse,
+          tool: clone(plg.tool)
+        }
+      };
+    }
+
+    layer.querySelectorAll('[data-custom-edit]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        openCustomPluginModal(btn.getAttribute('data-custom-edit'));
+      });
+    });
+
+    layer.querySelectorAll('[data-custom-export]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var cid = btn.getAttribute('data-custom-export');
+        var list = await pApi.listCustomPlugins();
+        var target = list.find(function(item) { return item.id === cid; });
+        if (!target) {
+          notifyToast('未找到该自定义插件');
+          return;
+        }
+        var exportObj = sanitizePluginForExport(target);
+        downloadTextFile((target.name || 'custom_plugin') + '.json', JSON.stringify(exportObj, null, 2), 'application/json');
+      });
+    });
+
+    layer.querySelectorAll('[data-custom-share]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var cid = btn.getAttribute('data-custom-share');
+        var list = await pApi.listCustomPlugins();
+        var target = list.find(function(item) { return item.id === cid; });
+        if (!target) {
+          notifyToast('未找到该自定义插件');
+          return;
+        }
+        var exportObj = sanitizePluginForExport(target);
+        await copyTextSafely(JSON.stringify(exportObj, null, 2));
+      });
+    });
+
+    layer.querySelectorAll('[data-custom-delete]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var cid = btn.getAttribute('data-custom-delete');
+        showConfirmModal('删除自定义插件', '确定要删除该自定义插件吗？删除后关联的工具将不可用。', '确认删除', true, async function() {
+          _ctx.pluginSettings = await pApi.deleteCustomPlugin(cid);
+          renderCurrentView();
+          notifyToast('已删除自定义插件');
+        });
+      });
+    });
+  }
+
+  function openImportCustomPluginModal() {
+    var pApi = P();
+    if (!pApi) return;
+
+    var bodyHtml =
+      '<div class="aiw-import-box" style="display:flex; flex-direction:column; gap:12px;">' +
+        '<div>' +
+          '<label class="aiw-field-label">方式一：上传 JSON 文件</label>' +
+          '<input type="file" class="aiw-field-input" id="aiw-import-file" accept=".json">' +
+        '</div>' +
+        '<div>' +
+          '<label class="aiw-field-label" for="aiw-import-textarea">方式二：粘贴 JSON 配置文本</label>' +
+          '<textarea class="aiw-field-input" id="aiw-import-textarea" rows="6" placeholder="在此粘贴导出的插件 JSON 文本..." style="font-family:monospace; font-size:12px;"></textarea>' +
+        '</div>' +
+        '<div id="aiw-import-preview-area" style="display:none; background:rgba(15,23,42,0.03); padding:10px; border-radius:8px; font-size:12px;">' +
+          '<div style="font-weight:600; margin-bottom:4px; color:#0f172a;">解析预览：</div>' +
+          '<div id="aiw-import-preview-info"></div>' +
+        '</div>' +
+        '<div id="aiw-import-err" style="font-size:12px; color:#dc2626;"></div>' +
+      '</div>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-import-cancel">取消</button>' +
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-import-parse">解析预览</button>' +
+      '<button type="button" class="aiw-st-btn-primary" id="aiw-import-confirm" style="display:none;">确认导入</button>';
+
+    var modal = showCustomModal('导入自定义插件', bodyHtml, footerHtml);
+    if (!modal) return;
+
+    var fileInput = modal.querySelector('#aiw-import-file');
+    var textArea = modal.querySelector('#aiw-import-textarea');
+    var previewArea = modal.querySelector('#aiw-import-preview-area');
+    var previewInfo = modal.querySelector('#aiw-import-preview-info');
+    var errEl = modal.querySelector('#aiw-import-err');
+    var parseBtn = modal.querySelector('#aiw-import-parse');
+    var confirmBtn = modal.querySelector('#aiw-import-confirm');
+
+    var parsedPluginPayload = null;
+
+    fileInput.addEventListener('change', async function(e) {
+      var file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        var text = await file.text();
+        textArea.value = text;
+      } catch (err) {
+        errEl.textContent = '读取文件失败';
+      }
+    });
+
+    parseBtn.addEventListener('click', function() {
+      errEl.textContent = '';
+      var rawText = String(textArea.value || '').trim();
+      if (!rawText) {
+        errEl.textContent = '请先上传文件或粘贴 JSON 内容';
+        return;
+      }
+      try {
+        var obj = JSON.parse(rawText);
+        var src = obj && obj.plugin && typeof obj.plugin === 'object' ? obj.plugin : obj;
+        if (!src || !src.name || !src.tool || !src.tool.name) {
+          throw new Error('JSON 格式无效：缺少必要的插件名称或工具定义');
+        }
+        parsedPluginPayload = {
+          name: String(src.name).trim(),
+          description: String(src.description || ''),
+          icon: String(src.icon || 'fa-solid fa-wand-magic-sparkles'),
+          version: String(src.version || '1.0.0'),
+          author: String(src.author || '外部导入'),
+          defaultEnabled: false,
+          capabilityType: String(src.capabilityType || 'template'),
+          templateResponse: String(src.templateResponse || ''),
+          tool: src.tool
+        };
+
+        previewArea.style.display = 'block';
+        previewInfo.innerHTML =
+          '<div><strong>名称：</strong>' + escapeHtml(parsedPluginPayload.name) + '</div>' +
+          '<div><strong>描述：</strong>' + escapeHtml(parsedPluginPayload.description || '无') + '</div>' +
+          '<div><strong>工具：</strong><code>' + escapeHtml(parsedPluginPayload.tool.name) + '</code>（' + escapeHtml(parsedPluginPayload.tool.title || parsedPluginPayload.name) + '）</div>' +
+          '<div><strong>权限：</strong>只读安全权限（默认导入后关闭，需手动启用）</div>';
+
+        parseBtn.style.display = 'none';
+        confirmBtn.style.display = 'inline-flex';
+      } catch (err) {
+        errEl.textContent = (err && err.message) || 'JSON 解析失败，请检查格式';
+        previewArea.style.display = 'none';
+        parsedPluginPayload = null;
+      }
+    });
+
+    modal.querySelector('#aiw-import-cancel').addEventListener('click', closeModalOverlay);
+
+    confirmBtn.addEventListener('click', async function() {
+      if (!parsedPluginPayload) return;
+
+      var cfg = _ctx.pluginSettings || { customPlugins: [] };
+      var customList = Array.isArray(cfg.customPlugins) ? cfg.customPlugins : [];
+      var existingMatch = customList.find(function(cp) {
+        return cp && (cp.name === parsedPluginPayload.name || (cp.tool && cp.tool.name === parsedPluginPayload.tool.name));
+      });
+
+      if (existingMatch) {
+        closeModalOverlay();
+        showConfirmModal(
+          '插件冲突提示',
+          '检测到已存在同名或同工具标识的插件（「' + existingMatch.name + '」）。请选择处理方式：',
+          '另存为新插件',
+          false,
+          async function() {
+            parsedPluginPayload.id = 'custom_plugin_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+            parsedPluginPayload.name = parsedPluginPayload.name + '（导入副本）';
+            parsedPluginPayload.tool.name = parsedPluginPayload.tool.name + '_' + Math.random().toString(36).slice(2, 4);
+            parsedPluginPayload.defaultEnabled = false;
+            try {
+              var res = await pApi.saveCustomPlugin(parsedPluginPayload);
+              _ctx.pluginSettings = res.settings;
+              _ctx.pluginCategoryTab = 'custom';
+              renderCurrentView();
+              notifyToast('已将导入插件另存为新插件：' + parsedPluginPayload.name);
+            } catch (err) {
+              notifyToast((err && err.message) || '导入失败');
+            }
+          }
+        );
+        return;
+      }
+
+      try {
+        parsedPluginPayload.defaultEnabled = false;
+        var saveRes = await pApi.saveCustomPlugin(parsedPluginPayload);
+        _ctx.pluginSettings = saveRes.settings;
+        _ctx.pluginCategoryTab = 'custom';
+        closeModalOverlay();
+        renderCurrentView();
+        notifyToast('成功导入插件「' + parsedPluginPayload.name + '」（默认已关闭）');
+      } catch (err) {
+        errEl.textContent = (err && err.message) || '保存插件失败';
+      }
+    });
+  }
+
+  function openPluginTemplateLibraryModal() {
+    var pApi = P();
+    if (!pApi || typeof pApi.listPluginTemplates !== 'function') return;
+    var templates = pApi.listPluginTemplates();
+    var activeCategory = 'all';
+
+    function renderModalContent() {
+      var filtered = templates.filter(function(t) {
+        if (activeCategory === 'roleplay') return t.category === 'roleplay';
+        if (activeCategory === 'utility') return t.category === 'utility';
+        if (activeCategory === 'life') return t.category === 'life';
+        return true;
+      });
+
+      var cards = filtered.length ? filtered.map(function(t) {
+        return (
+          '<div class="aiw-st-card" style="padding:12px; margin-bottom:10px; display:flex; flex-direction:column; gap:6px;">' +
+            '<div style="display:flex; align-items:center; justify-content:space-between;">' +
+              '<div style="display:flex; align-items:center; gap:8px;">' +
+                '<i class="' + escapeHtml(t.icon || 'fa-solid fa-wand-magic-sparkles') + '" style="color:#8b5cf6;"></i>' +
+                '<strong>' + escapeHtml(t.name) + '</strong>' +
+                '<span class="aiw-plg-badge" style="background:#f3f4f6; color:#374151; font-size:11px;">' + escapeHtml(t.categoryLabel) + '</span>' +
+              '</div>' +
+              '<span class="aiw-plg-badge is-ro">只读权限</span>' +
+            '</div>' +
+            '<div style="font-size:12px; color:#475569; line-height:1.4;">' + escapeHtml(t.description) + '</div>' +
+            '<div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">' +
+              '<code style="font-size:11px; color:#64748b;">工具: ' + escapeHtml(t.tool.name) + '</code>' +
+              '<button type="button" class="aiw-st-btn-primary aiw-st-btn-sm" data-tpl-add="' + escapeHtml(t.id) + '"><i class="fa-solid fa-plus"></i> 预览并添加</button>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('') : '<div style="text-align:center; color:#64748b; padding:20px; font-size:13px;">该分类暂无模板</div>';
+
+      return (
+        '<div style="display:flex; flex-direction:column; gap:12px; max-height:65vh; overflow-y:auto; padding-right:4px;">' +
+          '<div style="display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid rgba(0,0,0,0.08); padding-bottom:8px;">' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm' + (activeCategory === 'all' ? ' is-active' : '') + '" data-tpl-cat="all">全部 (' + templates.length + ')</button>' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm' + (activeCategory === 'roleplay' ? ' is-active' : '') + '" data-tpl-cat="roleplay">角色扮演</button>' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm' + (activeCategory === 'utility' ? ' is-active' : '') + '" data-tpl-cat="utility">实用工具</button>' +
+            '<button type="button" class="aiw-st-btn-secondary aiw-st-btn-sm' + (activeCategory === 'life' ? ' is-active' : '') + '" data-tpl-cat="life">生活娱乐</button>' +
+          '</div>' +
+          '<div class="aiw-tpl-grid">' + cards + '</div>' +
+        '</div>'
+      );
+    }
+
+    var modal = showCustomModal('插件模板库', renderModalContent(), '<button type="button" class="aiw-st-btn-secondary" id="aiw-tpl-close">关闭</button>');
+    if (!modal) return;
+
+    modal.querySelector('#aiw-tpl-close').addEventListener('click', closeModalOverlay);
+
+    function bindTplEvents() {
+      modal.querySelectorAll('[data-tpl-cat]').forEach(function(b) {
+        b.addEventListener('click', function() {
+          activeCategory = b.getAttribute('data-tpl-cat') || 'all';
+          var bodyDiv = modal.querySelector('.aiw-st-modal-body');
+          if (bodyDiv) bodyDiv.innerHTML = renderModalContent();
+          bindTplEvents();
+        });
+      });
+
+      modal.querySelectorAll('[data-tpl-add]').forEach(function(b) {
+        b.addEventListener('click', async function() {
+          var tid = b.getAttribute('data-tpl-add');
+          var tpl = templates.find(function(item) { return item.id === tid; });
+          if (!tpl) return;
+
+          var cfg = _ctx.pluginSettings || { customPlugins: [] };
+          var customList = Array.isArray(cfg.customPlugins) ? cfg.customPlugins : [];
+          var exists = customList.some(function(cp) {
+            return cp && cp.tool && cp.tool.name === tpl.tool.name;
+          });
+
+          if (exists) {
+            showConfirmModal(
+              '模板已存在',
+              '检测到名为「' + tpl.name + '」的工具已存在于自定义插件中。是否仍要添加为一个新的副本？',
+              '添加副本',
+              false,
+              async function() {
+                var copyTpl = JSON.parse(JSON.stringify(tpl));
+                copyTpl.id = 'custom_plugin_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+                copyTpl.name = tpl.name + '（副本）';
+                copyTpl.tool.name = tpl.tool.name + '_' + Math.random().toString(36).slice(2, 4);
+                try {
+                  var res = await pApi.saveCustomPlugin(copyTpl);
+                  _ctx.pluginSettings = res.settings;
+                  _ctx.pluginCategoryTab = 'custom';
+                  closeModalOverlay();
+                  renderCurrentView();
+                  notifyToast('成功添加模板副本到自定义插件');
+                } catch (err) {
+                  notifyToast((err && err.message) || '添加失败');
+                }
+              }
+            );
+            return;
+          }
+
+          try {
+            var saveRes = await pApi.saveCustomPlugin(tpl);
+            _ctx.pluginSettings = saveRes.settings;
+            _ctx.pluginCategoryTab = 'custom';
+            closeModalOverlay();
+            renderCurrentView();
+            notifyToast('成功将模板「' + tpl.name + '」添加到自定义插件');
+          } catch (err) {
+            notifyToast((err && err.message) || '添加失败');
+          }
+        });
+      });
+    }
+
+    bindTplEvents();
+  }
+
+  function openCustomPluginModal(pluginId) {
+    var pApi = P();
+    if (!pApi) return;
+    var cfg = _ctx.pluginSettings || { customPlugins: [] };
+    var existing = pluginId && Array.isArray(cfg.customPlugins)
+      ? cfg.customPlugins.find(function(p) { return p.id === pluginId; })
+      : null;
+
+    var bodyHtml =
+      '<div class="aiw-import-box">' +
+        '<div style="margin-bottom:8px;">' +
+          '<label class="aiw-field-label" for="aiw-cp-name">插件名称</label>' +
+          '<input type="text" class="aiw-field-input" id="aiw-cp-name" placeholder="例如：我的计算助手" value="' + escapeHtml((existing && existing.name) || '') + '">' +
+        '</div>' +
+        '<div style="margin-bottom:8px;">' +
+          '<label class="aiw-field-label" for="aiw-cp-desc">插件描述</label>' +
+          '<input type="text" class="aiw-field-input" id="aiw-cp-desc" placeholder="简述插件用途" value="' + escapeHtml((existing && existing.description) || '') + '">' +
+        '</div>' +
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:8px;">' +
+          '<div>' +
+            '<label class="aiw-field-label" for="aiw-cp-cap">安全能力类型</label>' +
+            '<select class="aiw-api-select" id="aiw-cp-cap">' +
+              '<option value="template"' + (!existing || existing.capabilityType === 'template' ? ' selected' : '') + '>文本模板响应</option>' +
+              '<option value="calculator"' + (existing && existing.capabilityType === 'calculator' ? ' selected' : '') + '>数学计算器（安全解析）</option>' +
+              '<option value="dice"' + (existing && existing.capabilityType === 'dice' ? ' selected' : '') + '>随机骰子投掷</option>' +
+              '<option value="time"' + (existing && existing.capabilityType === 'time' ? ' selected' : '') + '>时间与时区感知</option>' +
+            '</select>' +
+          '</div>' +
+          '<div>' +
+            '<label class="aiw-field-label" for="aiw-cp-toolname">工具标识名（英文字母/下划线）</label>' +
+            '<input type="text" class="aiw-field-input" id="aiw-cp-toolname" placeholder="例如：my_calc" value="' + escapeHtml((existing && existing.tool && existing.tool.name) || 'custom_action') + '">' +
+          '</div>' +
+        '</div>' +
+        '<div id="aiw-cp-template-wrap" style="margin-bottom:8px;' + (!existing || existing.capabilityType === 'template' ? '' : ' display:none;') + '">' +
+          '<label class="aiw-field-label" for="aiw-cp-tmpl">文本模板（支持 {query} 等占位符）</label>' +
+          '<textarea class="aiw-field-input" id="aiw-cp-tmpl" rows="3" placeholder="例如：收到查询：{query}，处理结果：完成。">' + escapeHtml((existing && existing.templateResponse) || '') + '</textarea>' +
+        '</div>' +
+        '<div style="margin-bottom:8px;">' +
+          '<label class="aiw-field-label" for="aiw-cp-tooldesc">工具功能描述（供 AI 自动调用参考）</label>' +
+          '<input type="text" class="aiw-field-input" id="aiw-cp-tooldesc" placeholder="描述该工具的作用与输入要求" value="' + escapeHtml((existing && existing.tool && existing.tool.description) || '') + '">' +
+        '</div>' +
+        '<div id="aiw-cp-error" style="font-size:12px; color:#dc2626; margin-top:4px;"></div>' +
+      '</div>';
+
+    var footerHtml =
+      '<button type="button" class="aiw-st-btn-secondary" id="aiw-cp-cancel">取消</button>' +
+      '<button type="button" class="aiw-st-btn-primary" id="aiw-cp-save">保存</button>';
+
+    var modal = showCustomModal(existing ? '编辑自定义插件' : '添加自定义插件', bodyHtml, footerHtml);
+    if (!modal) return;
+
+    var capSel = modal.querySelector('#aiw-cp-cap');
+    var tmplWrap = modal.querySelector('#aiw-cp-template-wrap');
+    if (capSel) {
+      capSel.addEventListener('change', function() {
+        if (tmplWrap) tmplWrap.style.display = capSel.value === 'template' ? '' : 'none';
+      });
+    }
+
+    var cancelBtn = modal.querySelector('#aiw-cp-cancel');
+    if (cancelBtn) cancelBtn.addEventListener('click', closeModalOverlay);
+
+    var saveBtn = modal.querySelector('#aiw-cp-save');
+    var errEl = modal.querySelector('#aiw-cp-error');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', async function() {
+        var name = String((modal.querySelector('#aiw-cp-name') && modal.querySelector('#aiw-cp-name').value) || '').trim();
+        var desc = String((modal.querySelector('#aiw-cp-desc') && modal.querySelector('#aiw-cp-desc').value) || '').trim();
+        var cap = capSel ? capSel.value : 'template';
+        var tName = String((modal.querySelector('#aiw-cp-toolname') && modal.querySelector('#aiw-cp-toolname').value) || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+        var tDesc = String((modal.querySelector('#aiw-cp-tooldesc') && modal.querySelector('#aiw-cp-tooldesc').value) || '').trim();
+        var tmpl = String((modal.querySelector('#aiw-cp-tmpl') && modal.querySelector('#aiw-cp-tmpl').value) || '').trim();
+
+        if (!name) {
+          errEl.textContent = '请填写插件名称';
+          return;
+        }
+        if (!tName) {
+          errEl.textContent = '请填写有效的工具标识名';
+          return;
+        }
+
+        var paramProps = { query: { type: 'string', description: '输入参数或查询内容' } };
+        var paramReq = ['query'];
+        if (cap === 'calculator') {
+          paramProps = { expression: { type: 'string', description: '数学表达式，如 12 * (3 + 4)' } };
+          paramReq = ['expression'];
+        } else if (cap === 'dice') {
+          paramProps = { sides: { type: 'integer', description: '骰子面数，默认6' }, count: { type: 'integer', description: '投掷次数，默认1' } };
+          paramReq = [];
+        }
+
+        var draft = {
+          id: existing ? existing.id : '',
+          name: name,
+          description: desc,
+          icon: 'fa-solid fa-wand-magic-sparkles',
+          version: '1.0.0',
+          author: '用户自定义',
+          defaultEnabled: true,
+          capabilityType: cap,
+          templateResponse: tmpl,
+          tool: {
+            name: tName,
+            title: name,
+            description: tDesc || desc || name,
+            parameters: { type: 'object', properties: paramProps, required: paramReq },
+            permissions: { readOnly: true, scopes: ['read_only'], requiresConfirmation: false }
+          }
+        };
+
+        try {
+          var res = await pApi.saveCustomPlugin(draft);
+          _ctx.pluginSettings = res.settings;
+          _ctx.pluginCategoryTab = 'custom';
+          closeModalOverlay();
+          renderCurrentView();
+          notifyToast('已保存自定义插件');
+        } catch (err) {
+          errEl.textContent = (err && err.message) || '保存失败';
+        }
+      });
+    }
   }
 
   function openMcpServerModal(serverId) {

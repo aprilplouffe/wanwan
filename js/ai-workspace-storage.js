@@ -289,6 +289,7 @@
       plugins: src.plugins && typeof src.plugins === 'object' ? deepClone(src.plugins) : {},
       chatOverrides: src.chatOverrides && typeof src.chatOverrides === 'object' ? deepClone(src.chatOverrides) : {},
       mcpServers: Array.isArray(src.mcpServers) ? deepClone(src.mcpServers) : [],
+      customPlugins: Array.isArray(src.customPlugins) ? deepClone(src.customPlugins) : [],
       updatedAt: Number(src.updatedAt) || 0
     };
   }
@@ -306,6 +307,7 @@
       plugins: src.plugins !== undefined ? src.plugins : cur.plugins,
       chatOverrides: src.chatOverrides !== undefined ? src.chatOverrides : cur.chatOverrides,
       mcpServers: src.mcpServers !== undefined ? src.mcpServers : cur.mcpServers,
+      customPlugins: src.customPlugins !== undefined ? src.customPlugins : cur.customPlugins,
       updatedAt: Date.now()
     });
     await dbPutConfig(KEYS.PLUGIN_SETTINGS, next);

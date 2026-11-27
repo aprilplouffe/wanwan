@@ -2346,6 +2346,14 @@
         return;
       }
 
+      var retryBtn = e.target.closest && e.target.closest('.aiw-tool-retry-btn');
+      if (retryBtn) {
+        var msgId = retryBtn.getAttribute('data-msg-id');
+        var toolId = retryBtn.getAttribute('data-tool-id');
+        retryToolCall(page, msgId, toolId);
+        return;
+      }
+
       var actBtn = e.target.closest && e.target.closest('[data-msg-act]');
       if (!actBtn) return;
       var act = actBtn.getAttribute('data-msg-act');
@@ -2378,6 +2386,67 @@
         }
       }
     });
+  }
+
+  async function retryToolCall(page, msgId, toolId) {
+    var targetMsg = _state.messages.find(function(m) { return m.id === msgId; });
+    if (!targetMsg || !Array.isArray(targetMsg.toolCalls)) return;
+    var tc = targetMsg.toolCalls.find(function(t) { return t.id === toolId; });
+    if (!tc) return;
+
+    var pluginApi = global.AiWorkspacePlugins || null;
+    if (!pluginApi || typeof pluginApi.invokeTool !== 'function') {
+      notifyToast('插件系统不可用');
+      return;
+    }
+
+    tc.status = 'running';
+    tc.summaryText = '正在重新使用 ' + (tc.toolLabel || tc.name || '工具') + '…';
+    tc.error = '';
+    updateMainStage(page, { preserveScroll: true });
+
+    var activeChatId = _state.activeChat ? _state.activeChat.id : '';
+    var parsedArgs = {};
+    try {
+      parsedArgs = tc.argumentsText ? JSON.parse(tc.argumentsText) : {};
+    } catch (_) {}
+
+    var startedAt = Date.now();
+    try {
+      var invokeRes = await pluginApi.invokeTool(tc.fullName || tc.name, parsedArgs, {
+        chatId: activeChatId,
+        source: 'user_retry'
+      });
+      var duration = Math.max(0, Date.now() - startedAt);
+      tc.durationMs = duration;
+      var resData = invokeRes ? (invokeRes.data !== undefined ? invokeRes.data : invokeRes.result) : null;
+      if (invokeRes && invokeRes.ok) {
+        tc.status = 'success';
+        tc.error = '';
+        try {
+          tc.resultText = JSON.stringify(resData, null, 2);
+        } catch (_) {
+          tc.resultText = String(resData || '');
+        }
+        tc.summaryText = formatToolCallSummary(tc.fullName || tc.name, resData, '');
+        notifyToast('工具重试成功');
+      } else {
+        tc.status = 'error';
+        tc.error = (invokeRes && invokeRes.error) ? String(invokeRes.error) : '工具执行失败';
+        tc.summaryText = tc.error;
+        tc.resultText = JSON.stringify({ ok: false, error: tc.error });
+        notifyToast('工具重试失败：' + tc.error);
+      }
+    } catch (err) {
+      tc.status = 'error';
+      tc.error = (err && err.message) ? err.message : '工具执行异常';
+      tc.summaryText = tc.error;
+      tc.resultText = JSON.stringify({ ok: false, error: tc.error });
+      notifyToast('工具重试异常');
+    }
+
+    updateMainStage(page, { preserveScroll: true });
+    await persistCurrentChatMessages();
   }
 
   function formatToolCallSummary(fullName, resData, errMsg) {
@@ -2427,6 +2496,10 @@
             (tc.resultText ? ('<div class="aiw-tool-call-kv"><span>结果：</span><pre>' + escapeHtml(tc.resultText) + '</pre></div>') : '') +
           '</details>';
       }
+      var retryBtnHtml = '';
+      if (tc.status === 'error') {
+        retryBtnHtml = '<button type="button" class="aiw-tool-retry-btn" data-msg-id="' + escapeHtml(msg.id) + '" data-tool-id="' + escapeHtml(tc.id) + '"><i class="fa-solid fa-rotate-right"></i> 重试工具</button>';
+      }
       return (
         '<div class="aiw-tool-call-item' + statusCls + '">' +
           '<div class="aiw-tool-call-head">' +
@@ -2435,6 +2508,7 @@
           '</div>' +
           '<div class="aiw-tool-call-summary">' + escapeHtml(summary) + '</div>' +
           detailBody +
+          retryBtnHtml +
         '</div>'
       );
     }).join('');
