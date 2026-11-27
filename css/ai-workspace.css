@@ -6902,3 +6902,48 @@
   font-size: 12.5px;
   color: var(--aiw-sub);
 }
+
+/* ===== 知屿 8-A6 修正：独立项目主页输入框与来源排序样式 ===== */
+.aiw-ctx-proj-pill {
+  border-color: var(--aiw-pink-border);
+  background: var(--aiw-pink-soft);
+  color: var(--aiw-pink-deep);
+}
+
+.aiw-proj-home-composer-slot {
+  width: 100%;
+}
+
+#ai-workspace-page.is-project-home .aiw-proj-home-composer-slot .aiw-composer-wrap {
+  padding: 0;
+  margin: 0;
+  max-width: 100%;
+  border-top: none;
+  background: transparent;
+}
+
+#ai-workspace-page.is-project-home .aiw-proj-home-composer-slot .aiw-composer {
+  border-radius: 20px;
+  box-shadow: var(--aiw-shadow-float);
+}
+
+.aiw-proj-home-empty-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--aiw-text);
+}
+
+.aiw-ph-sort-select {
+  background: var(--aiw-surface-2);
+  border: 1px solid var(--aiw-border);
+  border-radius: 10px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--aiw-text);
+  outline: none;
+  cursor: pointer;
+}
+
+.is-pinned-ic {
+  color: var(--aiw-pink-deep);
+}
