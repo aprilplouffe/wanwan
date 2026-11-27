@@ -412,16 +412,16 @@
       if (scope === 'chat') {
         return !!(chatId && mem.sourceChatId && mem.sourceChatId === chatId);
       }
-      if (scope === 'project') {
+      if (projectId) {
+        if (scope !== 'project') return false;
         if (!allowCrossChat && mem.sourceChatId && mem.sourceChatId !== chatId) return false;
         return true;
       }
-      if (scope === 'user') {
-        if (!allowCrossChat && mem.sourceChatId && mem.sourceChatId !== chatId) {
-          return false;
-        }
-        return true;
+      if (scope !== 'user') return false;
+      if (!allowCrossChat && mem.sourceChatId && mem.sourceChatId !== chatId) {
+        return false;
       }
+      return true;
       return false;
     });
   }
@@ -579,8 +579,7 @@
     for (var i = 0; i < allChats.length && i < 20; i++) {
       var chat = allChats[i];
       if (!chat || !chat.id || chat.id === currentChatId) continue;
-      if (chat.projectId && currentProjectId && chat.projectId !== currentProjectId) continue;
-      if (chat.projectId && !currentProjectId) continue;
+      if (String(chat.projectId || '').trim() !== currentProjectId) continue;
 
       var hasCleanSummary = false;
       if (chat.summary) {
@@ -2097,6 +2096,7 @@
       return true;
     }
     if (scope === 'user') {
+      if (ctx.projectId || itemProjectId) return false;
       if (!ctx.allowCrossChat && itemChatId && itemChatId !== ctx.chatId) return false;
       return true;
     }
@@ -2179,7 +2179,7 @@
 
       // 若快照来自其他会话或其他项目且过滤后无可展示条目，不暴露该跨范围快照
       var isSameChat = !!(chatId && snap.chatId === chatId);
-      var isSameProject = !snap.projectId || snap.projectId === projectId;
+      var isSameProject = String(snap.projectId || '').trim() === projectId;
       if (accessibleItems.length === 0 && (!isSameChat || !isSameProject)) {
         continue;
       }
@@ -2331,11 +2331,11 @@
     };
     if (!store) return emptyResult;
 
-    var rawSettings = await store.getMemorySettings();
+    var activeChat = opts.activeChat || null;
+    var scopedProjectId = String(opts.projectId || (activeChat && activeChat.projectId) || '').trim();
+    var rawSettings = await store.getMemorySettings(scopedProjectId);
     var params = resolveMemoryParams(rawSettings);
     emptyResult.settings = params;
-
-    var activeChat = opts.activeChat || null;
     var historyMessages = Array.isArray(opts.historyMessages) ? opts.historyMessages : [];
     var shortTermEnabled = params.shortTermContext !== false;
 
@@ -3572,11 +3572,11 @@
       return { isExplicit: true, intent: fast.intent || 'save', saved: false, error: '存储模块未就绪', added: [], updated: [], deleted: [] };
     }
 
-    var rawSettings = await store.getMemorySettings();
-    var params = resolveMemoryParams(rawSettings);
     var chatId = String(opts.chatId || '');
     var chatTitle = String(opts.chatTitle || '');
-    var projectId = String(opts.projectId || '');
+    var projectId = String(opts.projectId || '').trim();
+    var rawSettings = await store.getMemorySettings(projectId);
+    var params = resolveMemoryParams(rawSettings);
     var userId = String(opts.userId || 'local_user').trim() || 'local_user';
     var turnCreatedAt = Date.now();
     var historyMessages = Array.isArray(opts.historyMessages) ? opts.historyMessages : [];
@@ -4787,8 +4787,17 @@
     var chatId = String(ctx.chatId || '').trim();
     var chatTitle = String(ctx.chatTitle || '').trim();
     var projectId = String(ctx.projectId || '').trim();
+    if (chatId && typeof store.getChat === 'function') {
+      try {
+        var liveChatForExtract = await store.getChat(chatId);
+        if (!liveChatForExtract) {
+          return { added: [], updated: [], deleted: [], skipped: 1, blockedDeleted: 0, diagnostics: { skipReason: 'chat_deleted' } };
+        }
+        projectId = String(liveChatForExtract.projectId || '').trim();
+      } catch (_) {}
+    }
     var rawUserText = String(ctx.rawUserText || '');
-    var settings = await store.getMemorySettings();
+    var settings = await store.getMemorySettings(projectId);
     var params = resolveMemoryParams(settings);
     var maxLen = Math.max(60, Number(ctx.maxSingleMemoryLength) || params.maxSingleMemoryLength);
     var taskCreatedAt = Number(ctx.taskCreatedAt) || Date.now();
@@ -4843,7 +4852,11 @@
 
       var scope = String(rawItem.scope || 'user').toLowerCase();
       if (scope !== 'user' && scope !== 'chat' && scope !== 'project') scope = 'user';
-      if (scope === 'project' && !projectId) scope = 'user';
+      if (projectId) {
+        if (scope !== 'chat') scope = 'project';
+      } else {
+        if (scope === 'project') scope = 'user';
+      }
 
       var temporalState = normalizeItemTemporalState(rawItem.temporalState, rawItem.status, content);
       var memStatus = deriveItemStatus(rawItem.status, temporalState);
@@ -5894,7 +5907,8 @@
     var store = S();
     if (!store || typeof store.enqueueMemoryTask !== 'function') return [];
 
-    var settings = await store.getMemorySettings();
+    var turnProjectId = String((opts.chat && opts.chat.projectId) || opts.projectId || '').trim();
+    var settings = await store.getMemorySettings(turnProjectId);
     var params = resolveMemoryParams(settings);
     var queued = [];
 
@@ -6178,6 +6192,32 @@
 
         try {
           if (task.type === 'extract_memory' || task.type === 'explicit_memory' || task.type === 'explicit_update') {
+            var liveTaskProjectId = String(task.projectId || '').trim();
+            if (task.chatId && typeof store.getChat === 'function') {
+              var latestTaskChat = await store.getChat(task.chatId);
+              if (!latestTaskChat) {
+                await store.updateMemoryTask(task.id, {
+                  status: 'skipped',
+                  attempts: (task.attempts || 0) + 1,
+                  resultSummary: '所属对话已删除，已跳过写入'
+                });
+                processed++;
+                continue;
+              }
+              liveTaskProjectId = String(latestTaskChat.projectId || '').trim();
+            }
+            if (liveTaskProjectId && typeof store.getProject === 'function') {
+              var latestTaskProj = await store.getProject(liveTaskProjectId);
+              if (!latestTaskProj) {
+                await store.updateMemoryTask(task.id, {
+                  status: 'skipped',
+                  attempts: (task.attempts || 0) + 1,
+                  resultSummary: '所属项目已删除，已跳过写入'
+                });
+                processed++;
+                continue;
+              }
+            }
             var isExplicitTask = task.type === 'explicit_memory' || task.type === 'explicit_update';
             var res = await extractAndSaveFromTurn({
               userText: task.payload && task.payload.userText,
@@ -6185,7 +6225,7 @@
               historyMessages: (task.payload && task.payload.historyMessages) || [],
               chatId: task.chatId,
               chatTitle: task.chatTitle,
-              projectId: task.projectId,
+              projectId: liveTaskProjectId,
               userId: task.userId || 'local_user',
               apiConfig: effectiveApi,
               forceExtract: isExplicitTask,

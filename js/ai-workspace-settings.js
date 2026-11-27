@@ -227,7 +227,7 @@
       store.listPresets(),
       store.getCustomApiConfig(),
       typeof store.getMemorySettings === 'function'
-        ? store.getMemorySettings()
+        ? store.getMemorySettings(_ctx.memoryScopeProjectId || '')
         : Promise.resolve({
             shortTermContext: true,
             autoSummary: true,
@@ -246,7 +246,7 @@
             maxMemoryRecallCount: 5,
             maxSingleMemoryLength: 260
           }),
-      typeof store.listMemories === 'function' ? store.listMemories() : Promise.resolve([]),
+      typeof store.listMemories === 'function' ? store.listMemories({ projectId: _ctx.memoryScopeProjectId || '' }) : Promise.resolve([]),
       typeof store.listMemoryTasks === 'function' ? store.listMemoryTasks() : Promise.resolve([]),
       typeof store.listChats === 'function' ? store.listChats() : Promise.resolve([]),
       typeof store.getSummaryApiConfig === 'function'
@@ -4025,6 +4025,18 @@
     };
     var currentStrategy = ms.strategy || 'natural';
     var diagBadge = getDiagnosticsEntryBadgeInfo();
+    var currentScopePid = _ctx.memoryScopeProjectId || '';
+    var projectsList = Array.isArray(_ctx.projects) ? _ctx.projects : [];
+    var currentScopeName = '普通聊天（默认范围）';
+    if (currentScopePid) {
+      var foundProj = projectsList.find(function(p) { return p && p.id === currentScopePid; });
+      currentScopeName = foundProj ? ('项目：' + foundProj.name) : '已删除项目';
+    }
+    var mainScopeOptionsHtml = '<option value=""' + (!currentScopePid ? ' selected' : '') + '>普通聊天</option>' +
+      projectsList.map(function(p) {
+        var sel = p.id === currentScopePid ? ' selected' : '';
+        return '<option value="' + escapeHtml(p.id) + '"' + sel + '>项目：' + escapeHtml(p.name) + '</option>';
+      }).join('');
 
     var strategyHtml = ['natural', 'token_saver', 'recall_more'].map(function(key) {
       var item = strategyPresets[key] || { id: key, label: key, desc: '' };
@@ -4047,6 +4059,12 @@
       '</div>' +
 
       '<div class="aiw-st-scroll">' +
+        '<div class="aiw-st-group-title">记忆范围</div>' +
+        '<div class="aiw-st-card" style="padding: 12px; margin-bottom: 14px;">' +
+          '<select class="aiw-field-input" id="aiw-mem-main-scope-select" aria-label="记忆范围">' + mainScopeOptionsHtml + '</select>' +
+          '<div class="aiw-proj-field-hint" style="margin-top:6px;">当前范围：<strong>' + escapeHtml(currentScopeName) + '</strong>。各范围的开关配置、长期记忆库与跨窗检索完全双向隔离。</div>' +
+        '</div>' +
+
         '<div class="aiw-st-group-title">基础记忆开关</div>' +
         '<div class="aiw-st-card">' +
           '<div class="aiw-st-row aiw-st-row-static">' +
@@ -6545,7 +6563,7 @@
           '确认清空',
           true,
           async function() {
-            await S().clearAllMemories();
+            await S().clearAllMemories({ projectId: _ctx.memoryScopeProjectId || '' });
             _ctx.memories = [];
             _ctx.memorySearchQuery = '';
             clearExpiredArchivePreviewState();
@@ -7239,9 +7257,24 @@
       });
     }
 
+    var mainScopeSelect = layer.querySelector('#aiw-mem-main-scope-select');
+    if (mainScopeSelect) {
+      mainScopeSelect.addEventListener('change', async function() {
+        var nextPid = mainScopeSelect.value || '';
+        _ctx.memoryScopeProjectId = nextPid;
+        if (S() && typeof S().getMemorySettings === 'function') {
+          _ctx.memorySettings = await S().getMemorySettings(nextPid);
+        }
+        if (S() && typeof S().listMemories === 'function') {
+          _ctx.memories = await S().listMemories({ projectId: nextPid });
+        }
+        renderCurrentView();
+      });
+    }
+
     if (shortToggle) {
       shortToggle.addEventListener('change', async function() {
-        _ctx.memorySettings = await S().saveMemorySettings({ shortTermContext: shortToggle.checked });
+        _ctx.memorySettings = await S().saveMemorySettings({ shortTermContext: shortToggle.checked }, _ctx.memoryScopeProjectId || '');
         notifyWorkspaceStateChanged();
         notifyToast(shortToggle.checked ? '已开启短期上下文' : '已关闭短期上下文');
       });
@@ -7249,7 +7282,7 @@
 
     if (crossToggle) {
       crossToggle.addEventListener('change', async function() {
-        _ctx.memorySettings = await S().saveMemorySettings({ crossChatMemory: crossToggle.checked });
+        _ctx.memorySettings = await S().saveMemorySettings({ crossChatMemory: crossToggle.checked }, _ctx.memoryScopeProjectId || '');
         notifyWorkspaceStateChanged();
         notifyToast(crossToggle.checked ? '已开启跨窗口记忆' : '已关闭跨窗口记忆');
       });
@@ -7257,7 +7290,7 @@
 
     if (useToggle) {
       useToggle.addEventListener('change', async function() {
-        _ctx.memorySettings = await S().saveMemorySettings({ useMemory: useToggle.checked });
+        _ctx.memorySettings = await S().saveMemorySettings({ useMemory: useToggle.checked }, _ctx.memoryScopeProjectId || '');
         notifyWorkspaceStateChanged();
         notifyToast(useToggle.checked ? '已开启长期记忆' : '已关闭长期记忆');
       });
@@ -7265,7 +7298,7 @@
 
     if (autoToggle) {
       autoToggle.addEventListener('change', async function() {
-        _ctx.memorySettings = await S().saveMemorySettings({ autoMemory: autoToggle.checked });
+        _ctx.memorySettings = await S().saveMemorySettings({ autoMemory: autoToggle.checked }, _ctx.memoryScopeProjectId || '');
         notifyWorkspaceStateChanged();
         notifyToast(autoToggle.checked ? '已开启自动记忆提取' : '已关闭自动记忆提取');
       });
@@ -7273,7 +7306,7 @@
 
     if (refHistoryToggle) {
       refHistoryToggle.addEventListener('change', async function() {
-        _ctx.memorySettings = await S().saveMemorySettings({ referenceHistoryChats: refHistoryToggle.checked });
+        _ctx.memorySettings = await S().saveMemorySettings({ referenceHistoryChats: refHistoryToggle.checked }, _ctx.memoryScopeProjectId || '');
         notifyWorkspaceStateChanged();
         notifyToast(refHistoryToggle.checked ? '已开启参考历史聊天' : '已关闭参考历史聊天');
       });
@@ -7282,10 +7315,11 @@
     layer.querySelectorAll('[data-mem-strategy]').forEach(function(btn) {
       btn.addEventListener('click', async function() {
         var stId = btn.getAttribute('data-mem-strategy');
+        var scopePid = _ctx.memoryScopeProjectId || '';
         if (typeof S().applyMemoryStrategy === 'function') {
-          _ctx.memorySettings = await S().applyMemoryStrategy(stId);
+          _ctx.memorySettings = await S().applyMemoryStrategy(stId, scopePid);
         } else {
-          _ctx.memorySettings = await S().saveMemorySettings({ strategy: stId });
+          _ctx.memorySettings = await S().saveMemorySettings({ strategy: stId }, scopePid);
         }
         notifyWorkspaceStateChanged();
         renderCurrentView();
@@ -7328,7 +7362,7 @@
           maxMemoryRecallCount: rawRecall,
           maxSingleMemoryLength: rawMaxLen,
           applyStrategyPreset: false
-        });
+        }, _ctx.memoryScopeProjectId || '');
         notifyWorkspaceStateChanged();
         renderCurrentView();
         notifyToast(outOfRange ? '部分参数超出安全范围，已自动修正并保存' : '高级记忆参数已保存');
@@ -7337,10 +7371,11 @@
 
     if (advResetBtn) {
       advResetBtn.addEventListener('click', async function() {
+        var scopePid = _ctx.memoryScopeProjectId || '';
         if (typeof S().resetMemorySettingsToDefaults === 'function') {
-          _ctx.memorySettings = await S().resetMemorySettingsToDefaults();
+          _ctx.memorySettings = await S().resetMemorySettingsToDefaults(scopePid);
         } else {
-          _ctx.memorySettings = await S().saveMemorySettings(S().DEFAULT_MEMORY_SETTINGS || {});
+          _ctx.memorySettings = await S().saveMemorySettings(S().DEFAULT_MEMORY_SETTINGS || {}, scopePid);
         }
         notifyWorkspaceStateChanged();
         renderCurrentView();

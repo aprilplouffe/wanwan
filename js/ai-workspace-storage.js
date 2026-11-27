@@ -30,7 +30,10 @@
     FAVORITES: 'aiw_favorites',
     PLUGIN_SETTINGS: 'aiw_plugin_settings',
     PROJECT_IDS: 'aiw_project_ids',
-    PROJECT_PREFIX: 'aiw_project:'
+    PROJECT_PREFIX: 'aiw_project:',
+    PROJECT_MEMORY_SETTINGS_PREFIX: 'aiw_proj_mem_settings:',
+    PROJECT_DOC_IDS_PREFIX: 'aiw_proj_doc_ids:',
+    PROJECT_DOC_PREFIX: 'aiw_proj_doc:'
   };
 
   var MEMORY_STRATEGY_PRESETS = {
@@ -228,16 +231,22 @@
 
   async function dbPutConfig(key, value) {
     var payload = deepClone(value);
+    var prevCached = readLocalCache()[key];
     writeLocalCacheKey(key, payload);
     var dbRef = await waitForConfigDB(1200);
     if (dbRef && dbRef.config) {
       var op = function() {
         return dbRef.config.put({ key: key, value: payload });
       };
-      if (typeof global.runWanWanDBIdempotentWrite === 'function') {
-        await global.runWanWanDBIdempotentWrite(op);
-      } else {
-        await op();
+      try {
+        if (typeof global.runWanWanDBIdempotentWrite === 'function') {
+          await global.runWanWanDBIdempotentWrite(op);
+        } else {
+          await op();
+        }
+      } catch (err) {
+        writeLocalCacheKey(key, prevCached);
+        throw err;
       }
     }
     return payload;
@@ -1697,16 +1706,24 @@
     };
   }
 
-  async function getMemorySettings() {
-    var saved = await dbGetConfig(KEYS.MEMORY_SETTINGS);
+  function resolveMemorySettingsStorageKey(projectId) {
+    var pid = String(projectId || '').trim();
+    return pid ? (KEYS.PROJECT_MEMORY_SETTINGS_PREFIX + pid) : KEYS.MEMORY_SETTINGS;
+  }
+
+  async function getMemorySettings(projectId) {
+    var key = resolveMemorySettingsStorageKey(projectId);
+    var saved = await dbGetConfig(key);
     var summaryApi = await getSummaryApiConfig();
     return sanitizeMemorySettings(saved, DEFAULT_MEMORY_SETTINGS, {
       summaryApiComplete: !!(summaryApi && summaryApi.complete)
     });
   }
 
-  async function saveMemorySettings(patch) {
-    var current = await getMemorySettings();
+  async function saveMemorySettings(patch, projectId) {
+    var pid = String(projectId || '').trim();
+    var key = resolveMemorySettingsStorageKey(pid);
+    var current = await getMemorySettings(pid);
     var summaryApi = await getSummaryApiConfig();
     var p = patch && typeof patch === 'object' ? patch : {};
     var nextInput = Object.assign({}, current, p, { updatedAt: Date.now() });
@@ -1721,10 +1738,10 @@
       summaryApiComplete: !!(summaryApi && summaryApi.complete)
     });
     next.updatedAt = Date.now();
-    return await dbPutConfig(KEYS.MEMORY_SETTINGS, next);
+    return await dbPutConfig(key, next);
   }
 
-  async function applyMemoryStrategy(strategyId) {
+  async function applyMemoryStrategy(strategyId, projectId) {
     var preset = MEMORY_STRATEGY_PRESETS[strategyId] || MEMORY_STRATEGY_PRESETS.natural;
     return await saveMemorySettings({
       strategy: preset.id,
@@ -1732,12 +1749,13 @@
       recentRawMessagesLimit: preset.recentRawMessagesLimit,
       maxMemoryRecallCount: preset.maxMemoryRecallCount,
       maxSingleMemoryLength: preset.maxSingleMemoryLength
-    });
+    }, projectId);
   }
 
-  async function resetMemorySettingsToDefaults() {
+  async function resetMemorySettingsToDefaults(projectId) {
+    var key = resolveMemorySettingsStorageKey(projectId);
     var next = Object.assign({}, DEFAULT_MEMORY_SETTINGS, { updatedAt: Date.now() });
-    return await dbPutConfig(KEYS.MEMORY_SETTINGS, next);
+    return await dbPutConfig(key, next);
   }
 
   async function listMemories(options) {
@@ -1753,6 +1771,15 @@
         if (norm.content) {
           if (opts.userId && norm.userId !== opts.userId) continue;
           if (opts.scope && norm.scope !== opts.scope) continue;
+          if (Object.prototype.hasOwnProperty.call(opts, 'projectId')) {
+            var targetPid = String(opts.projectId || '').trim();
+            var normPid = String(norm.projectId || '').trim();
+            if (targetPid) {
+              if (normPid !== targetPid || norm.scope !== 'project') continue;
+            } else {
+              if (normPid || norm.scope === 'project') continue;
+            }
+          }
           items.push(norm);
         }
       }
@@ -1932,7 +1959,15 @@
     return true;
   }
 
-  async function clearAllMemories() {
+  async function clearAllMemories(options) {
+    var opts = options && typeof options === 'object' ? options : null;
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'projectId')) {
+      var scopedList = await listMemories({ projectId: String(opts.projectId || '').trim() });
+      for (var s = 0; s < scopedList.length; s++) {
+        await deleteMemory(scopedList[s].id);
+      }
+      return true;
+    }
     var existingList = await listMemories();
     for (var k = 0; k < existingList.length; k++) {
       await addDeletedMemorySignature(existingList[k]);
@@ -5195,12 +5230,18 @@
     getProject: getProject,
     createProject: createProject,
     updateProject: updateProject,
+    renameProject: renameProject,
     deleteProject: deleteProject,
+    listProjectChats: listProjectChats,
+    assignChatToProject: assignChatToProject,
+    removeChatFromProject: removeChatFromProject,
     listProjectDocuments: listProjectDocuments,
     getProjectDocument: getProjectDocument,
     saveProjectDocument: saveProjectDocument,
     renameProjectDocument: renameProjectDocument,
-    deleteProjectDocument: deleteProjectDocument
+    deleteProjectDocument: deleteProjectDocument,
+    searchProjectDocuments: searchProjectDocuments,
+    chunkProjectDocumentText: chunkProjectDocumentText
   };
 
   // ===== 项目基础管理存储实现（8-A1） =====
@@ -5217,8 +5258,14 @@
       description: String(src.description || '').trim(),
       icon: String(src.icon || 'fa-solid fa-folder').trim(),
       color: String(src.color || '#ec4899').trim(),
+      // 后续阶段扩展预留字段（8-A1 暂不启用对应 UI 与引擎逻辑）
       defaultPresetId: String(src.defaultPresetId || '').trim(),
       instructions: String(src.instructions || '').trim(),
+      systemPrompt: String(src.systemPrompt || src.instructions || '').trim(),
+      documentIds: Array.isArray(src.documentIds) ? src.documentIds.slice() : [],
+      memoryConfig: src.memoryConfig && typeof src.memoryConfig === 'object' ? Object.assign({}, src.memoryConfig) : null,
+      sharedContext: src.sharedContext && typeof src.sharedContext === 'object' ? Object.assign({}, src.sharedContext) : null,
+      pluginSettings: src.pluginSettings && typeof src.pluginSettings === 'object' ? Object.assign({}, src.pluginSettings) : null,
       createdAt: Number(src.createdAt) || now,
       updatedAt: Number(src.updatedAt) || now
     };
@@ -5279,6 +5326,47 @@
     return updated;
   }
 
+  async function renameProject(id, nextName) {
+    var clean = String(nextName || '').trim();
+    if (!id || !clean) return null;
+    return updateProject(id, { name: clean });
+  }
+
+  async function listProjectChats(projectId) {
+    var pid = String(projectId || '').trim();
+    if (!pid) return [];
+    var all = await listChats();
+    return all.filter(function(c) { return c && c.projectId === pid; });
+  }
+
+  async function assignChatToProject(chatId, projectId, options) {
+    if (!chatId) return null;
+    var opts = options && typeof options === 'object' ? options : {};
+    var pid = String(projectId || '').trim();
+    var proj = null;
+    if (pid) {
+      proj = await getProject(pid);
+      if (!proj) throw new Error('目标项目不存在');
+    }
+    var chat = await getChat(chatId);
+    if (!chat) return null;
+    chat.projectId = pid;
+    // 默认保留聊天原有预设；仅当用户明确选择改用项目默认预设时才覆盖
+    if (pid && opts.applyProjectPreset && proj && proj.defaultPresetId) {
+      var targetPreset = await getPreset(proj.defaultPresetId);
+      if (targetPreset) {
+        chat.presetId = targetPreset.id;
+        chat.presetSnapshot = buildPresetSnapshot(targetPreset);
+      }
+    }
+    chat.updatedAt = Date.now();
+    return saveChat(chat);
+  }
+
+  async function removeChatFromProject(chatId) {
+    return assignChatToProject(chatId, '');
+  }
+
   async function deleteProject(id, deleteChatsFlag) {
     if (!id) return false;
     var ids = await dbGetConfig(KEYS.PROJECT_IDS);
@@ -5304,6 +5392,14 @@
       }
     }
 
+    var projDocIds = await dbGetConfig(KEYS.PROJECT_DOC_IDS_PREFIX + id);
+    if (Array.isArray(projDocIds)) {
+      for (var pd = 0; pd < projDocIds.length; pd++) {
+        await dbDeleteConfig(KEYS.PROJECT_DOC_PREFIX + projDocIds[pd]);
+      }
+    }
+    await dbDeleteConfig(KEYS.PROJECT_DOC_IDS_PREFIX + id);
+
     var map = await dbGetConfig('aiw_all_project_docs') || {};
     var changed = false;
     Object.keys(map).forEach(function(did) {
@@ -5316,69 +5412,334 @@
       await dbPutConfig('aiw_all_project_docs', map);
     }
 
+    // 清理项目专属记忆（防止产生孤立可检索记忆）
+    var projMems = await listMemories({ projectId: id });
+    for (var pm = 0; pm < projMems.length; pm++) {
+      await deleteMemory(projMems[pm].id);
+    }
+
+    // 清理项目独立记忆设置
+    await dbDeleteConfig(KEYS.PROJECT_MEMORY_SETTINGS_PREFIX + id);
+
+    // 清理项目待处理记忆/摘要任务
+    var taskList = await dbGetConfig(KEYS.MEMORY_TASKS);
+    if (Array.isArray(taskList) && taskList.length) {
+      var keptTasks = taskList.filter(function(t) {
+        return !t || String(t.projectId || '').trim() !== id;
+      });
+      if (keptTasks.length !== taskList.length) {
+        await dbPutConfig(KEYS.MEMORY_TASKS, keptTasks);
+      }
+    }
+
     return true;
   }
 
+  var MAX_PROJECT_DOC_CHARS = 300000;
+
+  function chunkProjectDocumentText(text, options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var chunkSize = Math.max(200, Number(opts.chunkSize) || 600);
+    var overlap = Math.min(Math.floor(chunkSize / 3), Math.max(0, Number(opts.overlap) || 80));
+    var raw = String(text || '').replace(/\r\n/g, '\n').trim();
+    if (!raw) return [];
+    if (raw.length <= chunkSize) {
+      return [{ index: 0, startOffset: 0, endOffset: raw.length, text: raw }];
+    }
+    var chunks = [];
+    var pos = 0;
+    var idx = 0;
+    while (pos < raw.length && idx < 1000) {
+      var end = Math.min(raw.length, pos + chunkSize);
+      if (end < raw.length) {
+        var breakPos = raw.lastIndexOf('\n', end);
+        if (breakPos <= pos + Math.floor(chunkSize * 0.5)) {
+          breakPos = raw.lastIndexOf('。', end);
+        }
+        if (breakPos <= pos + Math.floor(chunkSize * 0.5)) {
+          breakPos = raw.lastIndexOf('. ', end);
+        }
+        if (breakPos > pos + Math.floor(chunkSize * 0.5)) {
+          end = breakPos + 1;
+        }
+      }
+      var slice = raw.slice(pos, end).trim();
+      if (slice) {
+        chunks.push({ index: idx++, startOffset: pos, endOffset: end, text: slice });
+      }
+      if (end >= raw.length) break;
+      pos = Math.max(pos + 1, end - overlap);
+    }
+    return chunks;
+  }
+
+  async function chunkProjectDocumentTextAsync(text, options) {
+    var raw = String(text || '').replace(/\r\n/g, '\n').trim();
+    if (raw.length <= 20000) {
+      return chunkProjectDocumentText(raw, options);
+    }
+    // 大文本分批让出事件循环，避免阻塞聊天页面
+    var opts = options && typeof options === 'object' ? options : {};
+    var chunkSize = Math.max(200, Number(opts.chunkSize) || 600);
+    var overlap = Math.min(Math.floor(chunkSize / 3), Math.max(0, Number(opts.overlap) || 80));
+    var chunks = [];
+    var pos = 0;
+    var idx = 0;
+    while (pos < raw.length && idx < 1000) {
+      var end = Math.min(raw.length, pos + chunkSize);
+      if (end < raw.length) {
+        var breakPos = raw.lastIndexOf('\n', end);
+        if (breakPos <= pos + Math.floor(chunkSize * 0.5)) breakPos = raw.lastIndexOf('。', end);
+        if (breakPos > pos + Math.floor(chunkSize * 0.5)) end = breakPos + 1;
+      }
+      var slice = raw.slice(pos, end).trim();
+      if (slice) {
+        chunks.push({ index: idx++, startOffset: pos, endOffset: end, text: slice });
+      }
+      if (end >= raw.length) break;
+      pos = Math.max(pos + 1, end - overlap);
+      if (idx % 30 === 0) {
+        await new Promise(function(r) { setTimeout(r, 0); });
+      }
+    }
+    return chunks;
+  }
+
+  function normalizeProjectDocRecord(raw, forcedId) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var content = String(src.content || '');
+    return {
+      id: String(forcedId || src.id || ''),
+      projectId: String(src.projectId || '').trim(),
+      name: String(src.name || '未命名文档'),
+      type: String(src.type || 'txt').toLowerCase(),
+      size: Number(src.size) || 0,
+      content: content,
+      chunks: Array.isArray(src.chunks) ? src.chunks : chunkProjectDocumentText(content),
+      createdAt: Number(src.createdAt) || Date.now(),
+      updatedAt: Number(src.updatedAt) || Date.now()
+    };
+  }
+
   async function listProjectDocuments(projectId) {
-    if (!projectId) return [];
-    var map = await dbGetConfig('aiw_all_project_docs') || {};
+    var pid = String(projectId || '').trim();
+    if (!pid) return [];
+    var seen = {};
     var list = [];
-    Object.keys(map).forEach(function(did) {
-      var doc = map[did];
-      if (doc && doc.projectId === projectId) {
-        list.push(doc);
+
+    var ids = await dbGetConfig(KEYS.PROJECT_DOC_IDS_PREFIX + pid);
+    if (Array.isArray(ids)) {
+      for (var i = 0; i < ids.length; i++) {
+        var did = ids[i];
+        var raw = await dbGetConfig(KEYS.PROJECT_DOC_PREFIX + did);
+        if (raw && typeof raw === 'object' && String(raw.projectId || '').trim() === pid) {
+          seen[did] = true;
+          list.push(normalizeProjectDocRecord(raw, did));
+        }
+      }
+    }
+
+    // 兼容旧版 aiw_all_project_docs
+    var legacyMap = await dbGetConfig('aiw_all_project_docs') || {};
+    Object.keys(legacyMap).forEach(function(did) {
+      if (seen[did]) return;
+      var doc = legacyMap[did];
+      if (doc && String(doc.projectId || '').trim() === pid) {
+        seen[did] = true;
+        list.push(normalizeProjectDocRecord(doc, did));
       }
     });
+
     list.sort(function(a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
     return list;
   }
 
-  async function getProjectDocument(docId) {
+  async function getProjectDocument(docId, expectedProjectId) {
     if (!docId) return null;
-    var map = await dbGetConfig('aiw_all_project_docs') || {};
-    return map[docId] || null;
+    var raw = await dbGetConfig(KEYS.PROJECT_DOC_PREFIX + docId);
+    if (!raw) {
+      var legacyMap = await dbGetConfig('aiw_all_project_docs') || {};
+      raw = legacyMap[docId] || null;
+    }
+    if (!raw || typeof raw !== 'object') return null;
+    var doc = normalizeProjectDocRecord(raw, docId);
+    if (expectedProjectId !== undefined) {
+      var expPid = String(expectedProjectId || '').trim();
+      if (!expPid || doc.projectId !== expPid) return null;
+    }
+    return doc;
   }
 
   async function saveProjectDocument(docData) {
     var src = docData && typeof docData === 'object' ? docData : {};
     var projectId = String(src.projectId || '').trim();
     if (!projectId) throw new Error('资料未绑定项目');
-    var map = await dbGetConfig('aiw_all_project_docs') || {};
+    var rawContent = String(src.content || '').trim();
+    if (!rawContent) throw new Error('文件内容为空，无法保存');
+    if (rawContent.length > MAX_PROJECT_DOC_CHARS) {
+      throw new Error('文件文本超过单文件上限（' + MAX_PROJECT_DOC_CHARS + ' 字），请拆分后上传');
+    }
+
     var docId = src.id || ('doc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
     var now = Date.now();
-    var doc = {
+    var chunks = Array.isArray(src.chunks) ? src.chunks : await chunkProjectDocumentTextAsync(rawContent);
+    var doc = normalizeProjectDocRecord({
       id: docId,
       projectId: projectId,
-      name: String(src.name || '未命名文档'),
+      name: String(src.name || '未命名文档').trim() || '未命名文档',
       type: String(src.type || 'txt'),
-      size: Number(src.size) || 0,
-      content: String(src.content || ''),
+      size: Number(src.size) || rawContent.length,
+      content: rawContent,
+      chunks: chunks,
       createdAt: src.createdAt || now,
       updatedAt: now
-    };
-    map[docId] = doc;
-    await dbPutConfig('aiw_all_project_docs', map);
+    }, docId);
+
+    try {
+      await dbPutConfig(KEYS.PROJECT_DOC_PREFIX + docId, doc);
+      var ids = await dbGetConfig(KEYS.PROJECT_DOC_IDS_PREFIX + projectId);
+      if (!Array.isArray(ids)) ids = [];
+      if (ids.indexOf(docId) === -1) {
+        ids.unshift(docId);
+        await dbPutConfig(KEYS.PROJECT_DOC_IDS_PREFIX + projectId, ids);
+      }
+    } catch (err) {
+      var errMsg = (err && err.message) ? err.message : String(err || '');
+      if (/quota|exceeded|storage/i.test(errMsg) || (err && err.name === 'QuotaExceededError')) {
+        throw new Error('浏览器本地存储空间不足，请删除部分旧资料或上传更小的文件');
+      }
+      throw err;
+    }
     return doc;
   }
 
-  async function renameProjectDocument(docId, newName) {
-    var map = await dbGetConfig('aiw_all_project_docs') || {};
-    var doc = map[docId];
+  async function renameProjectDocument(docId, newName, expectedProjectId) {
+    var doc = await getProjectDocument(docId, expectedProjectId);
     if (!doc) return null;
     doc.name = String(newName || '').trim().slice(0, 100) || '未命名文档';
     doc.updatedAt = Date.now();
-    map[docId] = doc;
-    await dbPutConfig('aiw_all_project_docs', map);
+    await dbPutConfig(KEYS.PROJECT_DOC_PREFIX + docId, doc);
+    var legacyMap = await dbGetConfig('aiw_all_project_docs') || {};
+    if (legacyMap[docId]) {
+      legacyMap[docId].name = doc.name;
+      legacyMap[docId].updatedAt = doc.updatedAt;
+      await dbPutConfig('aiw_all_project_docs', legacyMap);
+    }
     return doc;
   }
 
-  async function deleteProjectDocument(docId) {
+  async function deleteProjectDocument(docId, expectedProjectId) {
     if (!docId) return false;
-    var map = await dbGetConfig('aiw_all_project_docs') || {};
-    if (map[docId]) {
-      delete map[docId];
-      await dbPutConfig('aiw_all_project_docs', map);
+    var doc = await getProjectDocument(docId, expectedProjectId);
+    if (!doc && expectedProjectId !== undefined) return false;
+    var pid = doc ? doc.projectId : '';
+    await dbDeleteConfig(KEYS.PROJECT_DOC_PREFIX + docId);
+    if (pid) {
+      var ids = await dbGetConfig(KEYS.PROJECT_DOC_IDS_PREFIX + pid);
+      if (Array.isArray(ids)) {
+        var idx = ids.indexOf(docId);
+        if (idx !== -1) {
+          ids.splice(idx, 1);
+          await dbPutConfig(KEYS.PROJECT_DOC_IDS_PREFIX + pid, ids);
+        }
+      }
+    }
+    var legacyMap = await dbGetConfig('aiw_all_project_docs') || {};
+    if (legacyMap[docId]) {
+      delete legacyMap[docId];
+      await dbPutConfig('aiw_all_project_docs', legacyMap);
     }
     return true;
+  }
+
+  function extractDocQueryTokens(query) {
+    var q = String(query || '').toLowerCase().trim();
+    if (!q) return [];
+    var tokens = [];
+    var seen = {};
+    var add = function(t) {
+      if (t && !seen[t]) {
+        seen[t] = true;
+        tokens.push(t);
+      }
+    };
+    var enWords = q.match(/[a-z0-9_.-]{2,}/g) || [];
+    enWords.forEach(add);
+    var zhRuns = q.match(/[\u4e00-\u9fa5]{2,}/g) || [];
+    zhRuns.forEach(function(run) {
+      add(run);
+      for (var i = 0; i < run.length - 1; i++) {
+        add(run.slice(i, i + 2));
+      }
+    });
+    return tokens;
+  }
+
+  async function searchProjectDocuments(projectId, query, options) {
+    var pid = String(projectId || '').trim();
+    var q = String(query || '').trim();
+    if (!pid || !q) return [];
+    var opts = options && typeof options === 'object' ? options : {};
+    var maxChunks = Math.max(1, Number(opts.maxChunks) || 4);
+    var maxTotalChars = Math.max(400, Number(opts.maxTotalChars) || 1800);
+
+    var docs = await listProjectDocuments(pid);
+    if (!docs.length) return [];
+
+    var tokens = extractDocQueryTokens(q);
+    var qLower = q.toLowerCase();
+    var scored = [];
+
+    for (var d = 0; d < docs.length; d++) {
+      var doc = docs[d];
+      if (!doc || doc.projectId !== pid) continue;
+      var chunks = Array.isArray(doc.chunks) && doc.chunks.length ? doc.chunks : chunkProjectDocumentText(doc.content);
+      var nameLower = String(doc.name || '').toLowerCase();
+      var nameBoost = 0;
+      for (var nt = 0; nt < tokens.length; nt++) {
+        if (nameLower.indexOf(tokens[nt]) !== -1) nameBoost += 2.0;
+      }
+
+      for (var c = 0; c < chunks.length; c++) {
+        var ch = chunks[c];
+        var txt = String(ch && ch.text || '').trim();
+        if (!txt) continue;
+        var txtLower = txt.toLowerCase();
+        var score = nameBoost;
+        if (qLower.length >= 2 && txtLower.indexOf(qLower) !== -1) {
+          score += 5.0;
+        }
+        var hitCount = 0;
+        for (var t = 0; t < tokens.length; t++) {
+          if (txtLower.indexOf(tokens[t]) !== -1) {
+            hitCount++;
+            score += tokens[t].length >= 3 ? 2.0 : 1.2;
+          }
+        }
+        if (hitCount > 0 || score >= 2.0) {
+          scored.push({
+            docId: doc.id,
+            docName: doc.name,
+            docType: doc.type,
+            chunkIndex: (typeof ch.index === 'number' ? ch.index : c),
+            totalChunks: chunks.length,
+            snippet: txt.slice(0, 620),
+            score: score
+          });
+        }
+      }
+    }
+
+    scored.sort(function(a, b) { return b.score - a.score; });
+
+    var picked = [];
+    var usedChars = 0;
+    for (var k = 0; k < scored.length && picked.length < maxChunks; k++) {
+      var item = scored[k];
+      if (usedChars + item.snippet.length > maxTotalChars && picked.length > 0) break;
+      picked.push(item);
+      usedChars += item.snippet.length;
+    }
+    return picked;
   }
 })(typeof window !== 'undefined' ? window : globalThis);
