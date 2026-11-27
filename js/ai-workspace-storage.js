@@ -5242,6 +5242,8 @@
     renameProjectDocument: renameProjectDocument,
     deleteProjectDocument: deleteProjectDocument,
     searchProjectDocuments: searchProjectDocuments,
+    listProjectDocumentManifest: listProjectDocumentManifest,
+    readProjectDocumentSegment: readProjectDocumentSegment,
     chunkProjectDocumentText: chunkProjectDocumentText
   };
 
@@ -5700,13 +5702,75 @@
     return tokens;
   }
 
+  async function listProjectDocumentManifest(projectId) {
+    var pid = String(projectId || '').trim();
+    if (!pid) return [];
+    var docs = await listProjectDocuments(pid);
+    return docs.map(function(doc) {
+      var chunks = Array.isArray(doc.chunks) && doc.chunks.length ? doc.chunks : chunkProjectDocumentText(doc.content);
+      return {
+        id: doc.id,
+        name: doc.name,
+        type: doc.type,
+        size: doc.size,
+        totalChunks: chunks.length,
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt
+      };
+    });
+  }
+
+  async function readProjectDocumentSegment(projectId, fileNameOrDocId, startChunk, count) {
+    var pid = String(projectId || '').trim();
+    var target = String(fileNameOrDocId || '').trim();
+    if (!pid || !target) return null;
+    var docs = await listProjectDocuments(pid);
+    var targetLower = target.toLowerCase();
+    var doc = docs.find(function(d) {
+      return d && d.projectId === pid && (d.id === target || String(d.name || '').toLowerCase() === targetLower);
+    });
+    if (!doc) {
+      doc = docs.find(function(d) {
+        return d && d.projectId === pid && String(d.name || '').toLowerCase().indexOf(targetLower) !== -1;
+      });
+    }
+    if (!doc) return null;
+    var chunks = Array.isArray(doc.chunks) && doc.chunks.length ? doc.chunks : chunkProjectDocumentText(doc.content);
+    var total = chunks.length;
+    var startIdx = Math.max(0, (Number(startChunk) || 1) - 1);
+    var segCount = Math.max(1, Math.min(3, Number(count) || 2));
+    var endIdx = Math.min(total, startIdx + segCount);
+    var segments = [];
+    var used = 0;
+    for (var i = startIdx; i < endIdx; i++) {
+      var txt = String(chunks[i] && chunks[i].text || '').slice(0, 700);
+      if (used + txt.length > 1800 && segments.length > 0) break;
+      segments.push({
+        chunkIndex: i,
+        chunkPosition: (i + 1) + '/' + total,
+        text: txt
+      });
+      used += txt.length;
+    }
+    return {
+      docId: doc.id,
+      docName: doc.name,
+      docType: doc.type,
+      totalChunks: total,
+      hasMore: endIdx < total,
+      nextStartChunk: endIdx < total ? (endIdx + 1) : null,
+      segments: segments
+    };
+  }
+
   async function searchProjectDocuments(projectId, query, options) {
     var pid = String(projectId || '').trim();
     var q = String(query || '').trim();
     if (!pid || !q) return [];
     var opts = options && typeof options === 'object' ? options : {};
-    var maxChunks = Math.max(1, Number(opts.maxChunks) || 4);
-    var maxTotalChars = Math.max(400, Number(opts.maxTotalChars) || 1800);
+    var maxChunks = Math.max(1, Math.min(8, Number(opts.maxChunks) || 4));
+    var maxTotalChars = Math.max(400, Math.min(2600, Number(opts.maxTotalChars) || 1800));
+    var fileFilter = String(opts.fileName || '').trim().toLowerCase();
 
     var docs = await listProjectDocuments(pid);
     if (!docs.length) return [];
@@ -5718,8 +5782,9 @@
     for (var d = 0; d < docs.length; d++) {
       var doc = docs[d];
       if (!doc || doc.projectId !== pid) continue;
-      var chunks = Array.isArray(doc.chunks) && doc.chunks.length ? doc.chunks : chunkProjectDocumentText(doc.content);
       var nameLower = String(doc.name || '').toLowerCase();
+      if (fileFilter && nameLower.indexOf(fileFilter) === -1 && doc.id !== opts.fileName) continue;
+      var chunks = Array.isArray(doc.chunks) && doc.chunks.length ? doc.chunks : chunkProjectDocumentText(doc.content);
       var nameBoost = 0;
       for (var nt = 0; nt < tokens.length; nt++) {
         if (nameLower.indexOf(tokens[nt]) !== -1) nameBoost += 2.0;
@@ -5758,10 +5823,14 @@
     scored.sort(function(a, b) { return b.score - a.score; });
 
     var picked = [];
+    var seenKeys = {};
     var usedChars = 0;
     for (var k = 0; k < scored.length && picked.length < maxChunks; k++) {
       var item = scored[k];
+      var dedupKey = item.docId + ':' + item.chunkIndex;
+      if (seenKeys[dedupKey]) continue;
       if (usedChars + item.snippet.length > maxTotalChars && picked.length > 0) break;
+      seenKeys[dedupKey] = true;
       picked.push(item);
       usedChars += item.snippet.length;
     }

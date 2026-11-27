@@ -3540,6 +3540,175 @@
       .replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, 'AIza***');
   }
 
+
+  function buildProjectSourceTools() {
+    return [
+      {
+        type: 'function',
+        function: {
+          name: 'search_project_sources',
+          description: '在当前项目的已上传来源文件中检索与问题相关的片段。仅限当前项目，无需也不可指定 projectId。',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: '检索关键词或自然语言问题' },
+              limit: { type: 'number', description: '最多返回片段数（1-6，默认 4）' },
+              fileName: { type: 'string', description: '可选：限定按指定文件名过滤检索' }
+            },
+            required: ['query']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'list_project_sources',
+          description: '列出当前项目已上传的所有来源文件元数据（文件名、类型、大小、总分段数）。',
+          parameters: { type: 'object', properties: {} }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'read_project_source_segment',
+          description: '分段读取当前项目中指定来源文件的内容（适合总结或跨文件对比）。',
+          parameters: {
+            type: 'object',
+            properties: {
+              fileName: { type: 'string', description: '来源文件名称' },
+              startChunk: { type: 'number', description: '起始片段编号（从 1 开始，默认 1）' },
+              count: { type: 'number', description: '连续读取片段数（1-3，默认 2）' }
+            },
+            required: ['fileName']
+          }
+        }
+      }
+    ];
+  }
+
+  async function executeBuiltInProjectSourceTool(toolName, rawArgs, trustedChatId, trustedProjectId, callState) {
+    var pid = String(trustedProjectId || '').trim();
+    if (!pid || !S()) {
+      return { ok: false, fullName: toolName, pluginName: '项目来源', toolLabel: toolName, error: '当前对话未绑定项目，无权访问项目来源' };
+    }
+
+    // 每次工具调用实时校验当前对话与项目归属，严禁模型参数覆盖 projectId
+    if (trustedChatId && typeof S().getChat === 'function') {
+      var liveChat = await S().getChat(trustedChatId);
+      if (!liveChat || String(liveChat.projectId || '').trim() !== pid) {
+        return { ok: false, fullName: toolName, pluginName: '项目来源', toolLabel: toolName, error: '对话归属已变更，已拒绝跨项目来源访问' };
+      }
+    }
+    if (typeof S().getProject === 'function') {
+      var liveProj = await S().getProject(pid);
+      if (!liveProj) {
+        return { ok: false, fullName: toolName, pluginName: '项目来源', toolLabel: toolName, error: '所属项目不存在或已删除' };
+      }
+    }
+
+    if (callState) {
+      callState.count = (callState.count || 0) + 1;
+      if (callState.count > 5) {
+        return { ok: false, fullName: toolName, pluginName: '项目来源', toolLabel: toolName, error: '单轮来源检索已达次数上限（5 次），请基于已获取片段作答' };
+      }
+    }
+
+    var args = rawArgs && typeof rawArgs === 'object' ? rawArgs : {};
+
+    if (toolName === 'list_project_sources') {
+      var manifest = typeof S().listProjectDocumentManifest === 'function'
+        ? await S().listProjectDocumentManifest(pid)
+        : [];
+      var fileNames = manifest.map(function(d) { return d.name; });
+      return {
+        ok: true,
+        fullName: toolName,
+        pluginName: '项目来源',
+        toolLabel: '查看项目来源列表',
+        result: {
+          found: manifest.length > 0,
+          totalFiles: manifest.length,
+          files: manifest.map(function(d) {
+            return { name: d.name, type: d.type, size: d.size, totalChunks: d.totalChunks };
+          })
+        },
+        summaryText: manifest.length ? ('已列出 ' + manifest.length + ' 份项目来源：' + fileNames.slice(0, 4).join('、')) : '当前项目暂无上传来源文件'
+      };
+    }
+
+    if (toolName === 'read_project_source_segment') {
+      var fileName = String(args.fileName || '').trim();
+      var startChunk = Math.max(1, Number(args.startChunk) || 1);
+      var count = Math.max(1, Math.min(3, Number(args.count) || 2));
+      var segRes = typeof S().readProjectDocumentSegment === 'function'
+        ? await S().readProjectDocumentSegment(pid, fileName, startChunk, count)
+        : null;
+      if (!segRes || !segRes.segments || segRes.segments.length === 0) {
+        return {
+          ok: true,
+          fullName: toolName,
+          pluginName: '项目来源',
+          toolLabel: '分段读取来源',
+          result: { found: false, message: '未在当前项目中找到指定文件或片段，请勿编造内容' },
+          summaryText: '未找到指定来源文件'
+        };
+      }
+      return {
+        ok: true,
+        fullName: toolName,
+        pluginName: '项目来源',
+        toolLabel: '分段读取来源',
+        result: {
+          found: true,
+          fileName: segRes.docName,
+          totalChunks: segRes.totalChunks,
+          hasMore: segRes.hasMore,
+          nextStartChunk: segRes.nextStartChunk,
+          segments: segRes.segments
+        },
+        summaryText: '已读取《' + segRes.docName + '》' + segRes.segments.length + ' 个片段'
+      };
+    }
+
+    // search_project_sources
+    var query = String(args.query || '').trim();
+    var limit = Math.max(1, Math.min(6, Number(args.limit) || 4));
+    var fileFilter = String(args.fileName || '').trim();
+    var hits = typeof S().searchProjectDocuments === 'function'
+      ? await S().searchProjectDocuments(pid, query, { maxChunks: limit, maxTotalChars: 2000, fileName: fileFilter })
+      : [];
+    if (!hits.length) {
+      return {
+        ok: true,
+        fullName: toolName,
+        pluginName: '项目来源',
+        toolLabel: '检索项目来源',
+        result: { found: false, query: query, sources: [], message: '未找到相关来源内容，请如实告知用户，不得编造文件内容' },
+        summaryText: '未检索到匹配来源片段'
+      };
+    }
+    var hitNames = [];
+    hits.forEach(function(h) { if (hitNames.indexOf(h.docName) === -1) hitNames.push(h.docName); });
+    return {
+      ok: true,
+      fullName: toolName,
+      pluginName: '项目来源',
+      toolLabel: '检索项目来源',
+      result: {
+        found: true,
+        query: query,
+        sources: hits.map(function(h) {
+          return {
+            fileName: h.docName,
+            chunkPosition: h.totalChunks > 1 ? ((h.chunkIndex + 1) + '/' + h.totalChunks) : '全文',
+            content: h.snippet
+          };
+        })
+      },
+      summaryText: '已检索 ' + hits.length + ' 条来源片段（' + hitNames.slice(0, 3).join('、') + '）'
+    };
+  }
+
   async function executeStreamingTurn(page, historyBeforeTurn, userText, assistantMsg, effectiveApi, turnOpts) {
     var turnChatId = _state.activeChat ? _state.activeChat.id : '';
     var turnProjectId = (_state.activeChat && _state.activeChat.projectId) ? String(_state.activeChat.projectId).trim() : '';
@@ -3615,20 +3784,43 @@
       }
       if (typeof S().searchProjectDocuments === 'function' && userText) {
         try {
-          var docHits = await S().searchProjectDocuments(activeProjectId, userText, {
+          var docSearchQuery = userText;
+          if (docSearchQuery.length <= 18 && Array.isArray(historyBeforeTurn) && historyBeforeTurn.length > 0) {
+            for (var dh = historyBeforeTurn.length - 1; dh >= 0; dh--) {
+              if (historyBeforeTurn[dh] && historyBeforeTurn[dh].role === 'user' && historyBeforeTurn[dh].content) {
+                docSearchQuery += ' ' + String(historyBeforeTurn[dh].content).slice(0, 80);
+                break;
+              }
+            }
+          }
+          var docParts = [];
+          var isSourceMetaQuery = /(?:资料|文件|来源|上传|总结|概括|比较|对比|区别|有哪些|文档)/.test(userText);
+          if (isSourceMetaQuery && typeof S().listProjectDocumentManifest === 'function') {
+            var manifest = await S().listProjectDocumentManifest(activeProjectId);
+            if (Array.isArray(manifest) && manifest.length > 0) {
+              var manifestLine = manifest.slice(0, 10).map(function(d) {
+                return '《' + d.name + '》(' + (d.type || 'txt').toUpperCase() + ', ' + d.totalChunks + '段)';
+              }).join('、');
+              docParts.push('[当前项目已上传来源清单：' + manifestLine + ']');
+            }
+          }
+          var docHits = await S().searchProjectDocuments(activeProjectId, docSearchQuery, {
             maxChunks: 4,
-            maxTotalChars: 1800
+            maxTotalChars: 1700
           });
           if (Array.isArray(docHits) && docHits.length > 0) {
-            activeProjectDocsSnippet = docHits.map(function(hit) {
+            docHits.forEach(function(hit) {
               var posTag = (hit.totalChunks > 1)
                 ? ('片段 ' + (hit.chunkIndex + 1) + '/' + hit.totalChunks)
                 : '全文';
-              return '[来源：' + hit.docName + ' | ' + posTag + ']\n' + hit.snippet;
-            }).join('\n\n');
+              docParts.push('[来源：' + hit.docName + ' | ' + posTag + ']\n' + hit.snippet);
+            });
+          }
+          if (docParts.length > 0) {
+            activeProjectDocsSnippet = docParts.join('\n\n');
           }
         } catch (docErr) {
-          console.warn('[AiWorkspace] search project documents skipped:', docErr);
+          console.warn('[AiWorkspace] search project documents skipped:', sanitizeErrorText(docErr && docErr.message || docErr));
         }
       }
     }
@@ -3676,15 +3868,25 @@
       }
     }
 
+    var sourceToolCallState = { count: 0 };
+    var builtInSourceTools = turnProjectId ? buildProjectSourceTools() : [];
+    var builtInSourceToolNames = {
+      search_project_sources: true,
+      list_project_sources: true,
+      read_project_source_segment: true
+    };
+    var mergedTools = (enabledToolsRes.tools || []).concat(builtInSourceTools);
+
     try {
       var res;
-      if (enabledToolsRes.tools.length > 0 && typeof AI().runChatCompletionWithTools === 'function') {
+      if (mergedTools.length > 0 && typeof AI().runChatCompletionWithTools === 'function') {
         res = await AI().runChatCompletionWithTools({
           apiConfig: effectiveApi,
           model: effectiveApi.model,
           temperature: effectiveApi.temperature,
           messages: composed,
-          tools: enabledToolsRes.tools,
+          tools: mergedTools,
+          allowToolFallback: true,
           signal: controller.signal,
           onDelta: function(_, fullText) {
             assistantMsg.content = fullText;
@@ -3694,10 +3896,18 @@
           },
           onToolCallUpdate: function(records) {
             assistantMsg.toolCalls = records;
-            updateStreamingBubbleDom(page, assistantMsg);
+            if ((_state.activeChat ? _state.activeChat.id : '') === turnChatId) {
+              updateStreamingBubbleDom(page, assistantMsg);
+            }
           },
           executeTool: async function(tc, parsedArgs) {
             var rawName = (tc && tc.function && tc.function.name) || '';
+            if (builtInSourceToolNames[rawName]) {
+              return executeBuiltInProjectSourceTool(rawName, parsedArgs, turnChatId, turnProjectId, sourceToolCallState);
+            }
+            if (!pluginApi) {
+              return { ok: false, fullName: rawName, pluginName: '插件系统', toolLabel: rawName, error: '插件系统不可用' };
+            }
             var resolvedFullName = pluginApi.resolveToolFullName
               ? pluginApi.resolveToolFullName(rawName, enabledToolsRes.nameMap)
               : (enabledToolsRes.nameMap[rawName] || rawName);
@@ -4514,6 +4724,8 @@
     createNewChatInProject: createNewChatInProject,
     loadChatIntoState: loadChatIntoState,
     openProjectHome: openProjectHome,
+    buildProjectSourceTools: buildProjectSourceTools,
+    executeBuiltInProjectSourceTool: executeBuiltInProjectSourceTool,
     syncAfterProjectChange: syncAfterProjectChange,
     reloadChatList: reloadChatList
   };
