@@ -7359,3 +7359,243 @@
   font-size: 11.5px;
   color: var(--aiw-text);
 }
+
+/* ===== 知屿全局资料库优化：来源标识与三端响应式桌面分栏布局 ===== */
+.aiw-lib-src-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.aiw-lib-src-badge.is-src-manual {
+  background: rgba(5, 150, 105, 0.12);
+  color: #059669;
+}
+
+.aiw-lib-src-badge.is-src-chat {
+  background: rgba(37, 99, 235, 0.12);
+  color: #2563eb;
+}
+
+.aiw-lib-src-badge.is-src-project {
+  background: rgba(124, 58, 237, 0.12);
+  color: #7c3aed;
+}
+
+.aiw-lib-refs-box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+}
+
+.aiw-lib-ref-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 0;
+  color: var(--aiw-sub);
+}
+
+.aiw-lib-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.aiw-lib-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.aiw-lib-side-nav {
+  display: none;
+}
+
+.aiw-lib-desktop-only {
+  display: none;
+}
+
+.aiw-lib-mobile-only {
+  display: flex;
+}
+
+/* 平板端 (768px - 1199px) */
+@media (min-width: 768px) {
+  .aiw-lib-wrap {
+    max-width: 1040px;
+    padding: 20px 24px 36px;
+  }
+  .aiw-lib-mobile-only {
+    display: none;
+  }
+  .aiw-lib-desktop-only {
+    display: block;
+  }
+}
+
+/* 桌面端 (>= 1200px，适配 1366 / 1440 / 1920) */
+@media (min-width: 1200px) {
+  .aiw-lib-wrap {
+    max-width: 1440px;
+    padding: 24px 36px 40px;
+  }
+  .aiw-lib-layout {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 28px;
+  }
+  .aiw-lib-side-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 220px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+  }
+  .aiw-lib-side-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 2px;
+  }
+  .aiw-lib-side-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--aiw-text);
+  }
+  .aiw-lib-side-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .aiw-lib-side-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 9px 12px;
+    border-radius: 11px;
+    background: transparent;
+    border: none;
+    color: var(--aiw-sub);
+    font-size: 13.5px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.14s ease, color 0.14s ease;
+  }
+  .aiw-lib-side-item:hover {
+    background: var(--aiw-surface-2);
+    color: var(--aiw-text);
+  }
+  .aiw-lib-side-item.active {
+    background: var(--aiw-pink-soft);
+    color: var(--aiw-pink-deep);
+    font-weight: 600;
+  }
+  .aiw-lib-side-count {
+    font-size: 11.5px;
+    opacity: 0.75;
+  }
+  .aiw-lib-cat-nav,
+  .aiw-lib-mobile-back {
+    display: none;
+  }
+  .aiw-lib-empty {
+    min-height: 360px;
+    padding: 56px 28px;
+  }
+}
+
+/* 桌面/平板横向表格样式 */
+.aiw-lib-table-wrap {
+  width: 100%;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+  border-radius: 16px;
+  overflow-x: auto;
+}
+
+.aiw-lib-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13px;
+}
+
+.aiw-lib-table th {
+  padding: 11px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--aiw-sub);
+  border-bottom: 1px solid var(--aiw-border);
+  white-space: nowrap;
+}
+
+.aiw-lib-table-row {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.aiw-lib-table-row:hover {
+  background: var(--aiw-surface-2);
+}
+
+.aiw-lib-table-row td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--aiw-border);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.aiw-lib-table-row:last-child td {
+  border-bottom: none;
+}
+
+.aiw-lib-td-name {
+  max-width: 320px;
+  min-width: 180px;
+}
+
+.aiw-lib-td-name-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.aiw-lib-td-ic {
+  color: var(--aiw-pink-deep);
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.aiw-lib-td-title {
+  font-weight: 500;
+  color: var(--aiw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiw-lib-td-muted {
+  font-size: 12px;
+  color: var(--aiw-sub);
+}
+
+.aiw-lib-td-act {
+  text-align: right;
+}

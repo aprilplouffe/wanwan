@@ -5981,6 +5981,23 @@
     if (src.sourceChatId && linkedChatIds.indexOf(src.sourceChatId) === -1) {
       linkedChatIds.push(src.sourceChatId);
     }
+    var inferredSourceType = src.sourceType;
+    if (inferredSourceType !== 'manual' && inferredSourceType !== 'chat' && inferredSourceType !== 'project') {
+      if (src.sourceProjectId) inferredSourceType = 'project';
+      else if (src.sourceChatId || linkedChatIds.length > 0) inferredSourceType = 'chat';
+      else inferredSourceType = 'manual';
+    }
+    var sourceRefs = Array.isArray(src.sourceRefs) ? src.sourceRefs.slice() : [];
+    if (sourceRefs.length === 0) {
+      sourceRefs.push({
+        sourceType: inferredSourceType,
+        chatId: String(src.sourceChatId || ''),
+        chatTitle: String(src.sourceChatTitle || ''),
+        projectId: String(src.sourceProjectId || ''),
+        projectName: String(src.sourceProjectName || ''),
+        addedAt: Number(src.uploadTime || src.createdAt) || Date.now()
+      });
+    }
     var parseStatus = src.parseStatus === 'failed'
       ? 'failed'
       : (src.parseStatus === 'unsupported' ? 'unsupported' : 'parsed');
@@ -5991,9 +6008,13 @@
       scope: 'global',
       userId: String(src.userId || 'local_user').trim() || 'local_user',
       projectId: '',
+      sourceType: inferredSourceType,
       sourceChatId: String(src.sourceChatId || ''),
+      sourceChatTitle: String(src.sourceChatTitle || ''),
       sourceProjectId: String(src.sourceProjectId || ''),
+      sourceProjectName: String(src.sourceProjectName || ''),
       sourceChatIds: linkedChatIds,
+      sourceRefs: sourceRefs,
       contentHash: String(src.contentHash || ''),
       name: name,
       originalName: String(src.originalName || name),
@@ -6056,6 +6077,7 @@
     var userId = String(opts.userId || '').trim();
     var typeFilter = String(opts.type || '').toLowerCase().trim();
     var catFilter = String(opts.category || '').trim();
+    var sourceFilter = String(opts.sourceType || '').toLowerCase().trim();
     var q = String(opts.query || '').toLowerCase().trim();
     var sort = String(opts.sort || 'time_desc');
 
@@ -6076,6 +6098,10 @@
           }
         }
         if (catFilter && catFilter !== '全部文件' && doc.category !== catFilter) continue;
+        if (sourceFilter) {
+          var hasSrcMatch = doc.sourceType === sourceFilter || (Array.isArray(doc.sourceRefs) && doc.sourceRefs.some(function(r) { return r && r.sourceType === sourceFilter; }));
+          if (!hasSrcMatch) continue;
+        }
         if (q && String(doc.name || '').toLowerCase().indexOf(q) === -1) continue;
         list.push(doc);
       }
@@ -6120,9 +6146,13 @@
       scope: 'global',
       userId: src.userId || 'local_user',
       projectId: '',
+      sourceType: src.sourceType || '',
       sourceChatId: src.sourceChatId || '',
+      sourceChatTitle: src.sourceChatTitle || '',
       sourceProjectId: src.sourceProjectId || '',
+      sourceProjectName: src.sourceProjectName || '',
       sourceChatIds: src.sourceChatIds || [],
+      sourceRefs: src.sourceRefs || null,
       contentHash: src.contentHash || '',
       name: src.name || '未命名资料',
       originalName: src.originalName || src.name || '未命名资料',
@@ -6165,6 +6195,31 @@
     if (!file) throw new Error('无效文件');
     var chatId = String(ctx.chatId || '').trim();
     var projectId = String(ctx.projectId || '').trim();
+    var chatTitle = String(ctx.chatTitle || '').trim();
+    var projectName = String(ctx.projectName || '').trim();
+    if (chatId && !chatTitle && typeof getChat === 'function') {
+      try {
+        var cObj = await getChat(chatId);
+        if (cObj && cObj.title) chatTitle = String(cObj.title);
+      } catch (_) {}
+    }
+    if (projectId && !projectName && typeof getProject === 'function') {
+      try {
+        var pObj = await getProject(projectId);
+        if (pObj && pObj.name) projectName = String(pObj.name);
+      } catch (_) {}
+    }
+    var sourceType = ctx.sourceType === 'manual'
+      ? 'manual'
+      : (projectId ? 'project' : (chatId ? 'chat' : 'manual'));
+    var currentRef = {
+      sourceType: sourceType,
+      chatId: chatId,
+      chatTitle: chatTitle,
+      projectId: projectId,
+      projectName: projectName,
+      addedAt: Date.now()
+    };
     var userId = String(ctx.userId || 'local_user').trim() || 'local_user';
     var name = String(file.name || '未命名文件').trim() || '未命名文件';
     var size = Number(file.size) || 0;
@@ -6217,8 +6272,22 @@
     var existingDocs = await listGlobalDocuments({ userId: userId });
     var dupDoc = existingDocs.find(function(d) { return d && d.fileId === assetRes.asset.id; });
     if (dupDoc) {
+      var dupChanged = false;
       if (chatId && dupDoc.sourceChatIds.indexOf(chatId) === -1) {
         dupDoc.sourceChatIds.push(chatId);
+        dupChanged = true;
+      }
+      if (!Array.isArray(dupDoc.sourceRefs)) dupDoc.sourceRefs = [];
+      var refExists = dupDoc.sourceRefs.some(function(r) {
+        return r && r.sourceType === currentRef.sourceType &&
+          String(r.chatId || '') === String(currentRef.chatId || '') &&
+          String(r.projectId || '') === String(currentRef.projectId || '');
+      });
+      if (!refExists) {
+        dupDoc.sourceRefs.push(currentRef);
+        dupChanged = true;
+      }
+      if (dupChanged) {
         dupDoc.updatedAt = Date.now();
         await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + dupDoc.id, dupDoc);
       }
@@ -6260,9 +6329,13 @@
     var savedDoc = await saveGlobalDocument({
       fileId: assetRes.asset.id,
       userId: userId,
+      sourceType: sourceType,
       sourceChatId: chatId,
+      sourceChatTitle: chatTitle,
       sourceProjectId: projectId,
+      sourceProjectName: projectName,
       sourceChatIds: chatId ? [chatId] : [],
+      sourceRefs: [currentRef],
       contentHash: contentHash,
       name: name,
       originalName: name,

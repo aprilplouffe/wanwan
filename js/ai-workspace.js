@@ -1887,9 +1887,14 @@
     attItem.archiveError = '';
     syncAttachBarUI(page);
     try {
+      var archChatId = attItem.chatId || (_state.activeChat ? _state.activeChat.id : '') || '';
+      var archProjId = attItem.projectId || (_state.activeChat ? _state.activeChat.projectId : '') || _state.activeProjectHomeId || '';
+      var archProjObj = archProjId ? (_state.projects || []).find(function(p) { return p && p.id === archProjId; }) : null;
       var res = await S().archiveChatFileToGlobalLibrary(attItem.fileObj, {
-        chatId: attItem.chatId || (_state.activeChat ? _state.activeChat.id : '') || '',
-        projectId: attItem.projectId || (_state.activeChat ? _state.activeChat.projectId : '') || _state.activeProjectHomeId || '',
+        chatId: archChatId,
+        chatTitle: (_state.activeChat && _state.activeChat.title) || '',
+        projectId: archProjId,
+        projectName: (archProjObj && archProjObj.name) || '',
         userId: 'local_user'
       });
       if (res && res.doc) {

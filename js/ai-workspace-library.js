@@ -10,6 +10,7 @@
     open: false,
     query: '',
     type: '',
+    sourceType: '',
     category: '',
     sort: 'time_desc'
   };
@@ -59,6 +60,7 @@
         _ui.open = !!parsed.open;
         _ui.query = String(parsed.query || '');
         _ui.type = String(parsed.type || '');
+        _ui.sourceType = String(parsed.sourceType || '');
         _ui.category = String(parsed.category || '');
         _ui.sort = String(parsed.sort || 'time_desc');
       }
@@ -97,6 +99,23 @@
       stage.innerHTML = '';
     }
     page.classList.remove('is-library-open');
+  }
+
+
+  function getSourceLabel(sourceType) {
+    if (sourceType === 'project') return '来自项目';
+    if (sourceType === 'chat') return '来自聊天';
+    return '手动上传';
+  }
+
+  function renderSourceBadgeHtml(doc) {
+    var st = (doc && doc.sourceType) || 'manual';
+    var cls = st === 'project' ? 'is-src-project' : (st === 'chat' ? 'is-src-chat' : 'is-src-manual');
+    var label = getSourceLabel(st);
+    var extra = (doc && Array.isArray(doc.sourceRefs) && doc.sourceRefs.length > 1)
+      ? (' +' + (doc.sourceRefs.length - 1))
+      : '';
+    return '<span class="aiw-lib-src-badge ' + cls + '">' + escapeHtml(label + extra) + '</span>';
   }
 
   function getFileIconClass(type, category) {
@@ -295,11 +314,26 @@
         '</div>' +
         '<div class="aiw-ws-modal-body">' +
           '<div class="aiw-lib-detail-kv"><span>文件名称</span><strong>' + escapeHtml(doc.name) + '</strong></div>' +
-          '<div class="aiw-lib-detail-kv"><span>归属范围</span><strong>全局资料库（独立于项目）</strong></div>' +
+          '<div class="aiw-lib-detail-kv"><span>原始名称</span><strong>' + escapeHtml(doc.originalName || doc.name) + '</strong></div>' +
+          '<div class="aiw-lib-detail-kv"><span>来源类型</span><strong>' + renderSourceBadgeHtml(doc) + '</strong></div>' +
+          (doc.sourceChatTitle || doc.sourceChatId ? '<div class="aiw-lib-detail-kv"><span>来源聊天</span><strong>' + escapeHtml((doc.sourceChatTitle || '未命名对话') + (doc.sourceChatId ? (' (' + doc.sourceChatId + ')') : '')) + '</strong></div>' : '') +
+          (doc.sourceProjectName || doc.sourceProjectId ? '<div class="aiw-lib-detail-kv"><span>来源项目</span><strong>' + escapeHtml((doc.sourceProjectName || '项目') + (doc.sourceProjectId ? (' (' + doc.sourceProjectId + ')') : '')) + '</strong></div>' : '') +
+          '<div class="aiw-lib-detail-kv"><span>访问权限</span><strong>全局资料库（仅归档记录，不自动授权跨项目读取）</strong></div>' +
           '<div class="aiw-lib-detail-kv"><span>文件类型</span><strong>' + escapeHtml((doc.type || 'txt').toUpperCase()) + '</strong></div>' +
           '<div class="aiw-lib-detail-kv"><span>文件大小</span><strong>' + escapeHtml(formatBytes(doc.size)) + '</strong></div>' +
           '<div class="aiw-lib-detail-kv"><span>解析状态</span><strong>' + escapeHtml(statusText) + '</strong></div>' +
-          '<div class="aiw-lib-detail-kv"><span>上传时间</span><strong>' + escapeHtml(formatTime(doc.createdAt)) + '</strong></div>' +
+          '<div class="aiw-lib-detail-kv"><span>上传时间</span><strong>' + escapeHtml(formatTime(doc.uploadTime || doc.createdAt)) + '</strong></div>' +
+          ((Array.isArray(doc.sourceRefs) && doc.sourceRefs.length > 1)
+            ? ('<div class="aiw-lib-refs-box"><div class="aiw-form-label" style="margin-bottom:6px;">全部关联来源（' + doc.sourceRefs.length + '）</div>' +
+                doc.sourceRefs.map(function(ref) {
+                  var refLabel = getSourceLabel(ref.sourceType);
+                  var refDesc = ref.projectName ? ('项目「' + ref.projectName + '」') : '';
+                  if (ref.chatTitle || ref.chatId) refDesc += (refDesc ? ' · ' : '') + '对话「' + (ref.chatTitle || ref.chatId) + '」';
+                  if (!refDesc) refDesc = '资料库直接上传';
+                  return '<div class="aiw-lib-ref-item"><span>' + escapeHtml(refLabel) + '</span><span>' + escapeHtml(refDesc) + '</span></div>';
+                }).join('') +
+              '</div>')
+            : '') +
           '<div class="aiw-form-group" style="margin-top:12px;">' +
             '<label class="aiw-form-label" for="aiw-lib-cat-select">文件分类</label>' +
             '<select class="aiw-field-input" id="aiw-lib-cat-select">' + catOptions + '</select>' +
@@ -445,6 +479,7 @@
     var filteredDocs = await S().listGlobalDocuments({
       query: _ui.query,
       type: _ui.type,
+      sourceType: _ui.sourceType,
       category: activeCat,
       sort: _ui.sort
     });
@@ -466,13 +501,13 @@
           '<div class="aiw-lib-empty-desc">尝试清空搜索关键词或调整类型、分类筛选条件。</div>' +
         '</div>';
     } else {
-      listHtml =
-        '<div class="aiw-lib-list">' +
+      var mobileCardsHtml =
+        '<div class="aiw-lib-list aiw-lib-mobile-only">' +
           filteredDocs.map(function(doc) {
             var isFailed = doc.parseStatus === 'failed';
             var isUnsupported = doc.parseStatus === 'unsupported';
             var statusCls = isFailed ? 'is-failed' : (isUnsupported ? 'is-unsupported' : 'is-parsed');
-            var statusLabel = isFailed ? '解析失败' : (isUnsupported ? '暂不支持解析（已归档原文件）' : '已解析');
+            var statusLabel = isFailed ? '解析失败' : (isUnsupported ? '暂不支持解析' : '已解析');
             return (
               '<div class="aiw-lib-row" data-lib-doc-id="' + escapeHtml(doc.id) + '">' +
                 '<div class="aiw-lib-row-main">' +
@@ -480,9 +515,9 @@
                   '<div class="aiw-lib-row-info">' +
                     '<div class="aiw-lib-row-title" title="' + escapeHtml(doc.name) + '">' + escapeHtml(doc.name) + '</div>' +
                     '<div class="aiw-lib-row-meta">' +
+                      renderSourceBadgeHtml(doc) +
                       '<span class="aiw-lib-badge">' + escapeHtml((doc.type || 'txt').toUpperCase()) + '</span>' +
                       '<span>' + escapeHtml(formatBytes(doc.size)) + '</span>' +
-                      '<span>' + escapeHtml(doc.category || '未分类') + '</span>' +
                       '<span>' + escapeHtml(formatTime(doc.createdAt)) + '</span>' +
                       '<span class="aiw-lib-status ' + statusCls + '">' + statusLabel + '</span>' +
                     '</div>' +
@@ -493,6 +528,49 @@
             );
           }).join('') +
         '</div>';
+
+      var desktopTableHtml =
+        '<div class="aiw-lib-table-wrap aiw-lib-desktop-only">' +
+          '<table class="aiw-lib-table">' +
+            '<thead>' +
+              '<tr>' +
+                '<th>文件名称</th>' +
+                '<th>类型</th>' +
+                '<th>大小</th>' +
+                '<th>来源</th>' +
+                '<th>上传时间</th>' +
+                '<th>解析状态</th>' +
+                '<th style="text-align:right;">操作</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody>' +
+              filteredDocs.map(function(doc) {
+                var isFailed = doc.parseStatus === 'failed';
+                var isUnsupported = doc.parseStatus === 'unsupported';
+                var statusCls = isFailed ? 'is-failed' : (isUnsupported ? 'is-unsupported' : 'is-parsed');
+                var statusLabel = isFailed ? '解析失败' : (isUnsupported ? '暂不支持解析' : '已解析');
+                return (
+                  '<tr class="aiw-lib-table-row" data-lib-doc-id="' + escapeHtml(doc.id) + '">' +
+                    '<td class="aiw-lib-td-name">' +
+                      '<div class="aiw-lib-td-name-inner">' +
+                        '<span class="aiw-lib-td-ic"><i class="' + getFileIconClass(doc.type, doc.category) + '"></i></span>' +
+                        '<span class="aiw-lib-td-title" title="' + escapeHtml(doc.name) + '">' + escapeHtml(doc.name) + '</span>' +
+                      '</div>' +
+                    '</td>' +
+                    '<td><span class="aiw-lib-badge">' + escapeHtml((doc.type || 'txt').toUpperCase()) + '</span></td>' +
+                    '<td class="aiw-lib-td-muted">' + escapeHtml(formatBytes(doc.size)) + '</td>' +
+                    '<td>' + renderSourceBadgeHtml(doc) + '</td>' +
+                    '<td class="aiw-lib-td-muted">' + escapeHtml(formatTime(doc.createdAt)) + '</td>' +
+                    '<td><span class="aiw-lib-status ' + statusCls + '">' + statusLabel + '</span></td>' +
+                    '<td class="aiw-lib-td-act"><button type="button" class="aiw-icon-btn aiw-lib-more-btn" data-lib-more="' + escapeHtml(doc.id) + '" aria-label="文件操作"><i class="fa-solid fa-ellipsis"></i></button></td>' +
+                  '</tr>'
+                );
+              }).join('') +
+            '</tbody>' +
+          '</table>' +
+        '</div>';
+
+      listHtml = mobileCardsHtml + desktopTableHtml;
     }
 
     var catTabsHtml = GLOBAL_CATEGORIES.map(function(cat) {
@@ -501,41 +579,78 @@
       return '<button type="button" class="aiw-lib-cat-tab' + isAct + '" data-lib-cat-tab="' + escapeHtml(cat) + '">' + escapeHtml(cat) + ' <span>' + cnt + '</span></button>';
     }).join('');
 
+    var sideCatItemsHtml = GLOBAL_CATEGORIES.map(function(cat) {
+      var isAct = activeCat === cat ? ' active' : '';
+      var cnt = catCounts[cat] || 0;
+      return (
+        '<button type="button" class="aiw-lib-side-item' + isAct + '" data-lib-cat-tab="' + escapeHtml(cat) + '">' +
+          '<span class="aiw-lib-side-label">' + escapeHtml(cat) + '</span>' +
+          '<span class="aiw-lib-side-count">' + cnt + '</span>' +
+        '</button>'
+      );
+    }).join('');
+
     stage.innerHTML =
       '<div class="aiw-lib-wrap">' +
-        '<div class="aiw-lib-header">' +
-          '<div class="aiw-lib-header-left">' +
-            '<button type="button" class="aiw-circle-btn" id="aiw-lib-back-btn" title="返回对话" aria-label="返回对话"><i class="fa-solid fa-arrow-left"></i></button>' +
-            '<div class="aiw-lib-titles">' +
-              '<h2 class="aiw-lib-title">资料库</h2>' +
-              '<div class="aiw-lib-subtitle">管理你的文件和知识资料</div>' +
+        '<div class="aiw-lib-layout">' +
+          '<aside class="aiw-lib-side-nav" aria-label="资料分类">' +
+            '<div class="aiw-lib-side-head">' +
+              '<button type="button" class="aiw-circle-btn" id="aiw-lib-side-back-btn" title="返回对话" aria-label="返回对话"><i class="fa-solid fa-arrow-left"></i></button>' +
+              '<span class="aiw-lib-side-title">文件分类</span>' +
             '</div>' +
-          '</div>' +
-          '<div class="aiw-lib-header-actions">' +
-            '<input type="file" id="aiw-lib-file-input" multiple style="display:none;">' +
-            '<button type="button" class="aiw-primary-btn aiw-btn-sm" id="aiw-lib-add-btn"><i class="fa-solid fa-plus"></i> 添加资料</button>' +
+            '<div class="aiw-lib-side-list">' + sideCatItemsHtml + '</div>' +
+          '</aside>' +
+          '<div class="aiw-lib-main">' +
+            '<div class="aiw-lib-header">' +
+              '<div class="aiw-lib-header-left">' +
+                '<button type="button" class="aiw-circle-btn aiw-lib-mobile-back" id="aiw-lib-back-btn" title="返回对话" aria-label="返回对话"><i class="fa-solid fa-arrow-left"></i></button>' +
+                '<div class="aiw-lib-titles">' +
+                  '<h2 class="aiw-lib-title">资料库</h2>' +
+                  '<div class="aiw-lib-subtitle">管理你的文件和知识资料</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="aiw-lib-header-actions">' +
+                '<input type="file" id="aiw-lib-file-input" multiple style="display:none;">' +
+                '<button type="button" class="aiw-primary-btn aiw-btn-sm" id="aiw-lib-add-btn"><i class="fa-solid fa-plus"></i> 添加资料</button>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="aiw-lib-upload-status" id="aiw-lib-upload-status" hidden></div>' +
+
+            '<div class="aiw-lib-cat-nav" role="tablist">' + catTabsHtml + '</div>' +
+            '<div class="aiw-lib-toolbar">' +
+              '<div class="aiw-search-box aiw-lib-search">' +
+                '<i class="fa-solid fa-magnifying-glass"></i>' +
+                '<input type="search" id="aiw-lib-search-input" value="' + escapeHtml(_ui.query) + '" placeholder="按文件名称搜索..." aria-label="搜索资料">' +
+              '</div>' +
+              '<div class="aiw-lib-filters">' +
+                '<select class="aiw-ph-sort-select" id="aiw-lib-type-filter" aria-label="文件类型筛选">' +
+                  '<option value=""' + (_ui.type === '' ? ' selected' : '') + '>全部类型</option>' +
+                  '<option value="pdf"' + (_ui.type === 'pdf' ? ' selected' : '') + '>PDF</option>' +
+                  '<option value="docx"' + (_ui.type === 'docx' ? ' selected' : '') + '>DOCX</option>' +
+                  '<option value="txt"' + (_ui.type === 'txt' ? ' selected' : '') + '>TXT</option>' +
+                  '<option value="md"' + (_ui.type === 'md' ? ' selected' : '') + '>Markdown</option>' +
+                  '<option value="xlsx"' + (_ui.type === 'xlsx' ? ' selected' : '') + '>Excel</option>' +
+                  '<option value="pptx"' + (_ui.type === 'pptx' ? ' selected' : '') + '>PowerPoint</option>' +
+                '</select>' +
+                '<select class="aiw-ph-sort-select" id="aiw-lib-source-filter" aria-label="来源筛选">' +
+                  '<option value=""' + (_ui.sourceType === '' ? ' selected' : '') + '>全部来源</option>' +
+                  '<option value="manual"' + (_ui.sourceType === 'manual' ? ' selected' : '') + '>手动上传</option>' +
+                  '<option value="chat"' + (_ui.sourceType === 'chat' ? ' selected' : '') + '>来自聊天</option>' +
+                  '<option value="project"' + (_ui.sourceType === 'project' ? ' selected' : '') + '>来自项目</option>' +
+                '</select>' +
+                '<select class="aiw-ph-sort-select" id="aiw-lib-sort-select" aria-label="排序方式">' +
+                  '<option value="time_desc"' + (_ui.sort === 'time_desc' ? ' selected' : '') + '>最新上传</option>' +
+                  '<option value="time_asc"' + (_ui.sort === 'time_asc' ? ' selected' : '') + '>最早上传</option>' +
+                  '<option value="name_asc"' + (_ui.sort === 'name_asc' ? ' selected' : '') + '>名称排序</option>' +
+                  '<option value="size_desc"' + (_ui.sort === 'size_desc' ? ' selected' : '') + '>大小排序</option>' +
+                '</select>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="aiw-lib-body">' + listHtml + '</div>' +
           '</div>' +
         '</div>' +
-
-        '<div class="aiw-lib-upload-status" id="aiw-lib-upload-status" hidden></div>' +
-
-        '<div class="aiw-lib-cat-nav" role="tablist">' + catTabsHtml + '</div>' +
-        '<div class="aiw-lib-toolbar">' +
-          '<div class="aiw-search-box aiw-lib-search">' +
-            '<i class="fa-solid fa-magnifying-glass"></i>' +
-            '<input type="search" id="aiw-lib-search-input" value="' + escapeHtml(_ui.query) + '" placeholder="按文件名称搜索..." aria-label="搜索资料">' +
-          '</div>' +
-          '<div class="aiw-lib-filters">' +
-            '<select class="aiw-ph-sort-select" id="aiw-lib-sort-select" aria-label="排序方式">' +
-              '<option value="time_desc"' + (_ui.sort === 'time_desc' ? ' selected' : '') + '>最新上传</option>' +
-              '<option value="time_asc"' + (_ui.sort === 'time_asc' ? ' selected' : '') + '>最早上传</option>' +
-              '<option value="name_asc"' + (_ui.sort === 'name_asc' ? ' selected' : '') + '>名称排序</option>' +
-              '<option value="size_desc"' + (_ui.sort === 'size_desc' ? ' selected' : '') + '>大小排序</option>' +
-            '</select>' +
-          '</div>' +
-        '</div>' +
-
-        '<div class="aiw-lib-body">' + listHtml + '</div>' +
       '</div>';
 
     var backBtn = stage.querySelector('#aiw-lib-back-btn');
@@ -543,6 +658,21 @@
       backBtn.addEventListener('click', function() {
         closeLibraryPage(page);
         if (opts && typeof opts.onBack === 'function') opts.onBack();
+      });
+    }
+    var sideBackBtn = stage.querySelector('#aiw-lib-side-back-btn');
+    if (sideBackBtn) {
+      sideBackBtn.addEventListener('click', function() {
+        closeLibraryPage(page);
+        if (opts && typeof opts.onBack === 'function') opts.onBack();
+      });
+    }
+    var srcSel = stage.querySelector('#aiw-lib-source-filter');
+    if (srcSel) {
+      srcSel.addEventListener('change', function() {
+        _ui.sourceType = srcSel.value || '';
+        saveUiState();
+        renderLibraryStage(page, opts);
       });
     }
 
