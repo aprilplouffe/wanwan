@@ -12,7 +12,11 @@
     type: '',
     sourceType: '',
     category: '',
-    sort: 'time_desc'
+    tag: '',
+    timeRange: '',
+    sort: 'time_desc',
+    selectMode: false,
+    selectedIds: []
   };
 
   function S() {
@@ -62,6 +66,8 @@
         _ui.type = String(parsed.type || '');
         _ui.sourceType = String(parsed.sourceType || '');
         _ui.category = String(parsed.category || '');
+        _ui.tag = String(parsed.tag || '');
+        _ui.timeRange = String(parsed.timeRange || '');
         _ui.sort = String(parsed.sort || 'time_desc');
       }
     } catch (_) {}
@@ -116,6 +122,14 @@
       ? (' +' + (doc.sourceRefs.length - 1))
       : '';
     return '<span class="aiw-lib-src-badge ' + cls + '">' + escapeHtml(label + extra) + '</span>';
+  }
+
+  function renderDocTagsHtml(doc) {
+    var tags = (doc && Array.isArray(doc.tags)) ? doc.tags : [];
+    if (!tags.length) return '';
+    return '<div class="aiw-lib-tags-row">' + tags.slice(0, 4).map(function(t) {
+      return '<span class="aiw-lib-tag-chip"><i class="fa-solid fa-tag"></i>' + escapeHtml(t) + '</span>';
+    }).join('') + (tags.length > 4 ? ('<span class="aiw-lib-tag-chip is-more">+' + (tags.length - 4) + '</span>') : '') + '</div>';
   }
 
   function getFileIconClass(type, category) {
@@ -295,7 +309,15 @@
     });
   }
 
-  function openGlobalDocDetailsModal(page, doc, onDone) {
+  async function openGlobalDocDetailsModal(page, doc, onDone) {
+    var allTags = (S() && typeof S().listGlobalTags === 'function') ? await S().listGlobalTags() : [];
+    var docTagsLower = (Array.isArray(doc.tags) ? doc.tags : []).map(function(t) { return String(t || '').toLowerCase(); });
+    var tagChecksHtml = allTags.length > 0
+      ? '<div class="aiw-lib-tag-check-grid">' + allTags.map(function(t) {
+          var checked = docTagsLower.indexOf(t.name.toLowerCase()) !== -1 ? ' checked' : '';
+          return '<label class="aiw-lib-tag-check"><input type="checkbox" value="' + escapeHtml(t.name) + '"' + checked + '><span>' + escapeHtml(t.name) + '</span></label>';
+        }).join('') + '</div>'
+      : '<div style="font-size:12px; color:#6b7280;">暂无自定义标签，可在「管理标签」中新建</div>';
     var modalWrap = document.createElement('div');
     modalWrap.className = 'aiw-ws-modal-backdrop open aiw-proj-submodal-backdrop';
     var catOptions = GLOBAL_CATEGORIES.map(function(cat) {
@@ -338,6 +360,10 @@
             '<label class="aiw-form-label" for="aiw-lib-cat-select">文件分类</label>' +
             '<select class="aiw-field-input" id="aiw-lib-cat-select">' + catOptions + '</select>' +
           '</div>' +
+          '<div class="aiw-form-group" style="margin-top:10px;">' +
+            '<label class="aiw-form-label">自定义标签</label>' +
+            tagChecksHtml +
+          '</div>' +
         '</div>' +
         '<div class="aiw-ws-modal-foot">' +
           '<button type="button" class="aiw-secondary-btn" id="aiw-lib-det-cancel">关闭</button>' +
@@ -351,9 +377,13 @@
     modalWrap.addEventListener('click', function(e) { if (e.target === modalWrap) modalWrap.remove(); });
     modalWrap.querySelector('#aiw-lib-det-save').addEventListener('click', async function() {
       var cat = modalWrap.querySelector('#aiw-lib-cat-select').value;
-      await S().updateGlobalDocumentMeta(doc.id, { category: cat });
+      var selectedTags = [];
+      modalWrap.querySelectorAll('.aiw-lib-tag-check input[type="checkbox"]:checked').forEach(function(cb) {
+        if (cb.value) selectedTags.push(cb.value);
+      });
+      await S().updateGlobalDocumentMeta(doc.id, { category: cat, tags: selectedTags });
       modalWrap.remove();
-      notifyToast('分类已更新');
+      notifyToast('资料分类与标签已更新');
       if (typeof onDone === 'function') onDone();
     });
   }
@@ -384,6 +414,208 @@
       await S().deleteGlobalDocument(doc.id);
       modalWrap.remove();
       notifyToast('资料已删除');
+      if (typeof onDone === 'function') onDone();
+    });
+  }
+
+  async function openGlobalTagManagerModal(page, onDone) {
+    var modalWrap = document.createElement('div');
+    modalWrap.className = 'aiw-ws-modal-backdrop open aiw-proj-submodal-backdrop';
+
+    async function renderTagList() {
+      var tags = (S() && typeof S().listGlobalTags === 'function') ? await S().listGlobalTags() : [];
+      var listEl = modalWrap.querySelector('#aiw-lib-tag-mgr-list');
+      if (!listEl) return;
+      if (!tags.length) {
+        listEl.innerHTML = '<div style="font-size:13px; color:#6b7280; padding:12px 0;">暂无自定义标签</div>';
+        return;
+      }
+      listEl.innerHTML = tags.map(function(t) {
+        return (
+          '<div class="aiw-lib-tag-mgr-row" data-tag-id="' + escapeHtml(t.id) + '" data-tag-name="' + escapeHtml(t.name) + '">' +
+            '<span class="aiw-lib-tag-chip"><i class="fa-solid fa-tag"></i>' + escapeHtml(t.name) + '</span>' +
+            '<div class="aiw-lib-tag-mgr-acts">' +
+              '<button type="button" class="aiw-secondary-btn aiw-btn-sm" data-tag-act="rename">重命名</button>' +
+              '<button type="button" class="aiw-danger-btn aiw-btn-sm" data-tag-act="delete">删除</button>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+
+      listEl.querySelectorAll('[data-tag-act="rename"]').forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+          var row = btn.closest('[data-tag-id]');
+          var oldName = row.getAttribute('data-tag-name') || '';
+          var nextName = window.prompt('输入新的标签名称：', oldName);
+          if (nextName === null) return;
+          var clean = String(nextName).trim();
+          if (!clean) { notifyToast('标签名称不能为空'); return; }
+          try {
+            await S().renameGlobalTag(oldName, clean);
+            if (_ui.tag && _ui.tag.toLowerCase() === oldName.toLowerCase()) {
+              _ui.tag = clean;
+              saveUiState();
+            }
+            notifyToast('标签已重命名');
+            await renderTagList();
+            if (typeof onDone === 'function') onDone();
+          } catch (err) {
+            notifyToast((err && err.message) || '重命名失败');
+          }
+        });
+      });
+
+      listEl.querySelectorAll('[data-tag-act="delete"]').forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+          var row = btn.closest('[data-tag-id]');
+          var tName = row.getAttribute('data-tag-name') || '';
+          await S().deleteGlobalTag(tName);
+          if (_ui.tag && _ui.tag.toLowerCase() === tName.toLowerCase()) {
+            _ui.tag = '';
+            saveUiState();
+          }
+          notifyToast('已删除标签「' + tName + '」（不会删除文件本身）');
+          await renderTagList();
+          if (typeof onDone === 'function') onDone();
+        });
+      });
+    }
+
+    modalWrap.innerHTML =
+      '<div class="aiw-ws-modal aiw-projects-edit-modal" role="dialog" aria-modal="true">' +
+        '<div class="aiw-ws-modal-head">' +
+          '<div class="aiw-ws-modal-title"><i class="fa-solid fa-tags" style="color:var(--aiw-pink-deep); margin-right:6px;"></i>管理自定义标签</div>' +
+          '<button type="button" class="aiw-ws-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
+        '</div>' +
+        '<div class="aiw-ws-modal-body">' +
+          '<div style="display:flex; gap:8px; margin-bottom:12px;">' +
+            '<input type="text" class="aiw-field-input" id="aiw-lib-new-tag-input" placeholder="输入新标签名称（如：学习资料）" maxlength="32">' +
+            '<button type="button" class="aiw-primary-btn aiw-btn-sm" id="aiw-lib-new-tag-btn" style="flex-shrink:0;">新建</button>' +
+          '</div>' +
+          '<div style="font-size:12px; color:#6b7280; margin-bottom:8px;">提示：标签与文件格式分类相互独立，删除标签不会删除文件本身。</div>' +
+          '<div class="aiw-lib-tag-mgr-list" id="aiw-lib-tag-mgr-list"></div>' +
+        '</div>' +
+        '<div class="aiw-ws-modal-foot">' +
+          '<button type="button" class="aiw-primary-btn" id="aiw-lib-tag-mgr-close">完成</button>' +
+        '</div>' +
+      '</div>';
+
+    page.appendChild(modalWrap);
+    await renderTagList();
+
+    var addInput = modalWrap.querySelector('#aiw-lib-new-tag-input');
+    modalWrap.querySelector('#aiw-lib-new-tag-btn').addEventListener('click', async function() {
+      var val = (addInput.value || '').trim();
+      if (!val) { notifyToast('请输入标签名称'); addInput.focus(); return; }
+      await S().createGlobalTag(val);
+      addInput.value = '';
+      notifyToast('已新建标签：' + val);
+      await renderTagList();
+      if (typeof onDone === 'function') onDone();
+    });
+    modalWrap.querySelector('.aiw-ws-modal-close').addEventListener('click', function() { modalWrap.remove(); });
+    modalWrap.querySelector('#aiw-lib-tag-mgr-close').addEventListener('click', function() { modalWrap.remove(); });
+    modalWrap.addEventListener('click', function(e) { if (e.target === modalWrap) modalWrap.remove(); });
+  }
+
+  async function openBatchTagModal(page, selectedIds, onDone) {
+    if (!selectedIds || !selectedIds.length) return;
+    var tags = (S() && typeof S().listGlobalTags === 'function') ? await S().listGlobalTags() : [];
+    var modalWrap = document.createElement('div');
+    modalWrap.className = 'aiw-ws-modal-backdrop open aiw-proj-submodal-backdrop';
+
+    var tagChecks = tags.map(function(t) {
+      return '<label class="aiw-lib-tag-check"><input type="checkbox" value="' + escapeHtml(t.name) + '"><span>' + escapeHtml(t.name) + '</span></label>';
+    }).join('');
+
+    modalWrap.innerHTML =
+      '<div class="aiw-ws-modal aiw-projects-edit-modal" role="dialog" aria-modal="true">' +
+        '<div class="aiw-ws-modal-head">' +
+          '<div class="aiw-ws-modal-title">批量管理标签（已选 ' + selectedIds.length + ' 项）</div>' +
+          '<button type="button" class="aiw-ws-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
+        '</div>' +
+        '<div class="aiw-ws-modal-body">' +
+          '<div class="aiw-form-group">' +
+            '<label class="aiw-form-label">操作方式</label>' +
+            '<select class="aiw-field-input" id="aiw-lib-batch-tag-mode">' +
+              '<option value="add">批量添加选中标签</option>' +
+              '<option value="remove">批量移除选中标签</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="aiw-form-group" style="margin-top:10px;">' +
+            '<label class="aiw-form-label">选择标签</label>' +
+            '<div class="aiw-lib-tag-check-grid">' + (tagChecks || '<span style="font-size:12px; color:#6b7280;">暂无标签</span>') + '</div>' +
+          '</div>' +
+          '<div class="aiw-form-group" style="margin-top:10px;">' +
+            '<label class="aiw-form-label" for="aiw-lib-batch-new-tag">或直接输入新标签（仅添加模式）</label>' +
+            '<input type="text" class="aiw-field-input" id="aiw-lib-batch-new-tag" placeholder="可选：输入新标签名称" maxlength="32">' +
+          '</div>' +
+        '</div>' +
+        '<div class="aiw-ws-modal-foot">' +
+          '<button type="button" class="aiw-secondary-btn" id="aiw-lib-btag-cancel">取消</button>' +
+          '<button type="button" class="aiw-primary-btn" id="aiw-lib-btag-ok">应用到选中文件</button>' +
+        '</div>' +
+      '</div>';
+
+    page.appendChild(modalWrap);
+    modalWrap.querySelector('.aiw-ws-modal-close').addEventListener('click', function() { modalWrap.remove(); });
+    modalWrap.querySelector('#aiw-lib-btag-cancel').addEventListener('click', function() { modalWrap.remove(); });
+    modalWrap.addEventListener('click', function(e) { if (e.target === modalWrap) modalWrap.remove(); });
+    modalWrap.querySelector('#aiw-lib-btag-ok').addEventListener('click', async function() {
+      var mode = modalWrap.querySelector('#aiw-lib-batch-tag-mode').value;
+      var picked = [];
+      modalWrap.querySelectorAll('.aiw-lib-tag-check input[type="checkbox"]:checked').forEach(function(cb) {
+        if (cb.value) picked.push(cb.value);
+      });
+      var newTagVal = (modalWrap.querySelector('#aiw-lib-batch-new-tag').value || '').trim();
+      if (mode === 'add' && newTagVal) picked.push(newTagVal);
+      if (!picked.length) {
+        notifyToast('请至少选择一个标签');
+        return;
+      }
+      if (mode === 'remove') {
+        await S().batchUpdateGlobalDocumentTags(selectedIds, { removeTags: picked });
+        notifyToast('已从 ' + selectedIds.length + ' 份资料移除标签');
+      } else {
+        await S().batchUpdateGlobalDocumentTags(selectedIds, { addTags: picked });
+        notifyToast('已为 ' + selectedIds.length + ' 份资料添加标签');
+      }
+      modalWrap.remove();
+      if (typeof onDone === 'function') onDone();
+    });
+  }
+
+  function openBatchDeleteModal(page, selectedDocs, onDone) {
+    if (!selectedDocs || !selectedDocs.length) return;
+    var modalWrap = document.createElement('div');
+    modalWrap.className = 'aiw-ws-modal-backdrop open aiw-proj-submodal-backdrop';
+    var previewNames = selectedDocs.slice(0, 5).map(function(d) { return '「' + escapeHtml(d.name) + '」'; }).join('、');
+    if (selectedDocs.length > 5) previewNames += ' 等共 ' + selectedDocs.length + ' 份文件';
+
+    modalWrap.innerHTML =
+      '<div class="aiw-ws-modal aiw-projects-delete-modal" role="dialog" aria-modal="true">' +
+        '<div class="aiw-ws-modal-head">' +
+          '<div class="aiw-ws-modal-title" style="color:#e11d48;"><i class="fa-solid fa-triangle-exclamation" style="margin-right:6px;"></i>批量删除全局资料</div>' +
+          '<button type="button" class="aiw-ws-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
+        '</div>' +
+        '<div class="aiw-ws-modal-body">' +
+          '<p class="aiw-st-modal-msg">确定要删除选中的 <strong>' + selectedDocs.length + '</strong> 份全局资料（' + previewNames + '）吗？<br>删除后将同步清理原始内容、解析索引与缓存，AI 将无法继续读取这些资料，且不可恢复。</p>' +
+        '</div>' +
+        '<div class="aiw-ws-modal-foot">' +
+          '<button type="button" class="aiw-secondary-btn" id="aiw-lib-bdel-cancel">取消</button>' +
+          '<button type="button" class="aiw-danger-btn" id="aiw-lib-bdel-ok">确认批量删除</button>' +
+        '</div>' +
+      '</div>';
+
+    page.appendChild(modalWrap);
+    modalWrap.querySelector('.aiw-ws-modal-close').addEventListener('click', function() { modalWrap.remove(); });
+    modalWrap.querySelector('#aiw-lib-bdel-cancel').addEventListener('click', function() { modalWrap.remove(); });
+    modalWrap.addEventListener('click', function(e) { if (e.target === modalWrap) modalWrap.remove(); });
+    modalWrap.querySelector('#aiw-lib-bdel-ok').addEventListener('click', async function() {
+      var ids = selectedDocs.map(function(d) { return d.id; });
+      await S().batchDeleteGlobalDocuments(ids);
+      modalWrap.remove();
+      notifyToast('已批量删除 ' + ids.length + ' 份资料');
       if (typeof onDone === 'function') onDone();
     });
   }
@@ -468,6 +700,7 @@
     if (!stage) return;
 
     var allDocs = await S().listGlobalDocuments();
+    var allTags = (S() && typeof S().listGlobalTags === 'function') ? await S().listGlobalTags() : [];
     var catCounts = { '全部文件': allDocs.length };
     GLOBAL_CATEGORIES.forEach(function(c) { if (c !== '全部文件') catCounts[c] = 0; });
     allDocs.forEach(function(d) {
@@ -481,8 +714,16 @@
       type: _ui.type,
       sourceType: _ui.sourceType,
       category: activeCat,
+      tag: _ui.tag,
+      timeRange: _ui.timeRange,
       sort: _ui.sort
     });
+    var validDocIdSet = {};
+    filteredDocs.forEach(function(d) { validDocIdSet[d.id] = true; });
+    _ui.selectedIds = (_ui.selectedIds || []).filter(function(id) { return !!validDocIdSet[id]; });
+    var selectedMap = {};
+    _ui.selectedIds.forEach(function(id) { selectedMap[id] = true; });
+    var allSelected = filteredDocs.length > 0 && _ui.selectedIds.length === filteredDocs.length;
 
     var listHtml = '';
     if (allDocs.length === 0) {
@@ -508,9 +749,14 @@
             var isUnsupported = doc.parseStatus === 'unsupported';
             var statusCls = isFailed ? 'is-failed' : (isUnsupported ? 'is-unsupported' : 'is-parsed');
             var statusLabel = isFailed ? '解析失败' : (isUnsupported ? '暂不支持解析' : '已解析');
+            var isSel = !!selectedMap[doc.id];
+            var chkHtml = _ui.selectMode
+              ? '<input type="checkbox" class="aiw-lib-checkbox" data-lib-select="' + escapeHtml(doc.id) + '"' + (isSel ? ' checked' : '') + ' aria-label="选择文件">'
+              : '';
             return (
-              '<div class="aiw-lib-row" data-lib-doc-id="' + escapeHtml(doc.id) + '">' +
+              '<div class="aiw-lib-row' + (isSel ? ' is-selected' : '') + '" data-lib-doc-id="' + escapeHtml(doc.id) + '">' +
                 '<div class="aiw-lib-row-main">' +
+                  chkHtml +
                   '<div class="aiw-lib-row-icon"><i class="' + getFileIconClass(doc.type, doc.category) + '"></i></div>' +
                   '<div class="aiw-lib-row-info">' +
                     '<div class="aiw-lib-row-title" title="' + escapeHtml(doc.name) + '">' + escapeHtml(doc.name) + '</div>' +
@@ -521,6 +767,7 @@
                       '<span>' + escapeHtml(formatTime(doc.createdAt)) + '</span>' +
                       '<span class="aiw-lib-status ' + statusCls + '">' + statusLabel + '</span>' +
                     '</div>' +
+                    renderDocTagsHtml(doc) +
                   '</div>' +
                 '</div>' +
                 '<button type="button" class="aiw-icon-btn aiw-lib-more-btn" data-lib-more="' + escapeHtml(doc.id) + '" aria-label="文件操作"><i class="fa-solid fa-ellipsis"></i></button>' +
@@ -534,6 +781,7 @@
           '<table class="aiw-lib-table">' +
             '<thead>' +
               '<tr>' +
+                (_ui.selectMode ? '<th style="width:36px;"><input type="checkbox" class="aiw-lib-checkbox" id="aiw-lib-table-select-all"' + (allSelected ? ' checked' : '') + ' aria-label="全选"></th>' : '') +
                 '<th>文件名称</th>' +
                 '<th>类型</th>' +
                 '<th>大小</th>' +
@@ -549,12 +797,17 @@
                 var isUnsupported = doc.parseStatus === 'unsupported';
                 var statusCls = isFailed ? 'is-failed' : (isUnsupported ? 'is-unsupported' : 'is-parsed');
                 var statusLabel = isFailed ? '解析失败' : (isUnsupported ? '暂不支持解析' : '已解析');
+                var isSelRow = !!selectedMap[doc.id];
                 return (
-                  '<tr class="aiw-lib-table-row" data-lib-doc-id="' + escapeHtml(doc.id) + '">' +
+                  '<tr class="aiw-lib-table-row' + (isSelRow ? ' is-selected' : '') + '" data-lib-doc-id="' + escapeHtml(doc.id) + '">' +
+                    (_ui.selectMode ? '<td><input type="checkbox" class="aiw-lib-checkbox" data-lib-select="' + escapeHtml(doc.id) + '"' + (isSelRow ? ' checked' : '') + ' aria-label="选择文件"></td>' : '') +
                     '<td class="aiw-lib-td-name">' +
                       '<div class="aiw-lib-td-name-inner">' +
                         '<span class="aiw-lib-td-ic"><i class="' + getFileIconClass(doc.type, doc.category) + '"></i></span>' +
-                        '<span class="aiw-lib-td-title" title="' + escapeHtml(doc.name) + '">' + escapeHtml(doc.name) + '</span>' +
+                        '<div>' +
+                          '<div class="aiw-lib-td-title" title="' + escapeHtml(doc.name) + '">' + escapeHtml(doc.name) + '</div>' +
+                          renderDocTagsHtml(doc) +
+                        '</div>' +
                       '</div>' +
                     '</td>' +
                     '<td><span class="aiw-lib-badge">' + escapeHtml((doc.type || 'txt').toUpperCase()) + '</span></td>' +
@@ -610,6 +863,8 @@
                 '</div>' +
               '</div>' +
               '<div class="aiw-lib-header-actions">' +
+                '<button type="button" class="aiw-secondary-btn aiw-btn-sm" id="aiw-lib-tags-btn"><i class="fa-solid fa-tags"></i> 管理标签</button>' +
+                '<button type="button" class="aiw-secondary-btn aiw-btn-sm' + (_ui.selectMode ? ' is-active' : '') + '" id="aiw-lib-batch-toggle"><i class="fa-regular fa-square-check"></i> ' + (_ui.selectMode ? '退出多选' : '批量管理') + '</button>' +
                 '<input type="file" id="aiw-lib-file-input" multiple style="display:none;">' +
                 '<button type="button" class="aiw-primary-btn aiw-btn-sm" id="aiw-lib-add-btn"><i class="fa-solid fa-plus"></i> 添加资料</button>' +
               '</div>' +
@@ -633,11 +888,20 @@
                   '<option value="xlsx"' + (_ui.type === 'xlsx' ? ' selected' : '') + '>Excel</option>' +
                   '<option value="pptx"' + (_ui.type === 'pptx' ? ' selected' : '') + '>PowerPoint</option>' +
                 '</select>' +
+                '<select class="aiw-ph-sort-select" id="aiw-lib-tag-filter" aria-label="标签筛选">' +
+                  '<option value=""' + (_ui.tag === '' ? ' selected' : '') + '>全部标签</option>' + allTags.map(function(t) { var sel = _ui.tag.toLowerCase() === t.name.toLowerCase() ? ' selected' : ''; return '<option value="' + escapeHtml(t.name) + '"' + sel + '>' + escapeHtml(t.name) + '</option>'; }).join('') +
+                '</select>' +
                 '<select class="aiw-ph-sort-select" id="aiw-lib-source-filter" aria-label="来源筛选">' +
                   '<option value=""' + (_ui.sourceType === '' ? ' selected' : '') + '>全部来源</option>' +
                   '<option value="manual"' + (_ui.sourceType === 'manual' ? ' selected' : '') + '>手动上传</option>' +
                   '<option value="chat"' + (_ui.sourceType === 'chat' ? ' selected' : '') + '>来自聊天</option>' +
                   '<option value="project"' + (_ui.sourceType === 'project' ? ' selected' : '') + '>来自项目</option>' +
+                '</select>' +
+                '<select class="aiw-ph-sort-select" id="aiw-lib-time-filter" aria-label="上传时间筛选">' +
+                  '<option value=""' + (_ui.timeRange === '' ? ' selected' : '') + '>全部时间</option>' +
+                  '<option value="today"' + (_ui.timeRange === 'today' ? ' selected' : '') + '>今天</option>' +
+                  '<option value="7d"' + (_ui.timeRange === '7d' ? ' selected' : '') + '>近 7 天</option>' +
+                  '<option value="30d"' + (_ui.timeRange === '30d' ? ' selected' : '') + '>近 30 天</option>' +
                 '</select>' +
                 '<select class="aiw-ph-sort-select" id="aiw-lib-sort-select" aria-label="排序方式">' +
                   '<option value="time_desc"' + (_ui.sort === 'time_desc' ? ' selected' : '') + '>最新上传</option>' +
@@ -648,6 +912,18 @@
               '</div>' +
             '</div>' +
 
+            (_ui.selectMode
+              ? ('<div class="aiw-lib-batch-bar">' +
+                  '<div class="aiw-lib-batch-left">' +
+                    '<button type="button" class="aiw-secondary-btn aiw-btn-sm" id="aiw-lib-select-all-btn">' + (allSelected ? '取消全选' : '全选') + '</button>' +
+                    '<span class="aiw-lib-batch-count">已选 <strong>' + _ui.selectedIds.length + '</strong> / ' + filteredDocs.length + ' 项</span>' +
+                  '</div>' +
+                  '<div class="aiw-lib-batch-right">' +
+                    '<button type="button" class="aiw-secondary-btn aiw-btn-sm" id="aiw-lib-batch-tag-btn"' + (_ui.selectedIds.length ? '' : ' disabled') + '><i class="fa-solid fa-tag"></i> 批量改标签</button>' +
+                    '<button type="button" class="aiw-danger-btn aiw-btn-sm" id="aiw-lib-batch-del-btn"' + (_ui.selectedIds.length ? '' : ' disabled') + '><i class="fa-regular fa-trash-can"></i> 批量删除</button>' +
+                  '</div>' +
+                '</div>')
+              : '') +
             '<div class="aiw-lib-body">' + listHtml + '</div>' +
           '</div>' +
         '</div>' +
@@ -754,10 +1030,97 @@
       });
     }
 
+    var tagsMgrBtn = stage.querySelector('#aiw-lib-tags-btn');
+    if (tagsMgrBtn) {
+      tagsMgrBtn.addEventListener('click', function() {
+        openGlobalTagManagerModal(page, function() { renderLibraryStage(page, opts); });
+      });
+    }
+
+    var batchToggleBtn = stage.querySelector('#aiw-lib-batch-toggle');
+    if (batchToggleBtn) {
+      batchToggleBtn.addEventListener('click', function() {
+        _ui.selectMode = !_ui.selectMode;
+        if (!_ui.selectMode) _ui.selectedIds = [];
+        renderLibraryStage(page, opts);
+      });
+    }
+
+    var tagSel = stage.querySelector('#aiw-lib-tag-filter');
+    if (tagSel) {
+      tagSel.addEventListener('change', function() {
+        _ui.tag = tagSel.value || '';
+        saveUiState();
+        renderLibraryStage(page, opts);
+      });
+    }
+
+    var timeSel = stage.querySelector('#aiw-lib-time-filter');
+    if (timeSel) {
+      timeSel.addEventListener('change', function() {
+        _ui.timeRange = timeSel.value || '';
+        saveUiState();
+        renderLibraryStage(page, opts);
+      });
+    }
+
+    function toggleSelectAll() {
+      if (allSelected) {
+        _ui.selectedIds = [];
+      } else {
+        _ui.selectedIds = filteredDocs.map(function(d) { return d.id; });
+      }
+      renderLibraryStage(page, opts);
+    }
+    var selectAllBtn = stage.querySelector('#aiw-lib-select-all-btn');
+    if (selectAllBtn) selectAllBtn.addEventListener('click', toggleSelectAll);
+    var tableSelectAll = stage.querySelector('#aiw-lib-table-select-all');
+    if (tableSelectAll) tableSelectAll.addEventListener('change', toggleSelectAll);
+
+    var batchTagBtn = stage.querySelector('#aiw-lib-batch-tag-btn');
+    if (batchTagBtn) {
+      batchTagBtn.addEventListener('click', function() {
+        openBatchTagModal(page, _ui.selectedIds.slice(), function() {
+          renderLibraryStage(page, opts);
+        });
+      });
+    }
+
+    var batchDelBtn = stage.querySelector('#aiw-lib-batch-del-btn');
+    if (batchDelBtn) {
+      batchDelBtn.addEventListener('click', function() {
+        var selDocs = filteredDocs.filter(function(d) { return !!selectedMap[d.id]; });
+        openBatchDeleteModal(page, selDocs, function() {
+          _ui.selectedIds = [];
+          renderLibraryStage(page, opts);
+        });
+      });
+    }
+
+    stage.querySelectorAll('[data-lib-select]').forEach(function(cb) {
+      cb.addEventListener('click', function(e) { e.stopPropagation(); });
+      cb.addEventListener('change', function() {
+        var sid = cb.getAttribute('data-lib-select');
+        if (!sid) return;
+        if (cb.checked) {
+          if (_ui.selectedIds.indexOf(sid) === -1) _ui.selectedIds.push(sid);
+        } else {
+          _ui.selectedIds = _ui.selectedIds.filter(function(x) { return x !== sid; });
+        }
+        renderLibraryStage(page, opts);
+      });
+    });
+
     stage.querySelectorAll('[data-lib-doc-id]').forEach(function(row) {
       row.addEventListener('click', async function(e) {
-        if (e.target.closest('.aiw-lib-more-btn')) return;
+        if (e.target.closest('.aiw-lib-more-btn') || e.target.closest('[data-lib-select]')) return;
         var did = row.getAttribute('data-lib-doc-id');
+        if (_ui.selectMode) {
+          if (_ui.selectedIds.indexOf(did) === -1) _ui.selectedIds.push(did);
+          else _ui.selectedIds = _ui.selectedIds.filter(function(x) { return x !== did; });
+          renderLibraryStage(page, opts);
+          return;
+        }
         var doc = await S().getGlobalDocument(did);
         if (doc) openGlobalDocPreviewModal(page, doc);
       });

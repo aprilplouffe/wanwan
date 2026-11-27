@@ -36,6 +36,7 @@
     PROJECT_DOC_PREFIX: 'aiw_proj_doc:',
     GLOBAL_DOC_IDS: 'aiw_global_doc_ids',
     GLOBAL_DOC_PREFIX: 'aiw_global_doc:',
+    GLOBAL_TAG_LIST: 'aiw_global_tag_list_v1',
     FILE_ASSET_PREFIX: 'aiw_file_asset:',
     FILE_ASSET_HASH_INDEX: 'aiw_file_asset_hash_index'
   };
@@ -1504,7 +1505,8 @@
       seen[key] = true;
       out.push({
         targetId: targetId,
-        type: type,
+        tags: normalizeGlobalDocTags(src.tags),
+      type: type,
         label: String(r.label || '').trim().slice(0, 32),
         reason: String(r.reason || '').trim().slice(0, 100),
         updatedAt: Number(r.updatedAt) || Date.now()
@@ -5275,6 +5277,12 @@
     renameGlobalDocument: renameGlobalDocument,
     updateGlobalDocumentMeta: updateGlobalDocumentMeta,
     deleteGlobalDocument: deleteGlobalDocument,
+    listGlobalTags: listGlobalTags,
+    createGlobalTag: createGlobalTag,
+    renameGlobalTag: renameGlobalTag,
+    deleteGlobalTag: deleteGlobalTag,
+    batchUpdateGlobalDocumentTags: batchUpdateGlobalDocumentTags,
+    batchDeleteGlobalDocuments: batchDeleteGlobalDocuments,
     classifyFileCategory: classifyFileCategory,
     detectRealFileType: detectRealFileType,
     computeFileHash: computeFileHash,
@@ -5993,6 +6001,22 @@
     return 'fnv_' + h1.toString(16) + '_' + h2.toString(16) + '_' + bytes.length;
   }
 
+  function normalizeGlobalDocTags(rawTags) {
+    if (!Array.isArray(rawTags)) return [];
+    var seen = {};
+    var out = [];
+    for (var i = 0; i < rawTags.length; i++) {
+      var t = String(rawTags[i] || '').trim().slice(0, 32);
+      if (!t) continue;
+      var k = t.toLowerCase();
+      if (seen[k]) continue;
+      seen[k] = true;
+      out.push(t);
+      if (out.length >= 20) break;
+    }
+    return out;
+  }
+
   function normalizeGlobalDocRecord(raw, forcedId) {
     var src = raw && typeof raw === 'object' ? raw : {};
     var content = String(src.content || src.extractedText || '');
@@ -6102,8 +6126,20 @@
     var typeFilter = String(opts.type || '').toLowerCase().trim();
     var catFilter = String(opts.category || '').trim();
     var sourceFilter = String(opts.sourceType || '').toLowerCase().trim();
+    var tagFilter = String(opts.tag || '').trim().toLowerCase();
+    var timeRange = String(opts.timeRange || '').trim();
     var q = String(opts.query || '').toLowerCase().trim();
     var sort = String(opts.sort || 'time_desc');
+    var nowTs = Date.now();
+    var minTimeTs = 0;
+    if (timeRange === 'today') {
+      var dNow = new Date(nowTs);
+      minTimeTs = new Date(dNow.getFullYear(), dNow.getMonth(), dNow.getDate()).getTime();
+    } else if (timeRange === '7d') {
+      minTimeTs = nowTs - 7 * 24 * 60 * 60 * 1000;
+    } else if (timeRange === '30d') {
+      minTimeTs = nowTs - 30 * 24 * 60 * 60 * 1000;
+    }
 
     var ids = await dbGetConfig(KEYS.GLOBAL_DOC_IDS);
     if (!Array.isArray(ids)) ids = [];
@@ -6125,6 +6161,15 @@
         if (sourceFilter) {
           var hasSrcMatch = doc.sourceType === sourceFilter || (Array.isArray(doc.sourceRefs) && doc.sourceRefs.some(function(r) { return r && r.sourceType === sourceFilter; }));
           if (!hasSrcMatch) continue;
+        }
+        if (tagFilter) {
+          var docTags = Array.isArray(doc.tags) ? doc.tags : [];
+          var hasTag = docTags.some(function(t) { return String(t || '').toLowerCase() === tagFilter; });
+          if (!hasTag) continue;
+        }
+        if (minTimeTs > 0) {
+          var docTs = Number(doc.uploadTime || doc.createdAt || 0);
+          if (docTs < minTimeTs) continue;
         }
         if (q && String(doc.name || '').toLowerCase().indexOf(q) === -1) continue;
         list.push(doc);
@@ -6418,7 +6463,7 @@
     if (!doc) return null;
     var src = patch && typeof patch === 'object' ? patch : {};
     if (typeof src.category === 'string') doc.category = src.category.trim() || '其他';
-    if (Array.isArray(src.tags)) doc.tags = src.tags.slice();
+    if (Array.isArray(src.tags)) doc.tags = normalizeGlobalDocTags(src.tags);
     doc.updatedAt = Date.now();
     await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + docId, doc);
     return doc;
@@ -6448,6 +6493,176 @@
       }
     }
     return true;
+  }
+
+  var DEFAULT_GLOBAL_TAGS = ['学习资料', '开发文档', '工作文件', '个人笔记'];
+
+  function normalizeGlobalTagItem(raw, idx) {
+    if (typeof raw === 'string') {
+      var sName = raw.trim().slice(0, 32);
+      if (!sName) return null;
+      return { id: 'gtag_' + (idx || 0) + '_' + sName, name: sName, color: '', createdAt: Date.now() };
+    }
+    if (!raw || typeof raw !== 'object') return null;
+    var name = String(raw.name || '').trim().slice(0, 32);
+    if (!name) return null;
+    return {
+      id: String(raw.id || ('gtag_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6))),
+      name: name,
+      color: String(raw.color || '').trim(),
+      createdAt: Number(raw.createdAt) || Date.now()
+    };
+  }
+
+  async function listGlobalTags() {
+    var raw = await dbGetConfig(KEYS.GLOBAL_TAG_LIST);
+    if (raw === null || raw === undefined) {
+      var defaults = DEFAULT_GLOBAL_TAGS.map(function(name, i) {
+        return { id: 'gtag_default_' + (i + 1), name: name, color: '', createdAt: Date.now() };
+      });
+      await dbPutConfig(KEYS.GLOBAL_TAG_LIST, defaults);
+      return defaults;
+    }
+    if (!Array.isArray(raw)) return [];
+    var seen = {};
+    var list = [];
+    for (var i = 0; i < raw.length; i++) {
+      var item = normalizeGlobalTagItem(raw[i], i);
+      if (!item) continue;
+      var k = item.name.toLowerCase();
+      if (seen[k]) continue;
+      seen[k] = true;
+      list.push(item);
+    }
+    return list;
+  }
+
+  async function createGlobalTag(name, color) {
+    var clean = String(name || '').trim().slice(0, 32);
+    if (!clean) throw new Error('标签名称不能为空');
+    var list = await listGlobalTags();
+    var existing = list.find(function(t) { return t.name.toLowerCase() === clean.toLowerCase(); });
+    if (existing) return existing;
+    var item = {
+      id: 'gtag_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+      name: clean,
+      color: String(color || '').trim(),
+      createdAt: Date.now()
+    };
+    list.push(item);
+    await dbPutConfig(KEYS.GLOBAL_TAG_LIST, list);
+    return item;
+  }
+
+  async function renameGlobalTag(tagIdOrName, nextName) {
+    var targetKey = String(tagIdOrName || '').trim().toLowerCase();
+    var cleanNext = String(nextName || '').trim().slice(0, 32);
+    if (!targetKey || !cleanNext) throw new Error('标签名称不能为空');
+    var list = await listGlobalTags();
+    var target = list.find(function(t) {
+      return t.id.toLowerCase() === targetKey || t.name.toLowerCase() === targetKey;
+    });
+    if (!target) return null;
+    var conflict = list.find(function(t) {
+      return t.id !== target.id && t.name.toLowerCase() === cleanNext.toLowerCase();
+    });
+    if (conflict) throw new Error('已存在同名标签');
+    var oldName = target.name;
+    target.name = cleanNext;
+    await dbPutConfig(KEYS.GLOBAL_TAG_LIST, list);
+
+    var ids = await dbGetConfig(KEYS.GLOBAL_DOC_IDS);
+    if (Array.isArray(ids)) {
+      for (var i = 0; i < ids.length; i++) {
+        var rawDoc = await dbGetConfig(KEYS.GLOBAL_DOC_PREFIX + ids[i]);
+        if (!rawDoc || !Array.isArray(rawDoc.tags)) continue;
+        var changed = false;
+        var nextTags = rawDoc.tags.map(function(t) {
+          if (String(t || '').toLowerCase() === oldName.toLowerCase()) {
+            changed = true;
+            return cleanNext;
+          }
+          return t;
+        });
+        if (changed) {
+          rawDoc.tags = normalizeGlobalDocTags(nextTags);
+          rawDoc.updatedAt = Date.now();
+          await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + ids[i], rawDoc);
+        }
+      }
+    }
+    return target;
+  }
+
+  async function deleteGlobalTag(tagIdOrName) {
+    var targetKey = String(tagIdOrName || '').trim().toLowerCase();
+    if (!targetKey) return false;
+    var list = await listGlobalTags();
+    var target = list.find(function(t) {
+      return t.id.toLowerCase() === targetKey || t.name.toLowerCase() === targetKey;
+    });
+    var removedName = target ? target.name : String(tagIdOrName || '').trim();
+    var nextList = list.filter(function(t) {
+      return t.id.toLowerCase() !== targetKey && t.name.toLowerCase() !== targetKey;
+    });
+    await dbPutConfig(KEYS.GLOBAL_TAG_LIST, nextList);
+
+    // 删除标签时仅从文件元数据移除该标签，绝不删除文件本身
+    var ids = await dbGetConfig(KEYS.GLOBAL_DOC_IDS);
+    if (Array.isArray(ids)) {
+      for (var i = 0; i < ids.length; i++) {
+        var rawDoc = await dbGetConfig(KEYS.GLOBAL_DOC_PREFIX + ids[i]);
+        if (!rawDoc || !Array.isArray(rawDoc.tags)) continue;
+        var filtered = rawDoc.tags.filter(function(t) {
+          return String(t || '').toLowerCase() !== removedName.toLowerCase();
+        });
+        if (filtered.length !== rawDoc.tags.length) {
+          rawDoc.tags = filtered;
+          rawDoc.updatedAt = Date.now();
+          await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + ids[i], rawDoc);
+        }
+      }
+    }
+    return true;
+  }
+
+  async function batchUpdateGlobalDocumentTags(docIds, opts) {
+    var ids = Array.isArray(docIds) ? docIds : [];
+    var o = opts && typeof opts === 'object' ? opts : {};
+    var addTags = normalizeGlobalDocTags(o.addTags || []);
+    var removeTagsLower = normalizeGlobalDocTags(o.removeTags || []).map(function(t) { return t.toLowerCase(); });
+    for (var a = 0; a < addTags.length; a++) {
+      await createGlobalTag(addTags[a]);
+    }
+    var updatedCount = 0;
+    for (var i = 0; i < ids.length; i++) {
+      var doc = await getGlobalDocument(ids[i]);
+      if (!doc) continue;
+      var cur = Array.isArray(doc.tags) ? doc.tags.slice() : [];
+      if (removeTagsLower.length > 0) {
+        cur = cur.filter(function(t) { return removeTagsLower.indexOf(String(t || '').toLowerCase()) === -1; });
+      }
+      if (addTags.length > 0) {
+        cur = cur.concat(addTags);
+      }
+      doc.tags = normalizeGlobalDocTags(cur);
+      doc.updatedAt = Date.now();
+      await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + doc.id, doc);
+      updatedCount++;
+    }
+    return { updatedCount: updatedCount };
+  }
+
+  async function batchDeleteGlobalDocuments(docIds) {
+    var ids = Array.isArray(docIds) ? docIds : [];
+    var deletedIds = [];
+    for (var i = 0; i < ids.length; i++) {
+      var id = String(ids[i] || '').trim();
+      if (!id) continue;
+      await deleteGlobalDocument(id);
+      deletedIds.push(id);
+    }
+    return { deletedCount: deletedIds.length, deletedIds: deletedIds };
   }
 
   function resolveGlobalLibraryAccess(ctx) {

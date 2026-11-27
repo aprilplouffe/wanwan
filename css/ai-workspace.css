@@ -7671,3 +7671,104 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+
+/* ===== 全局资料库第三阶段：批量管理与自定义标签样式 ===== */
+.aiw-lib-batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+.aiw-lib-batch-left,
+.aiw-lib-batch-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.aiw-lib-batch-count {
+  font-size: 13px;
+  color: #475569;
+}
+.aiw-lib-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #6366f1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.aiw-lib-row.is-selected,
+.aiw-lib-table-row.is-selected {
+  background: rgba(99, 102, 241, 0.06);
+}
+.aiw-lib-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+.aiw-lib-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+.aiw-lib-tag-chip i {
+  font-size: 10px;
+  color: #6366f1;
+}
+.aiw-lib-tag-check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.aiw-lib-tag-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  cursor: pointer;
+}
+.aiw-lib-tag-mgr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.aiw-lib-tag-mgr-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+.aiw-lib-tag-mgr-acts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.aiw-secondary-btn.is-active {
+  background: #eef2ff;
+  border-color: #818cf8;
+  color: #4338ca;
+}
