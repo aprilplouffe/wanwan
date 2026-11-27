@@ -1258,6 +1258,10 @@
           '<span class="aiw-picker-icon"><i class="fa-regular fa-folder"></i></span>' +
           '<div class="aiw-picker-text"><div class="aiw-picker-title">' + (chat.projectId ? '变更所属项目 / 移出' : '移动到项目') + '</div></div>' +
         '</button>' +
+        '<button type="button" class="aiw-picker-item" data-chat-op="toggle-global-lib">' +
+          '<span class="aiw-picker-icon"><i class="fa-solid fa-book-open-reader"></i></span>' +
+          '<div class="aiw-picker-text"><div class="aiw-picker-title">全局资料库访问：' + (chat.allowGlobalLibrary === false ? '已关闭（点击开启）' : '已开启（点击关闭）') + '</div></div>' +
+        '</button>' +
         '<button type="button" class="aiw-picker-item is-danger-item" data-chat-op="delete">' +
           '<span class="aiw-picker-icon"><i class="fa-regular fa-trash-can"></i></span>' +
           '<div class="aiw-picker-text"><div class="aiw-picker-title">删除对话</div></div>' +
@@ -1317,6 +1321,26 @@
           });
         } else {
           notifyToast('项目模块尚未加载');
+        }
+      });
+    }
+
+    var globalLibOpBtn = modal.querySelector('[data-chat-op="toggle-global-lib"]');
+    if (globalLibOpBtn) {
+      globalLibOpBtn.addEventListener('click', async function() {
+        var nextAllow = chat.allowGlobalLibrary === false;
+        chat.allowGlobalLibrary = nextAllow;
+        if (S() && typeof S().saveChat === 'function') {
+          var saved = await S().saveChat(chat);
+          if (_state.activeChat && _state.activeChat.id === chat.id && saved) {
+            _state.activeChat = saved;
+          }
+        }
+        closeInlineModal(page);
+        if (nextAllow && chat.projectId) {
+          notifyToast('已开启本对话的全局资料库访问（仍需项目设置同时开启）');
+        } else {
+          notifyToast(nextAllow ? '已开启本对话的全局资料库访问' : '已关闭本对话的全局资料库访问');
         }
       });
     }
@@ -1773,6 +1797,22 @@
 
     var toolCallsHtml = renderToolCallsHtml(m);
     var translationHtml = renderTranslationPanelHtml(m);
+    var retrievalPillHtml = m.retrievalStatus
+      ? '<div class="aiw-retrieval-pill"><i class="fa-solid fa-magnifying-glass"></i><span>' + escapeHtml(m.retrievalStatus) + '</span></div>'
+      : '';
+    var citationsHtml = '';
+    if (!m.streaming && Array.isArray(m.sourceCitations) && m.sourceCitations.length > 0) {
+      citationsHtml = '<div class="aiw-cite-list"><span class="aiw-cite-label"><i class="fa-solid fa-quote-left"></i> 参考来源</span>' +
+        m.sourceCitations.map(function(ct) {
+          var pageTag = ct.pageNumber ? (' · 第' + ct.pageNumber + '页') : '';
+          var scopeBadge = ct.scope === 'project' ? '项目' : '资料库';
+          return '<button type="button" class="aiw-cite-chip" data-cite-scope="' + escapeHtml(ct.scope || 'global') + '" data-cite-file-id="' + escapeHtml(ct.fileId || '') + '" data-cite-file-name="' + escapeHtml(ct.fileName || '') + '" data-cite-page="' + escapeHtml(ct.pageNumber ? String(ct.pageNumber) : '') + '" title="点击预览来源文件">' +
+            '<span class="aiw-cite-scope">' + scopeBadge + '</span>' +
+            '<span class="aiw-cite-name">' + escapeHtml(ct.fileName || '未命名文件') + escapeHtml(pageTag) + '</span>' +
+          '</button>';
+        }).join('') +
+      '</div>';
+    }
 
     var actionsHtml = '';
     if (!m.streaming) {
@@ -1791,8 +1831,10 @@
 
     return (
       '<div class="aiw-msg-row is-assistant" data-msg-id="' + escapeHtml(m.id) + '">' +
+        retrievalPillHtml +
         toolCallsHtml +
         '<div class="aiw-msg-bubble" id="aiw-msg-bubble-' + escapeHtml(m.id) + '">' + bodyHtml + '</div>' +
+        citationsHtml +
         statusLine +
         errorHtml +
         translationHtml +
@@ -2774,7 +2816,41 @@
     if (!msgList || msgList._aiwBound) return;
     msgList._aiwBound = true;
 
-    msgList.addEventListener('click', function(e) {
+    msgList.addEventListener('click', async function(e) {
+      var citeBtn = e.target.closest && e.target.closest('.aiw-cite-chip');
+      if (citeBtn) {
+        var cScope = citeBtn.getAttribute('data-cite-scope') || 'global';
+        var cFileId = citeBtn.getAttribute('data-cite-file-id') || '';
+        var cFileName = citeBtn.getAttribute('data-cite-file-name') || '';
+        var cPage = citeBtn.getAttribute('data-cite-page') || '';
+        if (cScope === 'global' && S()) {
+          var gDoc = cFileId && typeof S().getGlobalDocument === 'function' ? await S().getGlobalDocument(cFileId) : null;
+          if (!gDoc && cFileName && typeof S().listGlobalDocuments === 'function') {
+            var allGDocs = await S().listGlobalDocuments('local_user');
+            gDoc = allGDocs.find(function(d) { return d && d.name === cFileName; }) || null;
+          }
+          if (!gDoc) {
+            notifyToast('该文件已从全局资料库移除');
+            return;
+          }
+          if (global.AiWorkspaceLibrary && typeof global.AiWorkspaceLibrary.openGlobalDocPreviewModal === 'function') {
+            if (cPage) notifyToast('正在打开《' + gDoc.name + '》（参考第 ' + cPage + ' 页）');
+            global.AiWorkspaceLibrary.openGlobalDocPreviewModal(page, gDoc);
+          }
+        } else if (cScope === 'project' && S()) {
+          var pidNow = (_state.activeChat && _state.activeChat.projectId) ? String(_state.activeChat.projectId).trim() : '';
+          var pDocs = (pidNow && typeof S().listProjectDocuments === 'function') ? await S().listProjectDocuments(pidNow) : [];
+          var pDoc = pDocs.find(function(d) { return (cFileId && d.id === cFileId) || (cFileName && d.name === cFileName); }) || null;
+          if (!pDoc) {
+            notifyToast('该文件已从当前项目来源移除');
+            return;
+          }
+          if (global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openDocPreviewModal === 'function') {
+            global.AiWorkspaceProjects.openDocPreviewModal(page, pDoc);
+          }
+        }
+        return;
+      }
       var copyCodeBtn = e.target.closest && e.target.closest('.aiw-code-copy-btn');
       if (copyCodeBtn) {
         var encoded = copyCodeBtn.getAttribute('data-copy-code') || '';
@@ -3843,6 +3919,249 @@
     };
   }
 
+  function pushUniqueCitation(list, item) {
+    if (!Array.isArray(list) || !item || (!item.fileId && !item.fileName)) return;
+    var key = [item.scope || 'global', item.fileId || '', item.fileName || '', item.pageNumber || '', item.chunkIndex || 0].join('|');
+    var exists = list.some(function(x) {
+      return [x.scope || 'global', x.fileId || '', x.fileName || '', x.pageNumber || '', x.chunkIndex || 0].join('|') === key;
+    });
+    if (!exists) list.push(item);
+  }
+
+  function buildGlobalLibraryTools() {
+    return [
+      {
+        type: 'function',
+        function: {
+          name: 'search_global_library',
+          description: '在用户全局资料库中检索相关文档片段（支持按关键词、文件类型或文件名过滤）。仅返回已授权且已成功解析的文件片段。',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: '检索关键词或自然语言问题' },
+              limit: { type: 'number', description: '最多返回片段数（1-6，默认 4）' },
+              fileType: { type: 'string', description: '可选：按文件类型过滤，如 pdf、docx、txt、md' },
+              fileName: { type: 'string', description: '可选：按文件名关键词过滤' }
+            },
+            required: ['query']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'list_global_library_files',
+          description: '列出用户全局资料库中的文件清单与元数据（文件 ID、名称、分类、解析状态、分段数及来源类型）。',
+          parameters: {
+            type: 'object',
+            properties: {
+              fileType: { type: 'string', description: '可选：按文件类型过滤，如 pdf、docx、txt、md' },
+              limit: { type: 'number', description: '最多列出文件数（1-30，默认 20）' }
+            }
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'read_global_library_file',
+          description: '分段读取全局资料库中指定文件的内容（支持长文档翻页 batch 读取或按 query 定位片段）。不支持正文的格式会如实返回未解析状态。',
+          parameters: {
+            type: 'object',
+            properties: {
+              fileId: { type: 'string', description: '优先传入文件 ID（来自 list_global_library_files 或 search_global_library）' },
+              fileName: { type: 'string', description: '文件名称（未传 fileId 时使用）' },
+              startChunk: { type: 'number', description: '起始片段编号（从 1 开始，默认 1）' },
+              count: { type: 'number', description: '连续读取片段数（1-4，默认 2）' },
+              query: { type: 'string', description: '可选：在文件内按关键词定位最相关片段' }
+            }
+          }
+        }
+      }
+    ];
+  }
+
+  async function executeBuiltInGlobalLibraryTool(toolName, rawArgs, trustedUserId, trustedChatId, trustedProjectId, callState, collectedCitations) {
+    var uid = String(trustedUserId || 'local_user').trim() || 'local_user';
+    if (!S() || typeof S().resolveGlobalLibraryAccess !== 'function') {
+      return { ok: false, fullName: toolName, pluginName: '全局资料库', toolLabel: toolName, error: '全局资料库存储模块未就绪' };
+    }
+
+    var liveChat = (trustedChatId && typeof S().getChat === 'function') ? await S().getChat(trustedChatId) : null;
+    var liveProj = (trustedProjectId && typeof S().getProject === 'function') ? await S().getProject(trustedProjectId) : null;
+    var isGlobalAllowed = !!S().resolveGlobalLibraryAccess({
+      chat: liveChat,
+      project: liveProj,
+      chatId: trustedChatId,
+      projectId: trustedProjectId
+    });
+    if (!isGlobalAllowed) {
+      return {
+        ok: false,
+        fullName: toolName,
+        pluginName: '全局资料库',
+        toolLabel: toolName,
+        error: trustedProjectId ? '当前项目或对话未授权访问全局资料库（需在项目设置中开启）' : '当前对话已关闭全局资料库访问'
+      };
+    }
+
+    if (callState) {
+      callState.count = (callState.count || 0) + 1;
+      if (callState.count > 6) {
+        return { ok: false, fullName: toolName, pluginName: '全局资料库', toolLabel: toolName, error: '单轮全局资料库检索已达次数上限（6 次），请基于已获取片段作答' };
+      }
+    }
+
+    var args = rawArgs && typeof rawArgs === 'object' ? rawArgs : {};
+
+    if (toolName === 'list_global_library_files') {
+      var listLimit = Math.max(1, Math.min(30, Number(args.limit) || 20));
+      var manifest = typeof S().listGlobalDocumentManifest === 'function'
+        ? await S().listGlobalDocumentManifest(uid, { fileType: args.fileType || '' })
+        : [];
+      var sliced = manifest.slice(0, listLimit);
+      return {
+        ok: true,
+        fullName: toolName,
+        pluginName: '全局资料库',
+        toolLabel: '查看全局资料库清单',
+        result: {
+          found: sliced.length > 0,
+          totalFiles: manifest.length,
+          files: sliced
+        },
+        summaryText: manifest.length ? ('已列出 ' + sliced.length + '/' + manifest.length + ' 份全局资料') : '全局资料库暂无文件'
+      };
+    }
+
+    if (toolName === 'read_global_library_file') {
+      var idOrName = String(args.fileId || args.fileName || '').trim();
+      if (!idOrName) {
+        return { ok: false, fullName: toolName, pluginName: '全局资料库', toolLabel: '阅读资料库文件', error: '请提供 fileId 或 fileName' };
+      }
+      var segRes = typeof S().readGlobalDocumentSegment === 'function'
+        ? await S().readGlobalDocumentSegment(uid, idOrName, {
+          offset: args.startChunk,
+          limit: args.count,
+          query: args.query
+        })
+        : null;
+      if (!segRes) {
+        return {
+          ok: true,
+          fullName: toolName,
+          pluginName: '全局资料库',
+          toolLabel: '阅读资料库文件',
+          result: { found: false, message: '未在当前用户全局资料库中找到指定文件，请勿编造内容' },
+          summaryText: '未找到指定全局资料文件'
+        };
+      }
+      var segFileName = segRes.docName || segRes.fileName || idOrName;
+      if (segRes.unsupported) {
+        return {
+          ok: true,
+          fullName: toolName,
+          pluginName: '全局资料库',
+          toolLabel: '阅读资料库文件',
+          result: {
+            found: true,
+            unsupported: true,
+            fileId: segRes.fileId,
+            fileName: segFileName,
+            docType: segRes.docType,
+            parseStatus: segRes.parseStatus,
+            message: segRes.message
+          },
+          summaryText: '《' + segFileName + '》暂不支持正文读取（' + segRes.parseStatus + '）'
+        };
+      }
+      if (Array.isArray(segRes.segments)) {
+        segRes.segments.forEach(function(seg) {
+          pushUniqueCitation(collectedCitations, {
+            scope: 'global',
+            fileId: segRes.fileId,
+            fileName: segFileName,
+            pageNumber: seg.pageNumber || null,
+            chunkIndex: Number.isFinite(Number(seg.chunkIndex)) ? Math.max(0, Number(seg.chunkIndex)) : 0,
+            totalChunks: segRes.totalChunks || 1
+          });
+        });
+      }
+      return {
+        ok: true,
+        fullName: toolName,
+        pluginName: '全局资料库',
+        toolLabel: '阅读资料库文件',
+        result: {
+          found: true,
+          fileId: segRes.fileId,
+          fileName: segFileName,
+          docType: segRes.docType,
+          totalChunks: segRes.totalChunks,
+          hasMore: segRes.hasMore,
+          nextStartChunk: segRes.nextOffset,
+          segments: segRes.segments
+        },
+        summaryText: '已读取《' + segFileName + '》' + (segRes.segments ? segRes.segments.length : 0) + ' 个片段'
+      };
+    }
+
+    // search_global_library
+    var query = String(args.query || '').trim();
+    var limit = Math.max(1, Math.min(6, Number(args.limit) || 4));
+    var hits = typeof S().searchGlobalDocuments === 'function'
+      ? await S().searchGlobalDocuments(uid, query, {
+        maxChunks: limit,
+        maxTotalChars: 2000,
+        fileType: args.fileType || '',
+        fileName: args.fileName || ''
+      })
+      : [];
+    if (!hits.length) {
+      return {
+        ok: true,
+        fullName: toolName,
+        pluginName: '全局资料库',
+        toolLabel: '检索全局资料库',
+        result: { found: false, query: query, sources: [], message: '未在全局资料库检索到匹配内容，请如实告知用户，不得编造文件内容' },
+        summaryText: '未检索到匹配全局资料'
+      };
+    }
+    var hitNames = [];
+    hits.forEach(function(h) {
+      if (hitNames.indexOf(h.docName) === -1) hitNames.push(h.docName);
+      pushUniqueCitation(collectedCitations, {
+        scope: 'global',
+        fileId: h.docId,
+        fileName: h.docName,
+        pageNumber: h.pageNumber || null,
+        chunkIndex: h.chunkIndex || 0,
+        totalChunks: h.totalChunks || 1
+      });
+    });
+    return {
+      ok: true,
+      fullName: toolName,
+      pluginName: '全局资料库',
+      toolLabel: '检索全局资料库',
+      result: {
+        found: true,
+        query: query,
+        sources: hits.map(function(h) {
+          return {
+            fileId: h.docId,
+            fileName: h.docName,
+            category: h.category,
+            pageNumber: h.pageNumber || null,
+            chunkPosition: h.totalChunks > 1 ? ((h.chunkIndex + 1) + '/' + h.totalChunks) : '全文',
+            content: h.snippet
+          };
+        })
+      },
+      summaryText: '已检索 ' + hits.length + ' 条全局资料片段（' + hitNames.slice(0, 3).join('、') + '）'
+    };
+  }
+
   async function executeStreamingTurn(page, historyBeforeTurn, userText, assistantMsg, effectiveApi, turnOpts) {
     var turnChatId = _state.activeChat ? _state.activeChat.id : '';
     var turnProjectId = (_state.activeChat && _state.activeChat.projectId) ? String(_state.activeChat.projectId).trim() : '';
@@ -3904,11 +4223,13 @@
 
     var activeProjectInstructions = '';
     var activeProjectDocsSnippet = '';
+    var activeProjectObj = null;
     var activeProjectId = (_state.activeChat && _state.activeChat.projectId) ? String(_state.activeChat.projectId).trim() : '';
     if (activeProjectId && S()) {
       if (typeof S().getProject === 'function') {
         try {
           var activeProj = await S().getProject(activeProjectId);
+          activeProjectObj = activeProj || null;
           if (activeProj && activeProj.instructions) {
             activeProjectInstructions = String(activeProj.instructions).trim();
           }
@@ -3959,6 +4280,80 @@
       }
     }
 
+    var turnCitations = [];
+    var activeGlobalDocsSnippet = '';
+    var globalLibAllowed = false;
+    if (S() && typeof S().resolveGlobalLibraryAccess === 'function') {
+      try {
+        globalLibAllowed = !!S().resolveGlobalLibraryAccess({
+          chat: _state.activeChat,
+          project: activeProjectObj,
+          chatId: turnChatId,
+          projectId: activeProjectId
+        });
+      } catch (accErr) {
+        console.warn('[AiWorkspace] global library access check skipped:', accErr);
+      }
+    }
+
+    if (globalLibAllowed && S() && userText) {
+      try {
+        var gSearchQuery = userText;
+        if (gSearchQuery.length <= 18 && Array.isArray(historyBeforeTurn) && historyBeforeTurn.length > 0) {
+          for (var gh = historyBeforeTurn.length - 1; gh >= 0; gh--) {
+            if (historyBeforeTurn[gh] && historyBeforeTurn[gh].role === 'user' && historyBeforeTurn[gh].content) {
+              gSearchQuery += ' ' + String(historyBeforeTurn[gh].content).slice(0, 80);
+              break;
+            }
+          }
+        }
+        var gParts = [];
+        var isGlobalMetaQuery = /(?:资料库|文件|文档|来源|上传|总结|概括|比较|对比|区别|有哪些|读一下|查一下|找一下|合同|报告|笔记|PDF|Word)/i.test(userText);
+        if (isGlobalMetaQuery && typeof S().listGlobalDocumentManifest === 'function') {
+          var gManifest = await S().listGlobalDocumentManifest('local_user');
+          if (Array.isArray(gManifest) && gManifest.length > 0) {
+            var gManifestLine = gManifest.slice(0, 12).map(function(d) {
+              return '《' + d.name + '》(' + (d.category || d.type || 'txt') + ', ' + (d.parseStatus === 'parsed' ? (d.totalChunks + '段') : d.parseStatus) + ')';
+            }).join('、');
+            gParts.push('[当前全局资料库文件清单：' + gManifestLine + ']');
+          }
+        }
+        if (typeof S().searchGlobalDocuments === 'function') {
+          var gHits = await S().searchGlobalDocuments('local_user', gSearchQuery, {
+            maxChunks: 4,
+            maxTotalChars: 1700
+          });
+          if (Array.isArray(gHits) && gHits.length > 0) {
+            gHits.forEach(function(hit) {
+              var posTag = hit.pageNumber
+                ? ('第' + hit.pageNumber + '页')
+                : (hit.totalChunks > 1 ? ('片段 ' + (hit.chunkIndex + 1) + '/' + hit.totalChunks) : '全文');
+              gParts.push('[全局资料：' + hit.docName + ' | ' + posTag + ']\n' + hit.snippet);
+              pushUniqueCitation(turnCitations, {
+                scope: 'global',
+                fileId: hit.docId,
+                fileName: hit.docName,
+                pageNumber: hit.pageNumber || null,
+                chunkIndex: hit.chunkIndex || 0,
+                totalChunks: hit.totalChunks || 1
+              });
+            });
+          }
+        }
+        if (gParts.length > 0) {
+          activeGlobalDocsSnippet = gParts.join('\n\n');
+        }
+      } catch (gDocErr) {
+        console.warn('[AiWorkspace] search global documents skipped:', sanitizeErrorText(gDocErr && gDocErr.message || gDocErr));
+      }
+    }
+
+    if (activeGlobalDocsSnippet || activeProjectDocsSnippet) {
+      assistantMsg.retrievalStatus = activeGlobalDocsSnippet && activeProjectDocsSnippet
+        ? '已检索项目来源与全局资料库'
+        : (activeGlobalDocsSnippet ? '已检索全局资料库' : '已检索当前项目来源');
+    }
+
     var composed = AI().composeMessages({
       historyMessages: memContext.useShortTermHistory ? historyBeforeTurn : [],
       shortTermSummary: memContext.shortTermSummary || '',
@@ -3969,6 +4364,7 @@
       preset: preset,
       projectInstructions: activeProjectInstructions,
       projectDocsSnippet: activeProjectDocsSnippet,
+      globalDocsSnippet: activeGlobalDocsSnippet,
       worldBookEntries: matchedWorldBookEntries,
       memories: memContext.memories || [],
       crossChatContexts: memContext.crossChatContexts || [],
@@ -4009,7 +4405,14 @@
       list_project_sources: true,
       read_project_source_segment: true
     };
-    var mergedTools = (enabledToolsRes.tools || []).concat(builtInSourceTools);
+    var globalToolCallState = { count: 0 };
+    var builtInGlobalTools = globalLibAllowed ? buildGlobalLibraryTools() : [];
+    var builtInGlobalToolNames = {
+      search_global_library: true,
+      list_global_library_files: true,
+      read_global_library_file: true
+    };
+    var mergedTools = (enabledToolsRes.tools || []).concat(builtInSourceTools, builtInGlobalTools);
 
     try {
       var res;
@@ -4038,6 +4441,9 @@
             var rawName = (tc && tc.function && tc.function.name) || '';
             if (builtInSourceToolNames[rawName]) {
               return executeBuiltInProjectSourceTool(rawName, parsedArgs, turnChatId, turnProjectId, sourceToolCallState);
+            }
+            if (builtInGlobalToolNames[rawName]) {
+              return executeBuiltInGlobalLibraryTool(rawName, parsedArgs, 'local_user', turnChatId, turnProjectId, globalToolCallState, turnCitations);
             }
             if (!pluginApi) {
               return { ok: false, fullName: rawName, pluginName: '插件系统', toolLabel: rawName, error: '插件系统不可用' };
@@ -4136,6 +4542,9 @@
       assistantMsg.streaming = false;
       assistantMsg.content = res.content || assistantMsg.content || '';
       assistantMsg.model = res.model || effectiveApi.model;
+      if (turnCitations.length > 0) {
+        assistantMsg.sourceCitations = turnCitations.slice(0, 12);
+      }
       if (!assistantMsg.content.trim()) {
         assistantMsg.error = '模型未返回任何文本内容，请检查模型名称或稍后重试。';
       } else {
@@ -4908,6 +5317,8 @@
     openProjectHome: openProjectHome,
     buildProjectSourceTools: buildProjectSourceTools,
     executeBuiltInProjectSourceTool: executeBuiltInProjectSourceTool,
+    buildGlobalLibraryTools: buildGlobalLibraryTools,
+    executeBuiltInGlobalLibraryTool: executeBuiltInGlobalLibraryTool,
     handleChatFilesSelected: handleChatFilesSelected,
     removePendingAttachment: removePendingAttachment,
     syncAfterProjectChange: syncAfterProjectChange,

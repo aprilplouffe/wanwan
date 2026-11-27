@@ -663,6 +663,7 @@
     var colorVal = isEdit ? (existingProject.color || '#ec4899') : '#ec4899';
     var defaultPresetIdVal = isEdit ? (existingProject.defaultPresetId || '') : '';
     var instructionsVal = isEdit ? (existingProject.instructions || '') : '';
+    var allowGlobalLibVal = isEdit ? Boolean(existingProject.allowGlobalLibrary) : false;
     var missingSavedPreset = !!(defaultPresetIdVal && !presets.some(function(p) { return p && p.id === defaultPresetIdVal; }));
 
     var presetOptionsHtml = '<option value="">跟随知屿全局默认预设' + (globalDefaultPreset ? ('（' + escapeHtml(globalDefaultPreset.name) + '）') : '') + '</option>' +
@@ -717,6 +718,12 @@
                 return '<button type="button" class="aiw-proj-color-opt' + active + '" data-color-id="' + escapeHtml(cl.id) + '" style="background-color: ' + escapeHtml(cl.id) + ';" title="' + escapeHtml(cl.label) + '"></button>';
               }).join('') +
             '</div>' +
+          '</div>' +
+          '<div class="aiw-form-group">' +
+            '<label class="aiw-checkbox-label">' +
+              '<input type="checkbox" id="aiw-proj-form-allow-global-lib"' + (allowGlobalLibVal ? ' checked' : '') + '>' +
+              '<span>允许本项目内的聊天访问「全局资料库」（默认关闭，开启后仍不可访问其他项目来源）</span>' +
+            '</label>' +
           '</div>' +
           (isEdit ? '<div class="aiw-form-group aiw-proj-danger-zone"><button type="button" class="aiw-danger-btn" id="aiw-proj-delete-btn"><i class="fa-regular fa-trash-can"></i> 删除项目...</button></div>' : '') +
         '</div>' +
@@ -797,7 +804,8 @@
         curPreset !== String(defaultPresetIdVal || '') ||
         curInst !== String(instructionsVal || '').trim() ||
         currentSelectedIcon !== iconVal ||
-        currentSelectedColor !== colorVal
+        currentSelectedColor !== colorVal ||
+        (modalWrap.querySelector('#aiw-proj-form-allow-global-lib') ? modalWrap.querySelector('#aiw-proj-form-allow-global-lib').checked : false) !== allowGlobalLibVal
       );
     }
 
@@ -852,6 +860,7 @@
         description: (descInput.value || '').trim(),
         defaultPresetId: presetSel ? presetSel.value : '',
         instructions: instEl ? instEl.value.trim() : '',
+        allowGlobalLibrary: !!(modalWrap.querySelector('#aiw-proj-form-allow-global-lib') && modalWrap.querySelector('#aiw-proj-form-allow-global-lib').checked),
         icon: currentSelectedIcon,
         color: currentSelectedColor
       };

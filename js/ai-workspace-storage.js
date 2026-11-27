@@ -1036,6 +1036,23 @@
         };
       }).filter(Boolean);
     }
+    if (src.retrievalStatus) {
+      msg.retrievalStatus = String(src.retrievalStatus).trim().slice(0, 120);
+    }
+    if (Array.isArray(src.sourceCitations) && src.sourceCitations.length > 0) {
+      msg.sourceCitations = src.sourceCitations.slice(0, 12).map(function(ct) {
+        if (!ct || typeof ct !== 'object') return null;
+        var pNum = Number(ct.pageNumber);
+        return {
+          scope: ct.scope === 'project' ? 'project' : 'global',
+          fileId: String(ct.fileId || '').trim(),
+          fileName: String(ct.fileName || '').trim().slice(0, 160),
+          pageNumber: (Number.isFinite(pNum) && pNum >= 1) ? Math.floor(pNum) : null,
+          chunkIndex: Number.isFinite(Number(ct.chunkIndex)) ? Math.max(0, Math.floor(Number(ct.chunkIndex))) : 0,
+          totalChunks: Number.isFinite(Number(ct.totalChunks)) ? Math.max(1, Math.floor(Number(ct.totalChunks))) : 1
+        };
+      }).filter(function(ct) { return !!(ct && (ct.fileId || ct.fileName)); });
+    }
     return msg;
   }
 
@@ -1122,6 +1139,7 @@
       presetId: String(src.presetId || '').trim(),
       presetSnapshot: src.presetSnapshot ? buildPresetSnapshot(src.presetSnapshot) : null,
       projectId: String(src.projectId || '').trim(),
+      allowGlobalLibrary: src.allowGlobalLibrary !== false,
       branchedFromChatId: String(src.branchedFromChatId || '').trim(),
       branchedFromMessageId: String(src.branchedFromMessageId || '').trim(),
       summary: String(src.summary || '').trim(),
@@ -1621,6 +1639,7 @@
       scope: normalizeMemoryScope(src.scope),
       userId: String(src.userId || 'local_user').trim() || 'local_user',
       projectId: String(src.projectId || '').trim(),
+      allowGlobalLibrary: src.allowGlobalLibrary !== false,
       confidence: normalizeConfidenceValue(src.confidence),
       temporalState: temporalState,
       status: status,
@@ -5261,7 +5280,11 @@
     computeFileHash: computeFileHash,
     archiveChatFileToGlobalLibrary: archiveChatFileToGlobalLibrary,
     getFileAsset: getFileAsset,
-    unlinkChatFromGlobalDocs: unlinkChatFromGlobalDocs
+    unlinkChatFromGlobalDocs: unlinkChatFromGlobalDocs,
+    resolveGlobalLibraryAccess: resolveGlobalLibraryAccess,
+    listGlobalDocumentManifest: listGlobalDocumentManifest,
+    searchGlobalDocuments: searchGlobalDocuments,
+    readGlobalDocumentSegment: readGlobalDocumentSegment
   };
 
   // ===== 项目基础管理存储实现（8-A1） =====
@@ -5280,6 +5303,7 @@
       color: String(src.color || '#ec4899').trim(),
       pinned: Boolean(src.pinned),
       pinnedAt: Number(src.pinnedAt) || 0,
+      allowGlobalLibrary: Boolean(src.allowGlobalLibrary),
       // 后续阶段扩展预留字段（8-A1 暂不启用对应 UI 与引擎逻辑）
       defaultPresetId: String(src.defaultPresetId || '').trim(),
       instructions: String(src.instructions || '').trim(),
@@ -6424,5 +6448,271 @@
       }
     }
     return true;
+  }
+
+  function resolveGlobalLibraryAccess(ctx) {
+    var c = ctx && typeof ctx === 'object' ? ctx : {};
+    var chat = c.chat || null;
+    var project = c.project || null;
+    if (chat && chat.allowGlobalLibrary === false) return false;
+    var pid = String(c.projectId || (chat && chat.projectId) || '').trim();
+    if (pid) {
+      // 项目聊天默认禁止访问全局资料库，仅当用户明确在项目设置中授权时才允许
+      return !!(project && project.id === pid && project.allowGlobalLibrary === true);
+    }
+    // 普通聊天默认允许访问全局资料库，除非用户单独关闭该聊天的权限
+    return true;
+  }
+
+  function resolvePdfPageForChunk(doc, chunkText, tokens) {
+    if (!doc || doc.type !== 'pdf' || !chunkText) {
+      return null;
+    }
+    var pages = Array.isArray(doc.pages) ? doc.pages : [];
+    var qTokens = Array.isArray(tokens) ? tokens : [];
+    if (pages.length > 0 && qTokens.length > 0) {
+      var bestPage = null;
+      var bestScore = 0;
+      for (var i = 0; i < pages.length; i++) {
+        var p = pages[i];
+        var pText = String((p && p.text) || '').toLowerCase();
+        if (!pText) continue;
+        var pScore = 0;
+        for (var t = 0; t < qTokens.length; t++) {
+          if (pText.indexOf(qTokens[t]) !== -1) pScore++;
+        }
+        if (pScore > bestScore) {
+          bestScore = pScore;
+          bestPage = Number(p.page || p.pageNumber) || (i + 1);
+        }
+      }
+      if (bestPage) return bestPage;
+    }
+    var probe = String(chunkText || '').replace(/^\[第\s*\d+\s*页\]\s*/, '').trim().slice(0, 36);
+    if (probe && pages.length > 0) {
+      for (var j = 0; j < pages.length; j++) {
+        var pj = pages[j];
+        if (pj && pj.text && pj.text.indexOf(probe) !== -1) {
+          return Number(pj.page || pj.pageNumber) || (j + 1);
+        }
+      }
+    }
+    var m = String(chunkText || '').match(/\[第\s*(\d+)\s*页\]/);
+    if (m && Number(m[1]) >= 1) return Number(m[1]);
+    return null;
+  }
+
+  async function listGlobalDocumentManifest(userId, options) {
+    var uid = String(userId || 'local_user').trim() || 'local_user';
+    var opts = options && typeof options === 'object' ? options : {};
+    var docs = await listGlobalDocuments({
+      userId: uid,
+      query: opts.fileName || opts.query || '',
+      type: opts.fileType || opts.type || '',
+      sourceType: opts.sourceType || '',
+      category: opts.category || '',
+      sort: opts.sort || 'time_desc'
+    });
+    return docs.map(function(doc) {
+      var chunks = Array.isArray(doc.chunks) && doc.chunks.length ? doc.chunks : (doc.content ? chunkProjectDocumentText(doc.content) : []);
+      return {
+        fileId: doc.id,
+        name: doc.name,
+        type: doc.type,
+        category: doc.category,
+        sourceType: doc.sourceType,
+        parseStatus: doc.parseStatus,
+        parseError: doc.parseError || '',
+        totalChunks: chunks.length,
+        pageCount: doc.pageCount || 0,
+        size: doc.size,
+        uploadTime: doc.uploadTime || doc.createdAt
+      };
+    });
+  }
+
+  async function searchGlobalDocuments(userId, query, options) {
+    var uid = String(userId || '').trim();
+    var q = String(query || '').trim();
+    if (!uid || !q) return [];
+    var opts = options && typeof options === 'object' ? options : {};
+    var maxChunks = Math.max(1, Math.min(6, Number(opts.maxChunks) || 4));
+    var maxTotalChars = Math.max(400, Math.min(2200, Number(opts.maxTotalChars) || 1600));
+    var fileTypeFilter = String(opts.fileType || '').toLowerCase().trim();
+    var fileNameFilter = String(opts.fileName || '').toLowerCase().trim();
+    var fileIdFilter = String(opts.fileId || '').trim();
+
+    var docs = await listGlobalDocuments({ userId: uid });
+    if (!docs.length) return [];
+
+    var tokens = extractDocQueryTokens(q);
+    var qLower = q.toLowerCase();
+    var scored = [];
+
+    for (var d = 0; d < docs.length; d++) {
+      var doc = docs[d];
+      if (!doc || doc.userId !== uid) continue;
+      if (fileIdFilter && doc.id !== fileIdFilter) continue;
+      if (fileTypeFilter) {
+        if (fileTypeFilter === 'md') {
+          if (doc.type !== 'md' && doc.type !== 'markdown') continue;
+        } else if (doc.type !== fileTypeFilter) {
+          continue;
+        }
+      }
+      var nameLower = String(doc.name || '').toLowerCase();
+      if (fileNameFilter && nameLower.indexOf(fileNameFilter) === -1) continue;
+
+      // 仅对成功解析文本的文件检索正文；未支持解析的文件不得编造或检索正文
+      if (doc.parseStatus !== 'parsed' || !String(doc.content || '').trim()) {
+        continue;
+      }
+
+      var chunks = Array.isArray(doc.chunks) && doc.chunks.length ? doc.chunks : chunkProjectDocumentText(doc.content);
+      var nameBoost = 0;
+      for (var nt = 0; nt < tokens.length; nt++) {
+        if (nameLower.indexOf(tokens[nt]) !== -1) nameBoost += 2.5;
+      }
+
+      for (var c = 0; c < chunks.length; c++) {
+        var ch = chunks[c];
+        var txt = String(ch && ch.text || '').trim();
+        if (!txt) continue;
+        var txtLower = txt.toLowerCase();
+        var score = nameBoost;
+        if (qLower.length >= 2 && txtLower.indexOf(qLower) !== -1) {
+          score += 5.0;
+        }
+        var hitCount = 0;
+        for (var t = 0; t < tokens.length; t++) {
+          if (txtLower.indexOf(tokens[t]) !== -1) {
+            hitCount++;
+            score += tokens[t].length >= 3 ? 2.0 : 1.2;
+          }
+        }
+        if (hitCount > 0 || score >= 2.5) {
+          var pageNum = resolvePdfPageForChunk(doc, txt, tokens);
+          scored.push({
+            fileId: doc.id,
+            docId: doc.id,
+            docName: doc.name,
+            docType: doc.type,
+            category: doc.category,
+            chunkIndex: (typeof ch.index === 'number' ? ch.index : c),
+            totalChunks: chunks.length,
+            pageNumber: pageNum,
+            snippet: txt.slice(0, 560),
+            score: score,
+            uploadTime: doc.uploadTime || doc.createdAt || 0
+          });
+        }
+      }
+    }
+
+    // 内容相关性严格优先，仅在相关性相同时按上传时间辅助排序
+    scored.sort(function(a, b) {
+      if (Math.abs(b.score - a.score) > 0.01) return b.score - a.score;
+      return (b.uploadTime || 0) - (a.uploadTime || 0);
+    });
+
+    var picked = [];
+    var seenKeys = {};
+    var usedChars = 0;
+    for (var k = 0; k < scored.length && picked.length < maxChunks; k++) {
+      var item = scored[k];
+      var dedupKey = item.fileId + ':' + item.chunkIndex;
+      if (seenKeys[dedupKey]) continue;
+      if (usedChars + item.snippet.length > maxTotalChars && picked.length > 0) break;
+      seenKeys[dedupKey] = true;
+      picked.push(item);
+      usedChars += item.snippet.length;
+    }
+    return picked;
+  }
+
+  async function readGlobalDocumentSegment(userId, fileIdOrName, options) {
+    var uid = String(userId || '').trim();
+    var target = String(fileIdOrName || '').trim();
+    if (!uid || !target) return null;
+    var opts = options && typeof options === 'object' ? options : {};
+    var docs = await listGlobalDocuments({ userId: uid });
+    var targetLower = target.toLowerCase();
+    var doc = docs.find(function(d) {
+      return d && d.userId === uid && (d.id === target || d.fileId === target || String(d.name || '').toLowerCase() === targetLower);
+    });
+    if (!doc) {
+      doc = docs.find(function(d) {
+        return d && d.userId === uid && String(d.name || '').toLowerCase().indexOf(targetLower) !== -1;
+      });
+    }
+    if (!doc) return null;
+
+    if (doc.parseStatus !== 'parsed' || !String(doc.content || '').trim()) {
+      return {
+        found: false,
+        unsupported: true,
+        fileId: doc.id,
+        docName: doc.name,
+        docType: doc.type,
+        parseStatus: doc.parseStatus,
+        message: doc.parseError || '该格式暂不支持正文解析，仅保留原始文件归档'
+      };
+    }
+
+    if (opts.query && String(opts.query).trim()) {
+      var hits = await searchGlobalDocuments(uid, opts.query, {
+        fileId: doc.id,
+        maxChunks: Math.max(1, Math.min(4, Number(opts.limit) || 3)),
+        maxTotalChars: 1800
+      });
+      return {
+        found: hits.length > 0,
+        fileId: doc.id,
+        docName: doc.name,
+        docType: doc.type,
+        totalChunks: Array.isArray(doc.chunks) ? doc.chunks.length : 1,
+        pageCount: doc.pageCount || 0,
+        hasMore: false,
+        nextOffset: null,
+        segments: hits.map(function(h) {
+          return {
+            chunkIndex: h.chunkIndex,
+            chunkPosition: h.totalChunks > 1 ? ((h.chunkIndex + 1) + '/' + h.totalChunks) : '全文',
+            pageNumber: h.pageNumber || 0,
+            text: h.snippet
+          };
+        })
+      };
+    }
+
+    var chunks = Array.isArray(doc.chunks) && doc.chunks.length ? doc.chunks : chunkProjectDocumentText(doc.content);
+    var total = chunks.length;
+    var startIdx = Math.max(0, (Number(opts.offset) || 1) - 1);
+    var segCount = Math.max(1, Math.min(3, Number(opts.limit) || 2));
+    var endIdx = Math.min(total, startIdx + segCount);
+    var segments = [];
+    var used = 0;
+    for (var i = startIdx; i < endIdx; i++) {
+      var txt = String(chunks[i] && chunks[i].text || '').slice(0, 680);
+      if (used + txt.length > 1800 && segments.length > 0) break;
+      segments.push({
+        chunkIndex: i,
+        chunkPosition: (i + 1) + '/' + total,
+        pageNumber: resolvePdfPageForChunk(doc, txt),
+        text: txt
+      });
+      used += txt.length;
+    }
+    return {
+      found: segments.length > 0,
+      fileId: doc.id,
+      docName: doc.name,
+      docType: doc.type,
+      totalChunks: total,
+      pageCount: doc.pageCount || 0,
+      hasMore: endIdx < total,
+      nextOffset: endIdx < total ? (endIdx + 1) : null,
+      segments: segments
+    };
   }
 })(typeof window !== 'undefined' ? window : globalThis);
