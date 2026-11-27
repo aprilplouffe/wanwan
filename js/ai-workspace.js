@@ -601,6 +601,7 @@
         '</button>' +
       '</div>' +
 
+      '<div class="aiw-library-stage" id="aiw-library-stage" hidden></div>' +
       '<div class="aiw-main" id="aiw-main-scroll">' +
         '<div class="aiw-empty-stage" id="aiw-empty-stage">' +
           '<div class="aiw-empty-mark">' + SVG_ZHIYU_MARK + '</div>' +
@@ -4396,6 +4397,15 @@
           openSettingsView(page, 'plugins');
           return;
         }
+        if (key === 'library') {
+          setSidebarOpen(page, false);
+          if (global.AiWorkspaceLibrary && typeof global.AiWorkspaceLibrary.openLibraryPage === 'function') {
+            global.AiWorkspaceLibrary.openLibraryPage(page);
+          } else {
+            notifyToast('资料库模块尚未加载');
+          }
+          return;
+        }
         if (key === 'projects') {
           setSidebarOpen(page, false);
           if (global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openProjectsCenter === 'function') {
@@ -4612,6 +4622,9 @@
     syncContextStrip(page);
     updateMainStage(page);
     bindEvents(page);
+    if (global.AiWorkspaceLibrary && typeof global.AiWorkspaceLibrary.shouldRestoreOnLoad === 'function' && global.AiWorkspaceLibrary.shouldRestoreOnLoad()) {
+      global.AiWorkspaceLibrary.openLibraryPage(page);
+    }
     if (_state.effectiveApi && _state.effectiveApi.configured) {
       triggerBackgroundMemoryQueue(_state.effectiveApi);
     }

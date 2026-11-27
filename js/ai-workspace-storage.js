@@ -33,7 +33,9 @@
     PROJECT_PREFIX: 'aiw_project:',
     PROJECT_MEMORY_SETTINGS_PREFIX: 'aiw_proj_mem_settings:',
     PROJECT_DOC_IDS_PREFIX: 'aiw_proj_doc_ids:',
-    PROJECT_DOC_PREFIX: 'aiw_proj_doc:'
+    PROJECT_DOC_PREFIX: 'aiw_proj_doc:',
+    GLOBAL_DOC_IDS: 'aiw_global_doc_ids',
+    GLOBAL_DOC_PREFIX: 'aiw_global_doc:'
   };
 
   var MEMORY_STRATEGY_PRESETS = {
@@ -5244,7 +5246,13 @@
     searchProjectDocuments: searchProjectDocuments,
     listProjectDocumentManifest: listProjectDocumentManifest,
     readProjectDocumentSegment: readProjectDocumentSegment,
-    chunkProjectDocumentText: chunkProjectDocumentText
+    chunkProjectDocumentText: chunkProjectDocumentText,
+    listGlobalDocuments: listGlobalDocuments,
+    getGlobalDocument: getGlobalDocument,
+    saveGlobalDocument: saveGlobalDocument,
+    renameGlobalDocument: renameGlobalDocument,
+    updateGlobalDocumentMeta: updateGlobalDocumentMeta,
+    deleteGlobalDocument: deleteGlobalDocument
   };
 
   // ===== 项目基础管理存储实现（8-A1） =====
@@ -5835,5 +5843,181 @@
       usedChars += item.snippet.length;
     }
     return picked;
+  }
+
+  // ===== 全局资料库存储实现（第一阶段：独立于项目的用户级资料，不混入项目来源） =====
+  function generateGlobalDocId() {
+    return 'gdoc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function inferGlobalDocCategory(type, name) {
+    var t = String(type || '').toLowerCase();
+    if (t === 'pdf') return 'PDF 文档';
+    if (t === 'docx') return 'Word 文档';
+    if (t === 'md' || t === 'markdown') return 'Markdown 笔记';
+    return '文本资料';
+  }
+
+  function normalizeGlobalDocRecord(raw, forcedId) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var content = String(src.content || '');
+    var type = String(src.type || 'txt').toLowerCase();
+    var name = String(src.name || '未命名资料').trim() || '未命名资料';
+    var pages = Array.isArray(src.pages) ? src.pages : null;
+    return {
+      id: String(forcedId || src.id || generateGlobalDocId()),
+      scope: 'global',
+      userId: String(src.userId || 'local_user').trim() || 'local_user',
+      projectId: '',
+      name: name,
+      type: type,
+      size: Number(src.size) || 0,
+      category: String(src.category || inferGlobalDocCategory(type, name)).trim() || '未分类',
+      tags: Array.isArray(src.tags) ? src.tags.slice() : [],
+      content: content,
+      pageCount: Number(src.pageCount) || (pages ? pages.length : 0),
+      pages: pages,
+      chunks: Array.isArray(src.chunks) ? src.chunks : chunkProjectDocumentText(content),
+      parseStatus: src.parseStatus === 'failed' ? 'failed' : 'parsed',
+      parseError: String(src.parseError || ''),
+      createdAt: Number(src.createdAt) || Date.now(),
+      updatedAt: Number(src.updatedAt) || Date.now()
+    };
+  }
+
+  async function listGlobalDocuments(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var userId = String(opts.userId || '').trim();
+    var typeFilter = String(opts.type || '').toLowerCase().trim();
+    var catFilter = String(opts.category || '').trim();
+    var q = String(opts.query || '').toLowerCase().trim();
+    var sort = String(opts.sort || 'time_desc');
+
+    var ids = await dbGetConfig(KEYS.GLOBAL_DOC_IDS);
+    if (!Array.isArray(ids)) ids = [];
+    var list = [];
+    for (var i = 0; i < ids.length; i++) {
+      var gid = ids[i];
+      var raw = await dbGetConfig(KEYS.GLOBAL_DOC_PREFIX + gid);
+      if (raw && typeof raw === 'object') {
+        var doc = normalizeGlobalDocRecord(raw, gid);
+        if (userId && doc.userId !== userId) continue;
+        if (typeFilter) {
+          if (typeFilter === 'md') {
+            if (doc.type !== 'md' && doc.type !== 'markdown') continue;
+          } else if (doc.type !== typeFilter) {
+            continue;
+          }
+        }
+        if (catFilter && doc.category !== catFilter) continue;
+        if (q && String(doc.name || '').toLowerCase().indexOf(q) === -1) continue;
+        list.push(doc);
+      }
+    }
+
+    list.sort(function(a, b) {
+      if (sort === 'time_asc') return (a.createdAt || 0) - (b.createdAt || 0);
+      if (sort === 'name_asc') return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+      if (sort === 'size_desc') return (Number(b.size) || 0) - (Number(a.size) || 0);
+      return (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0);
+    });
+    return list;
+  }
+
+  async function getGlobalDocument(docId) {
+    if (!docId) return null;
+    var raw = await dbGetConfig(KEYS.GLOBAL_DOC_PREFIX + docId);
+    if (!raw || typeof raw !== 'object') return null;
+    return normalizeGlobalDocRecord(raw, docId);
+  }
+
+  async function saveGlobalDocument(docData) {
+    var src = docData && typeof docData === 'object' ? docData : {};
+    var rawContent = String(src.content || '').trim();
+    if (!rawContent && src.parseStatus !== 'failed') {
+      throw new Error('文件内容为空，无法保存');
+    }
+    if (rawContent.length > MAX_PROJECT_DOC_CHARS) {
+      throw new Error('文件文本超过单文件上限（' + MAX_PROJECT_DOC_CHARS + ' 字），请拆分后上传');
+    }
+
+    var docId = src.id || generateGlobalDocId();
+    var now = Date.now();
+    var chunks = Array.isArray(src.chunks)
+      ? src.chunks
+      : (rawContent ? await chunkProjectDocumentTextAsync(rawContent) : []);
+
+    var doc = normalizeGlobalDocRecord({
+      id: docId,
+      scope: 'global',
+      userId: src.userId || 'local_user',
+      projectId: '',
+      name: src.name || '未命名资料',
+      type: src.type || 'txt',
+      size: Number(src.size) || rawContent.length,
+      category: src.category,
+      tags: src.tags,
+      content: rawContent,
+      pageCount: src.pageCount,
+      pages: src.pages,
+      chunks: chunks,
+      parseStatus: src.parseStatus || 'parsed',
+      parseError: src.parseError || '',
+      createdAt: src.createdAt || now,
+      updatedAt: now
+    }, docId);
+
+    try {
+      await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + docId, doc);
+      var ids = await dbGetConfig(KEYS.GLOBAL_DOC_IDS);
+      if (!Array.isArray(ids)) ids = [];
+      if (ids.indexOf(docId) === -1) {
+        ids.unshift(docId);
+        await dbPutConfig(KEYS.GLOBAL_DOC_IDS, ids);
+      }
+    } catch (err) {
+      var errMsg = (err && err.message) ? err.message : String(err || '');
+      if (/quota|exceeded|storage/i.test(errMsg) || (err && err.name === 'QuotaExceededError')) {
+        throw new Error('浏览器本地存储空间不足，请删除部分旧资料或上传更小的文件');
+      }
+      throw err;
+    }
+    return doc;
+  }
+
+  async function renameGlobalDocument(docId, newName) {
+    var doc = await getGlobalDocument(docId);
+    if (!doc) return null;
+    var clean = String(newName || '').trim().slice(0, 120);
+    if (!clean) throw new Error('文件名不能为空');
+    doc.name = clean;
+    doc.updatedAt = Date.now();
+    await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + docId, doc);
+    return doc;
+  }
+
+  async function updateGlobalDocumentMeta(docId, patch) {
+    var doc = await getGlobalDocument(docId);
+    if (!doc) return null;
+    var src = patch && typeof patch === 'object' ? patch : {};
+    if (typeof src.category === 'string') doc.category = src.category.trim() || '未分类';
+    if (Array.isArray(src.tags)) doc.tags = src.tags.slice();
+    doc.updatedAt = Date.now();
+    await dbPutConfig(KEYS.GLOBAL_DOC_PREFIX + docId, doc);
+    return doc;
+  }
+
+  async function deleteGlobalDocument(docId) {
+    if (!docId) return false;
+    await dbDeleteConfig(KEYS.GLOBAL_DOC_PREFIX + docId);
+    var ids = await dbGetConfig(KEYS.GLOBAL_DOC_IDS);
+    if (Array.isArray(ids)) {
+      var idx = ids.indexOf(docId);
+      if (idx !== -1) {
+        ids.splice(idx, 1);
+        await dbPutConfig(KEYS.GLOBAL_DOC_IDS, ids);
+      }
+    }
+    return true;
   }
 })(typeof window !== 'undefined' ? window : globalThis);

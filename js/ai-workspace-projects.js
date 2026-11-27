@@ -1143,11 +1143,13 @@
       var pdfDoc = await loadingTask.promise;
       var maxPages = pdfDoc.numPages || 0;
       var textParts = [];
+      var pagesArr = [];
       for (var i = 1; i <= maxPages; i++) {
         var pdfPage = await pdfDoc.getPage(i);
         var textContent = await pdfPage.getTextContent();
-        var pageText = (textContent.items || []).map(function(item) { return item.str || ''; }).join(' ');
-        if (pageText.trim()) textParts.push(pageText);
+        var pageText = (textContent.items || []).map(function(item) { return item.str || ''; }).join(' ').trim();
+        pagesArr.push({ page: i, text: pageText });
+        if (pageText) textParts.push(pageText);
         if (i % 5 === 0) {
           await new Promise(function(r) { setTimeout(r, 0); });
         }
@@ -1156,7 +1158,7 @@
       if (!pdfText) {
         throw new Error('PDF 文件无可用文本（可能是纯扫描图片）');
       }
-      return { name: name, type: ext, size: size, content: pdfText };
+      return { name: name, type: ext, size: size, content: pdfText, pageCount: maxPages, pages: pagesArr };
     }
 
     throw new Error('不支持的文件格式（.' + (ext || '未知') + '），目前仅支持 TXT、Markdown、PDF、DOCX');
