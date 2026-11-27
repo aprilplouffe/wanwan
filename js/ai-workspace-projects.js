@@ -786,9 +786,56 @@
       });
     });
 
-    modalWrap.querySelector('.aiw-ws-modal-close').addEventListener('click', function() { modalWrap.remove(); });
-    modalWrap.querySelector('#aiw-proj-form-cancel').addEventListener('click', function() { modalWrap.remove(); });
-    modalWrap.addEventListener('click', function(e) { if (e.target === modalWrap) modalWrap.remove(); });
+    function isFormDirty() {
+      var curName = (modalWrap.querySelector('#aiw-proj-form-name').value || '').trim();
+      var curDesc = (modalWrap.querySelector('#aiw-proj-form-desc').value || '').trim();
+      var curPreset = presetSel ? presetSel.value : '';
+      var curInst = instEl ? instEl.value.trim() : '';
+      return (
+        curName !== String(nameVal || '').trim() ||
+        curDesc !== String(descVal || '').trim() ||
+        curPreset !== String(defaultPresetIdVal || '') ||
+        curInst !== String(instructionsVal || '').trim() ||
+        currentSelectedIcon !== iconVal ||
+        currentSelectedColor !== colorVal
+      );
+    }
+
+    function requestCloseEditModal() {
+      if (!isFormDirty()) {
+        modalWrap.remove();
+        return;
+      }
+      var discardWrap = document.createElement('div');
+      discardWrap.className = 'aiw-ws-modal-backdrop open aiw-proj-submodal-backdrop';
+      discardWrap.style.zIndex = '68';
+      discardWrap.innerHTML =
+        '<div class="aiw-ws-modal aiw-projects-delete-modal" role="dialog" aria-modal="true">' +
+          '<div class="aiw-ws-modal-head">' +
+            '<div class="aiw-ws-modal-title">放弃未保存的更改？</div>' +
+            '<button type="button" class="aiw-ws-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
+          '</div>' +
+          '<div class="aiw-ws-modal-body">' +
+            '<p class="aiw-st-modal-msg">当前项目设置中有尚未保存的修改，确定要放弃并关闭吗？</p>' +
+          '</div>' +
+          '<div class="aiw-ws-modal-foot">' +
+            '<button type="button" class="aiw-secondary-btn" id="aiw-proj-discard-no">继续编辑</button>' +
+            '<button type="button" class="aiw-danger-btn" id="aiw-proj-discard-yes">放弃更改</button>' +
+          '</div>' +
+        '</div>';
+      page.appendChild(discardWrap);
+      discardWrap.querySelector('.aiw-ws-modal-close').addEventListener('click', function() { discardWrap.remove(); });
+      discardWrap.querySelector('#aiw-proj-discard-no').addEventListener('click', function() { discardWrap.remove(); });
+      discardWrap.addEventListener('click', function(e) { if (e.target === discardWrap) discardWrap.remove(); });
+      discardWrap.querySelector('#aiw-proj-discard-yes').addEventListener('click', function() {
+        discardWrap.remove();
+        modalWrap.remove();
+      });
+    }
+
+    modalWrap.querySelector('.aiw-ws-modal-close').addEventListener('click', requestCloseEditModal);
+    modalWrap.querySelector('#aiw-proj-form-cancel').addEventListener('click', requestCloseEditModal);
+    modalWrap.addEventListener('click', function(e) { if (e.target === modalWrap) requestCloseEditModal(); });
 
     modalWrap.querySelector('#aiw-proj-form-save').addEventListener('click', async function() {
       var nameInput = modalWrap.querySelector('#aiw-proj-form-name');
@@ -1442,11 +1489,166 @@
     });
   }
 
+
+  function closeProjectPopoverMenu(page) {
+    var root = page || document;
+    var existing = root.querySelector('#aiw-proj-popover-menu');
+    if (existing) {
+      if (typeof existing._cleanup === 'function') existing._cleanup();
+      existing.remove();
+    }
+  }
+
+  function openProjectPopoverMenu(page, project, triggerEl, handlers) {
+    if (!page || !project) return;
+    var opts = handlers && typeof handlers === 'object' ? handlers : {};
+    closeProjectPopoverMenu(page);
+
+    var menu = document.createElement('div');
+    menu.id = 'aiw-proj-popover-menu';
+    menu.className = 'aiw-proj-popover';
+    menu.setAttribute('role', 'menu');
+
+    var isHomeMode = opts.mode === 'home';
+    var pinLabel = project.pinned ? '取消置顶' : '置顶项目';
+
+    var itemsHtml = '';
+    if (!isHomeMode) {
+      itemsHtml +=
+        '<button type="button" class="aiw-proj-popover-item" role="menuitem" data-pop-act="rename">' +
+          '<i class="fa-solid fa-i-cursor"></i><span>重命名项目</span>' +
+        '</button>' +
+        '<button type="button" class="aiw-proj-popover-item" role="menuitem" data-pop-act="settings">' +
+          '<i class="fa-solid fa-gear"></i><span>项目设置</span>' +
+        '</button>' +
+        '<button type="button" class="aiw-proj-popover-item" role="menuitem" data-pop-act="home">' +
+          '<i class="fa-regular fa-compass"></i><span>项目主页</span>' +
+        '</button>' +
+        '<button type="button" class="aiw-proj-popover-item" role="menuitem" data-pop-act="pin">' +
+          '<i class="fa-solid fa-thumbtack"></i><span>' + pinLabel + '</span>' +
+        '</button>' +
+        '<div class="aiw-proj-popover-divider"></div>' +
+        '<button type="button" class="aiw-proj-popover-item is-danger" role="menuitem" data-pop-act="delete">' +
+          '<i class="fa-regular fa-trash-can"></i><span>删除项目</span>' +
+        '</button>';
+    } else {
+      itemsHtml +=
+        '<button type="button" class="aiw-proj-popover-item" role="menuitem" data-pop-act="settings">' +
+          '<i class="fa-solid fa-gear"></i><span>项目设置</span>' +
+        '</button>' +
+        '<button type="button" class="aiw-proj-popover-item" role="menuitem" data-pop-act="pin">' +
+          '<i class="fa-solid fa-thumbtack"></i><span>' + pinLabel + '</span>' +
+        '</button>';
+    }
+
+    menu.innerHTML = itemsHtml;
+    page.appendChild(menu);
+
+    // 定位到触发按钮附近，并在空间不足时自动翻转
+    if (triggerEl && typeof triggerEl.getBoundingClientRect === 'function') {
+      var pageRect = page.getBoundingClientRect();
+      var btnRect = triggerEl.getBoundingClientRect();
+      var menuW = menu.offsetWidth || 176;
+      var menuH = menu.offsetHeight || 200;
+      var left = btnRect.right - pageRect.left - menuW;
+      if (left < 8) left = Math.max(8, btnRect.left - pageRect.left);
+      if (left + menuW > pageRect.width - 8) left = Math.max(8, pageRect.width - menuW - 8);
+      var top = btnRect.bottom - pageRect.top + 6;
+      if (top + menuH > pageRect.height - 12) {
+        top = Math.max(8, btnRect.top - pageRect.top - menuH - 6);
+      }
+      menu.style.left = Math.round(left) + 'px';
+      menu.style.top = Math.round(top) + 'px';
+    }
+
+    function onDocClick(e) {
+      if (!menu.contains(e.target) && (!triggerEl || !triggerEl.contains(e.target))) {
+        closeProjectPopoverMenu(page);
+      }
+    }
+    function onKeyDown(e) {
+      if (e.key === 'Escape') {
+        closeProjectPopoverMenu(page);
+      }
+    }
+    menu._cleanup = function() {
+      document.removeEventListener('mousedown', onDocClick, true);
+      document.removeEventListener('touchstart', onDocClick, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+    setTimeout(function() {
+      document.addEventListener('mousedown', onDocClick, true);
+      document.addEventListener('touchstart', onDocClick, true);
+      document.addEventListener('keydown', onKeyDown, true);
+    }, 0);
+
+    var doneCb = function() {
+      if (typeof opts.onDone === 'function') opts.onDone();
+    };
+
+    var renBtn = menu.querySelector('[data-pop-act="rename"]');
+    if (renBtn) renBtn.addEventListener('click', function() {
+      closeProjectPopoverMenu(page);
+      openProjectRenameModal(page, project, doneCb);
+    });
+
+    var setBtn = menu.querySelector('[data-pop-act="settings"]');
+    if (setBtn) setBtn.addEventListener('click', function() {
+      closeProjectPopoverMenu(page);
+      openProjectEditModal(page, project, doneCb, function() {
+        if (typeof opts.onDeleted === 'function') opts.onDeleted();
+        else doneCb();
+      });
+    });
+
+    var homeBtn = menu.querySelector('[data-pop-act="home"]');
+    if (homeBtn) homeBtn.addEventListener('click', function() {
+      closeProjectPopoverMenu(page);
+      if (typeof opts.onOpenHome === 'function') {
+        opts.onOpenHome(project.id);
+      } else if (W() && typeof W().openProjectHome === 'function') {
+        W().openProjectHome(page, project.id);
+      }
+    });
+
+    var pinBtn = menu.querySelector('[data-pop-act="pin"]');
+    if (pinBtn) pinBtn.addEventListener('click', async function() {
+      closeProjectPopoverMenu(page);
+      if (S() && typeof S().togglePinProject === 'function') {
+        var updated = await S().togglePinProject(project.id);
+        await syncWorkspaceState({ updatedProjectId: project.id });
+        notifyToast(updated && updated.pinned ? '已置顶项目' : '已取消置顶');
+        doneCb();
+      }
+    });
+
+    var delBtn = menu.querySelector('[data-pop-act="delete"]');
+    if (delBtn) delBtn.addEventListener('click', function() {
+      closeProjectPopoverMenu(page);
+      openProjectDeleteConfirmModal(page, project, function() {
+        if (typeof opts.onDeleted === 'function') opts.onDeleted();
+        else doneCb();
+      });
+    });
+  }
+
   global.AiWorkspaceProjects = {
     openProjectsCenter: openProjectsCenter,
     openProjectDetail: openProjectDetail,
     openProjectQuickActionsModal: openProjectQuickActionsModal,
+    openProjectPopoverMenu: openProjectPopoverMenu,
+    closeProjectPopoverMenu: closeProjectPopoverMenu,
+    openProjectRenameModal: openProjectRenameModal,
+    openProjectEditModal: openProjectEditModal,
+    openProjectDeleteConfirmModal: openProjectDeleteConfirmModal,
+    openChatRenameModal: openChatRenameModal,
+    openChatDeleteConfirmModal: openChatDeleteConfirmModal,
+    openDocPreviewModal: openDocPreviewModal,
+    openDocRenameModal: openDocRenameModal,
+    openDocDeleteConfirmModal: openDocDeleteConfirmModal,
     renderProjectIconHtml: renderProjectIconHtml,
+    formatBytes: formatBytes,
+    formatTime: formatTime,
     openProjectDocumentsModal: openProjectDocumentsModal,
     parseUploadedFile: parseUploadedFile,
     closeProjectsModal: closeProjectsModal,

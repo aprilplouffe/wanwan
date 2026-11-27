@@ -5231,6 +5231,7 @@
     createProject: createProject,
     updateProject: updateProject,
     renameProject: renameProject,
+    togglePinProject: togglePinProject,
     deleteProject: deleteProject,
     listProjectChats: listProjectChats,
     assignChatToProject: assignChatToProject,
@@ -5258,6 +5259,8 @@
       description: String(src.description || '').trim(),
       icon: String(src.icon || 'fa-solid fa-folder').trim(),
       color: String(src.color || '#ec4899').trim(),
+      pinned: Boolean(src.pinned),
+      pinnedAt: Number(src.pinnedAt) || 0,
       // 后续阶段扩展预留字段（8-A1 暂不启用对应 UI 与引擎逻辑）
       defaultPresetId: String(src.defaultPresetId || '').trim(),
       instructions: String(src.instructions || '').trim(),
@@ -5283,6 +5286,15 @@
       }
     }
     items.sort(function(a, b) {
+      var ap = a.pinned ? 1 : 0;
+      var bp = b.pinned ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      if (ap && bp) {
+        var pa = a.pinnedAt || a.createdAt || 0;
+        var pb = b.pinnedAt || b.createdAt || 0;
+        if (pa !== pb) return pb - pa;
+        return String(a.id || '').localeCompare(String(b.id || ''));
+      }
       return (b.updatedAt || 0) - (a.updatedAt || 0);
     });
     return items;
@@ -5330,6 +5342,19 @@
     var clean = String(nextName || '').trim();
     if (!id || !clean) return null;
     return updateProject(id, { name: clean });
+  }
+
+  async function togglePinProject(id) {
+    if (!id) return null;
+    var existing = await getProject(id);
+    if (!existing) return null;
+    var nextPinned = !existing.pinned;
+    var updated = normalizeProjectRecord(Object.assign({}, existing, {
+      pinned: nextPinned,
+      pinnedAt: nextPinned ? Date.now() : 0
+    }), existing.id);
+    await dbPutConfig(KEYS.PROJECT_PREFIX + updated.id, updated);
+    return updated;
   }
 
   async function listProjectChats(projectId) {
