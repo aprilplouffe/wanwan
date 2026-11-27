@@ -571,6 +571,7 @@
           '<button type="button" class="aiw-circle-btn" id="aiw-sidebar-btn" title="打开侧边栏" aria-label="打开侧边栏">' +
             SVG_MENU_LINES +
           '</button>' +
+          '<button type="button" class="aiw-circle-btn aiw-topbar-proj-btn" id="aiw-topbar-project-btn" title="返回项目主页" aria-label="返回项目主页" hidden></button>' +
         '</div>' +
         '<div class="aiw-topbar-center">' +
           '<span class="aiw-brand-pill" id="aiw-topbar-title">知屿</span>' +
@@ -586,10 +587,6 @@
       '</div>' +
 
       '<div class="aiw-context-strip" id="aiw-context-strip">' +
-        '<button type="button" class="aiw-ctx-pill aiw-ctx-proj-pill" id="aiw-ctx-project-btn" title="返回项目主页" hidden>' +
-          '<i class="fa-regular fa-folder"></i>' +
-          '<span class="aiw-ctx-label" id="aiw-ctx-project-label">项目</span>' +
-        '</button>' +
         '<button type="button" class="aiw-ctx-pill" id="aiw-ctx-model-btn" title="切换模型">' +
           '<span class="aiw-ctx-dot" id="aiw-ctx-model-dot"></span>' +
           '<span class="aiw-ctx-label" id="aiw-ctx-model-label">加载模型...</span>' +
@@ -969,17 +966,37 @@
 
   function syncContextStrip(page) {
     if (!page) return;
-    var projBtn = page.querySelector('#aiw-ctx-project-btn');
-    var projLabel = page.querySelector('#aiw-ctx-project-label');
-    if (projBtn && projLabel) {
+    var projBtn = page.querySelector('#aiw-topbar-project-btn');
+    if (projBtn) {
       var chatProjId = (_state.activeChat && _state.activeChat.projectId) ? String(_state.activeChat.projectId).trim() : '';
-      if (chatProjId) {
-        var matchedP = (_state.projects || []).find(function(p) { return p && p.id === chatProjId; });
-        projLabel.textContent = matchedP ? matchedP.name : '项目主页';
+      var activeProjId = chatProjId || (_state.activeProjectHomeId ? String(_state.activeProjectHomeId).trim() : '');
+      if (activeProjId) {
+        var matchedP = (_state.projects || []).find(function(p) { return p && p.id === activeProjId; });
+        var iconRenderer = (global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.renderProjectIconHtml === 'function')
+          ? global.AiWorkspaceProjects.renderProjectIconHtml
+          : function(ic) { return '<i class="' + escapeHtml(ic || 'fa-regular fa-folder') + '"></i>'; };
+        var pColor = (matchedP && matchedP.color) ? matchedP.color : '';
+        var pName = (matchedP && matchedP.name) ? matchedP.name : '项目主页';
+        projBtn.innerHTML = iconRenderer(matchedP ? matchedP.icon : '');
+        projBtn.title = '返回项目：' + pName;
+        projBtn.setAttribute('aria-label', '返回项目：' + pName);
+        if (pColor) {
+          projBtn.style.color = pColor;
+          projBtn.style.background = pColor + '1a';
+          projBtn.style.borderColor = pColor + '33';
+        } else {
+          projBtn.style.color = '';
+          projBtn.style.background = '';
+          projBtn.style.borderColor = '';
+        }
         projBtn.hidden = false;
-        projBtn.setAttribute('data-back-project-id', chatProjId);
+        projBtn.setAttribute('data-back-project-id', activeProjId);
       } else {
         projBtn.hidden = true;
+        projBtn.innerHTML = '';
+        projBtn.style.color = '';
+        projBtn.style.background = '';
+        projBtn.style.borderColor = '';
         projBtn.removeAttribute('data-back-project-id');
       }
     }
@@ -4897,10 +4914,10 @@
       closeAiWorkspacePage();
     });
 
-    var ctxProjBtn = page.querySelector('#aiw-ctx-project-btn');
-    if (ctxProjBtn) {
-      ctxProjBtn.addEventListener('click', function() {
-        var pid = ctxProjBtn.getAttribute('data-back-project-id');
+    var topbarProjBtn = page.querySelector('#aiw-topbar-project-btn');
+    if (topbarProjBtn) {
+      topbarProjBtn.addEventListener('click', function() {
+        var pid = topbarProjBtn.getAttribute('data-back-project-id');
         if (pid) openProjectHome(page, pid);
       });
     }

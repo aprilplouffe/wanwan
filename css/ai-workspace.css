@@ -7772,3 +7772,20 @@
   border-color: #818cf8;
   color: #4338ca;
 }
+
+
+/* ===== 顶部导航栏左上角项目图标按钮 ===== */
+.aiw-topbar-left {
+  flex-shrink: 0;
+}
+.aiw-topbar-right {
+  flex-shrink: 0;
+}
+.aiw-topbar-proj-btn[hidden] {
+  display: none !important;
+}
+.aiw-topbar-proj-btn {
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
