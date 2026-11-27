@@ -6626,3 +6626,279 @@
   background: var(--aiw-surface-2);
   color: var(--aiw-text);
 }
+
+/* ===== 知屿 8-A6 补充：浮层操作菜单与项目主页样式 ===== */
+.aiw-sb-proj-pin {
+  font-size: 10px;
+  color: var(--aiw-hint);
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+.aiw-proj-popover {
+  position: absolute;
+  z-index: 75;
+  min-width: 176px;
+  max-width: 220px;
+  background: var(--aiw-card);
+  border: 1px solid var(--aiw-border-strong);
+  border-radius: 14px;
+  padding: 6px;
+  box-shadow: var(--aiw-shadow-float);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.aiw-proj-popover-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+  color: var(--aiw-text);
+  font-size: 13px;
+  font-weight: 450;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.aiw-proj-popover-item:hover,
+.aiw-proj-popover-item:active {
+  background: var(--aiw-surface-2);
+}
+
+.aiw-proj-popover-item i {
+  width: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--aiw-sub);
+  flex-shrink: 0;
+}
+
+.aiw-proj-popover-item.is-danger {
+  color: #e11d48;
+}
+
+.aiw-proj-popover-item.is-danger i {
+  color: #e11d48;
+}
+
+.aiw-proj-popover-item.is-danger:hover {
+  background: rgba(225, 29, 72, 0.1);
+}
+
+.aiw-proj-popover-divider {
+  height: 1px;
+  background: var(--aiw-border);
+  margin: 4px 6px;
+}
+
+/* 项目主页（主舞台视图） */
+.aiw-project-home-stage {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 18px 16px 24px;
+  box-sizing: border-box;
+}
+
+.aiw-project-home-stage[hidden] {
+  display: none;
+}
+
+.aiw-proj-home-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.aiw-proj-home-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aiw-proj-home-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-proj-home-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.aiw-proj-home-title-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-proj-home-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--aiw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiw-proj-home-desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--aiw-sub);
+  line-height: 1.45;
+}
+
+.aiw-proj-home-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--aiw-border);
+  padding-bottom: 8px;
+}
+
+.aiw-proj-home-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--aiw-sub);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.aiw-proj-home-tab span {
+  font-size: 11.5px;
+  color: var(--aiw-hint);
+}
+
+.aiw-proj-home-tab:hover {
+  background: var(--aiw-surface-2);
+  color: var(--aiw-text);
+}
+
+.aiw-proj-home-tab.active {
+  background: var(--aiw-surface-2);
+  color: var(--aiw-text);
+  font-weight: 600;
+}
+
+.aiw-proj-home-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aiw-proj-home-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: 13px;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.aiw-proj-home-row:hover {
+  background: var(--aiw-surface-2);
+  border-color: var(--aiw-border-strong);
+}
+
+.aiw-proj-home-row-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-proj-home-doc-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.aiw-proj-home-doc-ic {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.aiw-proj-home-row-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--aiw-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aiw-proj-home-row-sub {
+  font-size: 11.5px;
+  color: var(--aiw-sub);
+  margin-top: 2px;
+}
+
+.aiw-proj-home-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.aiw-proj-home-sources-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.aiw-proj-home-sources-hint {
+  font-size: 12px;
+  color: var(--aiw-sub);
+}
+
+.aiw-proj-home-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 28px 16px;
+  border-radius: 14px;
+  background: var(--aiw-surface);
+  border: 1px dashed var(--aiw-border-strong);
+  gap: 8px;
+}
+
+.aiw-proj-home-empty-icon {
+  font-size: 24px;
+  color: var(--aiw-hint);
+}
+
+.aiw-proj-home-empty-text {
+  font-size: 12.5px;
+  color: var(--aiw-sub);
+}
