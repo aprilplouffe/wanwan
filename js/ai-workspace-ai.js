@@ -1337,7 +1337,7 @@
           pluginName: '',
           toolLabel: tc.function.name,
           status: 'running',
-          summaryText: '正在调用...',
+          summaryText: '正在使用 ' + (tc.function.name || '工具') + '…',
           error: '',
           argumentsText: rawArgs,
           resultText: '',

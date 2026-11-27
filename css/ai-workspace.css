@@ -5671,6 +5671,25 @@
   word-break: break-all;
 }
 
+.aiw-tool-retry-btn {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.aiw-tool-retry-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
 /* 7-A4: MCP 管理与确认弹窗样式 */
 .aiw-plg-tabs-bar {
   display: flex;
