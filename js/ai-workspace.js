@@ -37,6 +37,7 @@
     projectVisibleLimit: {},
     activeProjectHomeId: null,
     activeProjectHomeTab: 'chats',
+    activeProjectHomeDocSort: 'time_desc',
     activeChatId: null,
     activeChat: null,
     messages: [],
@@ -74,6 +75,36 @@
 
 
   var SIDEBAR_PROJ_UI_KEY = 'wanwan_aiw_sidebar_proj_ui_v1';
+  var PROJ_HOME_UI_KEY = 'wanwan_aiw_project_home_ui_v1';
+
+  function loadProjectHomeUiState() {
+    try {
+      var raw = global.localStorage ? global.localStorage.getItem(PROJ_HOME_UI_KEY) : null;
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.tab === 'chats' || parsed.tab === 'sources') {
+          _state.activeProjectHomeTab = parsed.tab;
+        }
+        if (parsed.docSort) {
+          _state.activeProjectHomeDocSort = String(parsed.docSort);
+        }
+        return parsed.projectId ? String(parsed.projectId) : '';
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function saveProjectHomeUiState() {
+    try {
+      if (!global.localStorage) return;
+      global.localStorage.setItem(PROJ_HOME_UI_KEY, JSON.stringify({
+        projectId: _state.activeProjectHomeId || '',
+        tab: _state.activeProjectHomeTab || 'chats',
+        docSort: _state.activeProjectHomeDocSort || 'time_desc'
+      }));
+    } catch (_) {}
+  }
 
   function loadSidebarProjUiState() {
     try {
@@ -554,6 +585,10 @@
       '</div>' +
 
       '<div class="aiw-context-strip" id="aiw-context-strip">' +
+        '<button type="button" class="aiw-ctx-pill aiw-ctx-proj-pill" id="aiw-ctx-project-btn" title="返回项目主页" hidden>' +
+          '<i class="fa-regular fa-folder"></i>' +
+          '<span class="aiw-ctx-label" id="aiw-ctx-project-label">项目</span>' +
+        '</button>' +
         '<button type="button" class="aiw-ctx-pill" id="aiw-ctx-model-btn" title="切换模型">' +
           '<span class="aiw-ctx-dot" id="aiw-ctx-model-dot"></span>' +
           '<span class="aiw-ctx-label" id="aiw-ctx-model-label">加载模型...</span>' +
@@ -930,6 +965,21 @@
 
   function syncContextStrip(page) {
     if (!page) return;
+    var projBtn = page.querySelector('#aiw-ctx-project-btn');
+    var projLabel = page.querySelector('#aiw-ctx-project-label');
+    if (projBtn && projLabel) {
+      var chatProjId = (_state.activeChat && _state.activeChat.projectId) ? String(_state.activeChat.projectId).trim() : '';
+      if (chatProjId) {
+        var matchedP = (_state.projects || []).find(function(p) { return p && p.id === chatProjId; });
+        projLabel.textContent = matchedP ? matchedP.name : '项目主页';
+        projBtn.hidden = false;
+        projBtn.setAttribute('data-back-project-id', chatProjId);
+      } else {
+        projBtn.hidden = true;
+        projBtn.removeAttribute('data-back-project-id');
+      }
+    }
+
     var dotEl = page.querySelector('#aiw-ctx-model-dot');
     var modelLabel = page.querySelector('#aiw-ctx-model-label');
     var presetLabel = page.querySelector('#aiw-ctx-preset-label');
@@ -2830,6 +2880,17 @@
     }
   }
 
+  function restoreComposerToBottom(page) {
+    if (!page) return;
+    var composerWrap = page.querySelector('.aiw-composer-wrap');
+    var mainScroll = page.querySelector('#aiw-main-scroll');
+    if (!composerWrap || !mainScroll || !mainScroll.parentNode) return;
+    if (composerWrap.parentNode !== page) {
+      mainScroll.insertAdjacentElement('afterend', composerWrap);
+    }
+    page.classList.remove('is-project-home');
+  }
+
   async function renderProjectHomeStage(page) {
     if (!page || !_state.activeProjectHomeId) return;
     var host = page.querySelector('#aiw-project-home-stage');
@@ -2838,8 +2899,13 @@
     var proj = S() && typeof S().getProject === 'function'
       ? await S().getProject(pid)
       : ((_state.projects || []).find(function(p) { return p && p.id === pid; }) || null);
+
+    // 异步校验：若在等待期间切换了项目或离开了项目主页，直接中止渲染
+    if (_state.activeProjectHomeId !== pid) return;
     if (!proj) {
       _state.activeProjectHomeId = null;
+      saveProjectHomeUiState();
+      restoreComposerToBottom(page);
       syncComposerPlaceholder(page);
       updateMainStage(page);
       return;
@@ -2857,11 +2923,25 @@
       : function(b) { return (b || 0) + ' B'; };
 
     var allChats = S() ? await S().listChats() : (_state.chats || []);
-    var projChats = allChats.filter(function(c) { return c && c.projectId === pid; })
-      .sort(function(a, b) { return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0); });
     var projDocs = (S() && typeof S().listProjectDocuments === 'function')
       ? await S().listProjectDocuments(pid)
       : [];
+
+    if (_state.activeProjectHomeId !== pid) return;
+
+    var projChats = allChats.filter(function(c) { return c && c.projectId === pid; })
+      .sort(function(a, b) { return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0); });
+
+    var docSort = _state.activeProjectHomeDocSort || 'time_desc';
+    var sortedDocs = projDocs.slice().sort(function(a, b) {
+      if (docSort === 'name_asc') {
+        return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+      }
+      if (docSort === 'size_desc') {
+        return (Number(b.size) || 0) - (Number(a.size) || 0);
+      }
+      return (Number(b.createdAt || b.updatedAt) || 0) - (Number(a.createdAt || a.updatedAt) || 0);
+    });
 
     var activeTab = _state.activeProjectHomeTab === 'sources' ? 'sources' : 'chats';
 
@@ -2871,7 +2951,8 @@
         listBodyHtml =
           '<div class="aiw-proj-home-empty">' +
             '<div class="aiw-proj-home-empty-icon"><i class="fa-regular fa-comments"></i></div>' +
-            '<div class="aiw-proj-home-empty-text">暂无聊天记录，可在下方输入框直接开始新聊天</div>' +
+            '<div class="aiw-proj-home-empty-title">暂无聊天记录</div>' +
+            '<div class="aiw-proj-home-empty-text">在上方输入框发送消息，即可在本项目中开始新聊天。</div>' +
           '</div>';
       } else {
         listBodyHtml =
@@ -2889,8 +2970,9 @@
                     '<div class="aiw-proj-home-row-sub">' + msgCount + ' 条消息 · ' + escapeHtml(timeStr) + '</div>' +
                   '</div>' +
                   '<div class="aiw-proj-home-row-actions">' +
+                    '<button type="button" class="aiw-icon-btn" data-ph-chat-pin="' + escapeHtml(c.id) + '" title="' + (c.pinned ? '取消置顶' : '置顶聊天') + '"><i class="fa-solid fa-thumbtack' + (c.pinned ? ' is-pinned-ic' : '') + '"></i></button>' +
                     '<button type="button" class="aiw-icon-btn" data-ph-chat-rename="' + escapeHtml(c.id) + '" title="重命名"><i class="fa-solid fa-pen"></i></button>' +
-                    '<button type="button" class="aiw-icon-btn" data-ph-chat-move="' + escapeHtml(c.id) + '" title="移动 / 移出项目"><i class="fa-solid fa-share-from-square"></i></button>' +
+                    '<button type="button" class="aiw-icon-btn" data-ph-chat-move="' + escapeHtml(c.id) + '" title="移动到其他项目 / 移出"><i class="fa-solid fa-share-from-square"></i></button>' +
                     '<button type="button" class="aiw-icon-btn is-danger" data-ph-chat-del="' + escapeHtml(c.id) + '" title="删除"><i class="fa-regular fa-trash-can"></i></button>' +
                   '</div>' +
                 '</div>'
@@ -2900,15 +2982,24 @@
       }
     } else {
       listBodyHtml =
-        '<div class="aiw-proj-home-sources-bar">' +
-          '<span class="aiw-proj-home-sources-hint">支持 TXT、Markdown、PDF、DOCX；仅作用于本项目问答检索</span>' +
-          '<input type="file" id="aiw-ph-doc-input" accept=".txt,.md,.markdown,.pdf,.docx" multiple style="display:none;">' +
-          '<button type="button" class="aiw-secondary-btn aiw-btn-sm" id="aiw-ph-doc-upload"><i class="fa-solid fa-upload"></i> 上传资料</button>' +
-        '</div>' +
-        (projDocs.length === 0
-          ? '<div class="aiw-proj-home-empty"><div class="aiw-proj-home-empty-icon"><i class="fa-regular fa-file-lines"></i></div><div class="aiw-proj-home-empty-text">当前项目暂无来源资料</div></div>'
-          : '<div class="aiw-proj-home-list">' +
-              projDocs.map(function(doc) {
+        '<input type="file" id="aiw-ph-doc-input" accept=".txt,.md,.markdown,.pdf,.docx" multiple style="display:none;">' +
+        (sortedDocs.length === 0
+          ? '<div class="aiw-proj-home-empty">' +
+              '<div class="aiw-proj-home-empty-icon"><i class="fa-regular fa-file-lines"></i></div>' +
+              '<div class="aiw-proj-home-empty-title">为项目添加资料</div>' +
+              '<div class="aiw-proj-home-empty-text">上传文件，让项目中的 AI 聊天能够参考这些内容。</div>' +
+              '<button type="button" class="aiw-primary-btn aiw-btn-sm" id="aiw-ph-doc-upload-empty" style="background-color:' + escapeHtml(color) + '; margin-top:4px;"><i class="fa-solid fa-plus"></i> 添加来源</button>' +
+            '</div>'
+          : '<div class="aiw-proj-home-sources-bar">' +
+              '<select class="aiw-ph-sort-select" id="aiw-ph-doc-sort" aria-label="排序方式">' +
+                '<option value="time_desc"' + (docSort === 'time_desc' ? ' selected' : '') + '>按上传时间（最新）</option>' +
+                '<option value="name_asc"' + (docSort === 'name_asc' ? ' selected' : '') + '>按文件名称</option>' +
+                '<option value="size_desc"' + (docSort === 'size_desc' ? ' selected' : '') + '>按文件大小</option>' +
+              '</select>' +
+              '<button type="button" class="aiw-primary-btn aiw-btn-sm" id="aiw-ph-doc-upload" style="background-color:' + escapeHtml(color) + ';"><i class="fa-solid fa-plus"></i> 添加来源</button>' +
+            '</div>' +
+            '<div class="aiw-proj-home-list">' +
+              sortedDocs.map(function(doc) {
                 var iconCls = 'fa-solid fa-file-lines';
                 if (doc.type === 'pdf') iconCls = 'fa-solid fa-file-pdf';
                 else if (doc.type === 'docx') iconCls = 'fa-solid fa-file-word';
@@ -2933,6 +3024,12 @@
             '</div>');
     }
 
+    // 保留现有 .aiw-composer-wrap DOM 节点（不重新创建输入组件）
+    var composerWrap = page.querySelector('.aiw-composer-wrap');
+    if (composerWrap && composerWrap.parentNode === host) {
+      page.appendChild(composerWrap);
+    }
+
     host.innerHTML =
       '<div class="aiw-proj-home-wrap">' +
         '<div class="aiw-proj-home-head">' +
@@ -2945,6 +3042,7 @@
           '</div>' +
           '<button type="button" class="aiw-icon-btn" id="aiw-proj-home-more-btn" title="更多操作"><i class="fa-solid fa-ellipsis"></i></button>' +
         '</div>' +
+        '<div class="aiw-proj-home-composer-slot" id="aiw-proj-home-composer-slot"></div>' +
         '<div class="aiw-proj-home-tabs" role="tablist">' +
           '<button type="button" class="aiw-proj-home-tab' + (activeTab === 'chats' ? ' active' : '') + '" data-proj-home-tab="chats" role="tab">聊天 <span>' + projChats.length + '</span></button>' +
           '<button type="button" class="aiw-proj-home-tab' + (activeTab === 'sources' ? ' active' : '') + '" data-proj-home-tab="sources" role="tab">来源 <span>' + projDocs.length + '</span></button>' +
@@ -2952,7 +3050,12 @@
         '<div class="aiw-proj-home-body">' + listBodyHtml + '</div>' +
       '</div>';
 
-    // 绑定项目主页事件
+    var slotEl = host.querySelector('#aiw-proj-home-composer-slot');
+    if (composerWrap && slotEl) {
+      slotEl.appendChild(composerWrap);
+      page.classList.add('is-project-home');
+    }
+
     var moreBtn = host.querySelector('#aiw-proj-home-more-btn');
     if (moreBtn && global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openProjectPopoverMenu === 'function') {
       moreBtn.addEventListener('click', function(e) {
@@ -2965,6 +3068,7 @@
           },
           onDeleted: function() {
             _state.activeProjectHomeId = null;
+            saveProjectHomeUiState();
             startNewChat(page, true);
             reloadChatList(page);
           }
@@ -2975,6 +3079,7 @@
     host.querySelectorAll('[data-proj-home-tab]').forEach(function(tabBtn) {
       tabBtn.addEventListener('click', function() {
         _state.activeProjectHomeTab = tabBtn.getAttribute('data-proj-home-tab') || 'chats';
+        saveProjectHomeUiState();
         renderProjectHomeStage(page);
       });
     });
@@ -2984,6 +3089,19 @@
         if (e.target.closest('.aiw-proj-home-row-actions')) return;
         var cid = row.getAttribute('data-ph-chat-id');
         await loadChatIntoState(page, cid);
+      });
+    });
+
+    host.querySelectorAll('[data-ph-chat-pin]').forEach(function(btn) {
+      btn.addEventListener('click', async function(e) {
+        e.stopPropagation();
+        var cid = btn.getAttribute('data-ph-chat-pin');
+        if (S() && typeof S().togglePinChat === 'function') {
+          var updated = await S().togglePinChat(cid);
+          notifyToast(updated && updated.pinned ? '已置顶对话' : '已取消置顶');
+          await reloadChatList(page);
+          renderProjectHomeStage(page);
+        }
       });
     });
 
@@ -3029,20 +3147,32 @@
       });
     });
 
+    var sortSel = host.querySelector('#aiw-ph-doc-sort');
+    if (sortSel) {
+      sortSel.addEventListener('change', function() {
+        _state.activeProjectHomeDocSort = sortSel.value || 'time_desc';
+        saveProjectHomeUiState();
+        renderProjectHomeStage(page);
+      });
+    }
+
     var docUploadBtn = host.querySelector('#aiw-ph-doc-upload');
+    var docUploadEmptyBtn = host.querySelector('#aiw-ph-doc-upload-empty');
     var docInput = host.querySelector('#aiw-ph-doc-input');
-    if (docUploadBtn && docInput) {
-      docUploadBtn.addEventListener('click', function() { docInput.click(); });
+    if (docInput) {
+      if (docUploadBtn) docUploadBtn.addEventListener('click', function() { docInput.click(); });
+      if (docUploadEmptyBtn) docUploadEmptyBtn.addEventListener('click', function() { docInput.click(); });
       docInput.addEventListener('change', async function() {
         var files = docInput.files;
         if (!files || files.length === 0) return;
+        var uploadTargetPid = pid;
         var okCount = 0;
         var errs = [];
         for (var i = 0; i < files.length; i++) {
           try {
             var parsed = await global.AiWorkspaceProjects.parseUploadedFile(files[i]);
             await S().saveProjectDocument({
-              projectId: pid,
+              projectId: uploadTargetPid,
               name: parsed.name,
               type: parsed.type,
               size: parsed.size,
@@ -3056,7 +3186,9 @@
         docInput.value = '';
         if (okCount > 0) notifyToast('成功上传并解析 ' + okCount + ' 份资料');
         if (errs.length > 0) notifyToast('部分文件未能导入：' + errs[0]);
-        renderProjectHomeStage(page);
+        if (_state.activeProjectHomeId === uploadTargetPid) {
+          renderProjectHomeStage(page);
+        }
       });
     }
 
@@ -3078,7 +3210,7 @@
         var doc = await S().getProjectDocument(did, pid);
         if (doc && global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openDocRenameModal === 'function') {
           global.AiWorkspaceProjects.openDocRenameModal(page, proj, doc, function() {
-            renderProjectHomeStage(page);
+            if (_state.activeProjectHomeId === pid) renderProjectHomeStage(page);
           });
         }
       });
@@ -3091,7 +3223,7 @@
         var doc = await S().getProjectDocument(did, pid);
         if (doc && global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openDocDeleteConfirmModal === 'function') {
           global.AiWorkspaceProjects.openDocDeleteConfirmModal(page, proj, doc, function() {
-            renderProjectHomeStage(page);
+            if (_state.activeProjectHomeId === pid) renderProjectHomeStage(page);
           });
         }
       });
@@ -3107,11 +3239,15 @@
     var proj = S() && typeof S().getProject === 'function' ? await S().getProject(projectId) : null;
     if (!proj) {
       notifyToast('项目不存在或已被删除');
+      _state.activeProjectHomeId = null;
+      saveProjectHomeUiState();
       return;
     }
     _state.activeProjectHomeId = projectId;
-    _state.activeProjectHomeTab = (options && options.tab) || 'chats';
-    _state.activeProjectHomeId = null;
+    if (options && options.tab) {
+      _state.activeProjectHomeTab = options.tab;
+    }
+    saveProjectHomeUiState();
     _state.activeChatId = null;
     _state.activeChat = null;
     _state.messages = [];
@@ -3179,6 +3315,7 @@
       return;
     }
 
+    restoreComposerToBottom(page);
     if (projHomeStage) {
       projHomeStage.hidden = true;
       projHomeStage.innerHTML = '';
@@ -3991,6 +4128,14 @@
       closeAiWorkspacePage();
     });
 
+    var ctxProjBtn = page.querySelector('#aiw-ctx-project-btn');
+    if (ctxProjBtn) {
+      ctxProjBtn.addEventListener('click', function() {
+        var pid = ctxProjBtn.getAttribute('data-back-project-id');
+        if (pid) openProjectHome(page, pid);
+      });
+    }
+
     page.querySelector('#aiw-ctx-model-btn').addEventListener('click', function() {
       openModelPickerModal(page);
     });
@@ -4202,6 +4347,17 @@
 
     await loadWorkspaceState();
 
+    var savedProjHomePid = loadProjectHomeUiState();
+    if (!_state.activeChatId && savedProjHomePid && S() && typeof S().getProject === 'function') {
+      var restoredHomeProj = await S().getProject(savedProjHomePid);
+      if (restoredHomeProj) {
+        _state.activeProjectHomeId = restoredHomeProj.id;
+      } else {
+        _state.activeProjectHomeId = null;
+        saveProjectHomeUiState();
+      }
+    }
+
     // 若之前正在查看某条历史对话，重新打开时从存储刷新该对话数据
     if (_state.activeChatId && S()) {
       var refreshedChat = await S().getChat(_state.activeChatId);
@@ -4266,6 +4422,7 @@
     }
 
     _state.activeProjectHomeId = null;
+    saveProjectHomeUiState();
     _state.activeChatId = null;
     _state.activeChat = await S().createChat({
       title: '新对话' + (proj ? ('（' + proj.name + '）') : ''),
@@ -4298,6 +4455,7 @@
       return;
     }
     _state.activeProjectHomeId = null;
+    saveProjectHomeUiState();
     _state.activeChat = chat;
     _state.activeChatId = chat.id;
     _state.messages = Array.isArray(chat.messages) ? chat.messages.slice() : [];
