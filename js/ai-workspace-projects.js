@@ -42,8 +42,24 @@
     { id: 'fa-solid fa-compass', label: '规划探索' },
     { id: 'fa-solid fa-star', label: '核心目标' },
     { id: 'fa-solid fa-heart', label: '生活灵感' },
-    { id: 'fa-solid fa-lightbulb', label: '创意头脑' }
+    { id: 'fa-solid fa-lightbulb', label: '创意头脑' },
+    { id: '🌐', label: '浏览器/网络' },
+    { id: '🌿', label: '杂集/自然' },
+    { id: '💜', label: '人设/情感' },
+    { id: '🌸', label: '素材/灵感' },
+    { id: '📚', label: '论文/阅读' },
+    { id: '🐾', label: '小软件/宠物' },
+    { id: '🚀', label: '效率/发布' },
+    { id: '🎯', label: '目标/计划' }
   ];
+
+  function renderProjectIconHtml(iconVal) {
+    var ic = String(iconVal || 'fa-solid fa-folder').trim() || 'fa-solid fa-folder';
+    if (ic.indexOf('fa-') !== -1) {
+      return '<i class="' + escapeHtml(ic) + '"></i>';
+    }
+    return '<span class="aiw-proj-emoji-icon">' + escapeHtml(ic) + '</span>';
+  }
 
   var PROJECT_COLORS = [
     { id: '#ec4899', label: '粉红' },
@@ -131,7 +147,7 @@
             '<div class="aiw-project-card" data-project-id="' + escapeHtml(p.id) + '" data-search-text="' + escapeHtml((p.name + ' ' + (p.description || '')).toLowerCase()) + '" style="border-left-color: ' + escapeHtml(color) + ';">' +
               '<div class="aiw-project-card-head">' +
                 '<div class="aiw-project-card-icon" style="background-color: ' + escapeHtml(color) + '1a; color: ' + escapeHtml(color) + ';">' +
-                  '<i class="' + escapeHtml(p.icon || 'fa-solid fa-folder') + '"></i>' +
+                  renderProjectIconHtml(p.icon) +
                 '</div>' +
                 '<div class="aiw-project-card-meta">' +
                   '<div class="aiw-project-card-title">' + escapeHtml(p.name) + '</div>' +
@@ -349,7 +365,7 @@
           '<div class="aiw-proj-detail-head-left">' +
             '<button type="button" class="aiw-icon-btn" id="aiw-proj-back-btn" title="返回我的项目"><i class="fa-solid fa-arrow-left"></i></button>' +
             '<div class="aiw-proj-detail-badge" style="background-color: ' + escapeHtml(color) + '1a; color: ' + escapeHtml(color) + ';">' +
-              '<i class="' + escapeHtml(project.icon || 'fa-solid fa-folder') + '"></i>' +
+              renderProjectIconHtml(project.icon) +
             '</div>' +
             '<div class="aiw-ws-modal-title">' + escapeHtml(project.name) + '</div>' +
           '</div>' +
@@ -798,7 +814,8 @@
         await syncWorkspaceState({ updatedProjectId: existingProject.id });
         notifyToast('项目已更新');
       } else {
-        await S().createProject(payload);
+        var createdProj = await S().createProject(payload);
+        await syncWorkspaceState({ createdProjectId: createdProj && createdProj.id });
         notifyToast('项目已创建');
       }
 
@@ -1364,9 +1381,72 @@
     }
   }
 
+
+  function openProjectQuickActionsModal(page, project, onDone) {
+    if (!page || !project) return;
+    var color = project.color || '#ec4899';
+    var modalWrap = document.createElement('div');
+    modalWrap.className = 'aiw-ws-modal-backdrop open aiw-proj-submodal-backdrop';
+    modalWrap.innerHTML =
+      '<div class="aiw-ws-modal aiw-projects-edit-modal" role="dialog" aria-modal="true">' +
+        '<div class="aiw-ws-modal-head">' +
+          '<div class="aiw-proj-detail-head-left">' +
+            '<div class="aiw-proj-detail-badge" style="background:' + escapeHtml(color) + '1a; color:' + escapeHtml(color) + ';">' +
+              renderProjectIconHtml(project.icon) +
+            '</div>' +
+            '<div class="aiw-ws-modal-title">' + escapeHtml(project.name) + '</div>' +
+          '</div>' +
+          '<button type="button" class="aiw-ws-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>' +
+        '</div>' +
+        '<div class="aiw-ws-modal-body">' +
+          '<div class="aiw-picker-list">' +
+            '<button type="button" class="aiw-picker-item" data-proj-act="rename">' +
+              '<span class="aiw-picker-icon"><i class="fa-solid fa-i-cursor"></i></span>' +
+              '<div class="aiw-picker-text"><div class="aiw-picker-title">重命名项目</div></div>' +
+            '</button>' +
+            '<button type="button" class="aiw-picker-item" data-proj-act="edit">' +
+              '<span class="aiw-picker-icon"><i class="fa-solid fa-palette"></i></span>' +
+              '<div class="aiw-picker-text"><div class="aiw-picker-title">编辑图标、颜色与项目设置</div></div>' +
+            '</button>' +
+            '<button type="button" class="aiw-picker-item" data-proj-act="detail">' +
+              '<span class="aiw-picker-icon"><i class="fa-regular fa-folder-open"></i></span>' +
+              '<div class="aiw-picker-text"><div class="aiw-picker-title">打开项目详情（聊天与资料库）</div></div>' +
+            '</button>' +
+            '<button type="button" class="aiw-picker-item is-danger-item" data-proj-act="delete">' +
+              '<span class="aiw-picker-icon"><i class="fa-regular fa-trash-can"></i></span>' +
+              '<div class="aiw-picker-text"><div class="aiw-picker-title">删除项目</div></div>' +
+            '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    page.appendChild(modalWrap);
+    modalWrap.querySelector('.aiw-ws-modal-close').addEventListener('click', function() { modalWrap.remove(); });
+    modalWrap.addEventListener('click', function(e) { if (e.target === modalWrap) modalWrap.remove(); });
+
+    modalWrap.querySelector('[data-proj-act="rename"]').addEventListener('click', function() {
+      modalWrap.remove();
+      openProjectRenameModal(page, project, onDone);
+    });
+    modalWrap.querySelector('[data-proj-act="edit"]').addEventListener('click', function() {
+      modalWrap.remove();
+      openProjectEditModal(page, project, onDone, onDone);
+    });
+    modalWrap.querySelector('[data-proj-act="detail"]').addEventListener('click', function() {
+      modalWrap.remove();
+      openProjectDetail(page, project.id, {});
+    });
+    modalWrap.querySelector('[data-proj-act="delete"]').addEventListener('click', function() {
+      modalWrap.remove();
+      openProjectDeleteConfirmModal(page, project, onDone);
+    });
+  }
+
   global.AiWorkspaceProjects = {
     openProjectsCenter: openProjectsCenter,
     openProjectDetail: openProjectDetail,
+    openProjectQuickActionsModal: openProjectQuickActionsModal,
+    renderProjectIconHtml: renderProjectIconHtml,
     openProjectDocumentsModal: openProjectDocumentsModal,
     parseUploadedFile: parseUploadedFile,
     closeProjectsModal: closeProjectsModal,

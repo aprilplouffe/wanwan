@@ -31,6 +31,10 @@
     deepThinkEnabled: false,
     searchQuery: '',
     chats: [],
+    projects: [],
+    projectsSectionCollapsed: false,
+    expandedProjects: {},
+    projectVisibleLimit: {},
     activeChatId: null,
     activeChat: null,
     messages: [],
@@ -65,6 +69,33 @@
     },
     defaultPreset: null
   };
+
+
+  var SIDEBAR_PROJ_UI_KEY = 'wanwan_aiw_sidebar_proj_ui_v1';
+
+  function loadSidebarProjUiState() {
+    try {
+      var raw = global.localStorage ? global.localStorage.getItem(SIDEBAR_PROJ_UI_KEY) : null;
+      if (!raw) return;
+      var parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        _state.projectsSectionCollapsed = !!parsed.collapsed;
+        if (parsed.expanded && typeof parsed.expanded === 'object') {
+          _state.expandedProjects = parsed.expanded;
+        }
+      }
+    } catch (_) {}
+  }
+
+  function saveSidebarProjUiState() {
+    try {
+      if (!global.localStorage) return;
+      global.localStorage.setItem(SIDEBAR_PROJ_UI_KEY, JSON.stringify({
+        collapsed: !!_state.projectsSectionCollapsed,
+        expanded: _state.expandedProjects || {}
+      }));
+    } catch (_) {}
+  }
 
   var _mediaQuery = null;
   var _mediaListener = null;
@@ -437,7 +468,8 @@
           S().getSelectedModel(),
           S().listChats(),
           typeof S().listWorldBooks === 'function' ? S().listWorldBooks() : Promise.resolve([]),
-          typeof S().listFavorites === 'function' ? S().listFavorites() : Promise.resolve([])
+          typeof S().listFavorites === 'function' ? S().listFavorites() : Promise.resolve([]),
+          typeof S().listProjects === 'function' ? S().listProjects() : Promise.resolve([])
         ]);
         _state.userProfile = results[0];
         _state.appearance = results[1];
@@ -448,6 +480,8 @@
         _state.chats = results[6] || [];
         _state.worldbooks = results[7] || [];
         _state.favorites = results[8] || [];
+        _state.projects = results[9] || [];
+        loadSidebarProjUiState();
         _state.defaultPreset = _state.presets.find(function(p) { return p.isDefault; }) || _state.presets[0] || null;
         if (!_state.activePreset && (!_state.general || _state.general.autoUseDefaultPreset !== false)) {
           _state.activePreset = _state.defaultPreset;
@@ -603,10 +637,7 @@
               '<span class="aiw-nav-item-icon"><i class="fa-regular fa-folder-open"></i></span>' +
               '<span class="aiw-nav-item-label">资料库</span>' +
             '</button>' +
-            '<button type="button" class="aiw-nav-item" data-nav="projects">' +
-              '<span class="aiw-nav-item-icon"><i class="fa-regular fa-folder"></i></span>' +
-              '<span class="aiw-nav-item-label">项目</span>' +
-            '</button>' +
+
             '<button type="button" class="aiw-nav-item" data-nav="remote">' +
               '<span class="aiw-nav-item-icon"><i class="fa-solid fa-globe"></i></span>' +
               '<span class="aiw-nav-item-label">Remote</span>' +
@@ -631,6 +662,19 @@
                 '<span class="aiw-nav-item-tag" id="aiw-nav-memory-count"></span>' +
               '</button>' +
             '</div>' +
+          '</div>' +
+
+          '<div class="aiw-chat-section aiw-sb-projects-section" id="aiw-sb-projects-section">' +
+            '<div class="aiw-sb-projects-header">' +
+              '<button type="button" class="aiw-sb-projects-toggle" id="aiw-sb-projects-toggle" aria-expanded="true">' +
+                '<span>项目</span>' +
+                '<i class="fa-solid fa-angle-down aiw-sb-projects-chevron" id="aiw-sb-projects-chevron"></i>' +
+              '</button>' +
+              '<button type="button" class="aiw-sb-proj-head-btn" id="aiw-sb-projects-manage" title="我的项目 / 管理项目">' +
+                '<i class="fa-solid fa-folder-plus"></i>' +
+              '</button>' +
+            '</div>' +
+            '<div class="aiw-sb-projects-list" id="aiw-sb-projects-list"></div>' +
           '</div>' +
 
           '<div class="aiw-chat-section" id="aiw-pinned-section">' +
@@ -800,7 +844,8 @@
       applyWorkspaceAppearance(page, _state.appearance);
       syncSidebarAccountDom(page);
       syncSidebarMemoryBadge(page);
-      renderSidebarChats(page);
+      renderSidebarProjects(page);
+    renderSidebarChats(page);
       syncContextStrip(page);
       updateMainStage(page);
     }, {
@@ -853,6 +898,7 @@
     setSidebarOpen(page, false);
     syncContextStrip(page);
     updateMainStage(page, { preserveScroll: true });
+    renderSidebarProjects(page);
     renderSidebarChats(page);
 
     if (msgId) {
@@ -1131,6 +1177,11 @@
     if (!S()) return;
     var q = String(_state.searchQuery || '').trim();
     _state.chats = q ? await S().searchChats(q) : await S().listChats();
+    if (typeof S().listProjects === 'function') {
+      _state.projects = await S().listProjects();
+    }
+    renderSidebarProjects(page);
+    renderSidebarProjects(page);
     renderSidebarChats(page);
   }
 
@@ -1247,11 +1298,172 @@
     });
   }
 
+  function renderSidebarProjects(page) {
+    if (!page) return;
+    var listEl = page.querySelector('#aiw-sb-projects-list');
+    var toggleBtn = page.querySelector('#aiw-sb-projects-toggle');
+    var chevEl = page.querySelector('#aiw-sb-projects-chevron');
+    if (!listEl) return;
+
+    var collapsed = !!_state.projectsSectionCollapsed;
+    listEl.hidden = collapsed;
+    if (toggleBtn) toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    if (chevEl) chevEl.className = 'fa-solid ' + (collapsed ? 'fa-angle-right' : 'fa-angle-down') + ' aiw-sb-projects-chevron';
+    if (collapsed) return;
+
+    var projects = Array.isArray(_state.projects) ? _state.projects : [];
+    var allChats = Array.isArray(_state.chats) ? _state.chats : [];
+    var q = String(_state.searchQuery || '').trim().toLowerCase();
+
+    if (projects.length === 0) {
+      listEl.innerHTML =
+        '<button type="button" class="aiw-sb-proj-create-hint" id="aiw-sb-proj-empty-manage">' +
+          '<i class="fa-solid fa-plus"></i> 创建第一个项目' +
+        '</button>';
+      var emptyBtn = listEl.querySelector('#aiw-sb-proj-empty-manage');
+      if (emptyBtn) {
+        emptyBtn.addEventListener('click', function() {
+          setSidebarOpen(page, false);
+          if (global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openProjectsCenter === 'function') {
+            global.AiWorkspaceProjects.openProjectsCenter(page);
+          }
+        });
+      }
+      return;
+    }
+
+    var iconRenderer = (global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.renderProjectIconHtml === 'function')
+      ? global.AiWorkspaceProjects.renderProjectIconHtml
+      : function(ic) { return '<i class="' + escapeHtml(ic || 'fa-solid fa-folder') + '"></i>'; };
+
+    var html = projects.map(function(proj) {
+      var projChats = allChats.filter(function(c) { return c && c.projectId === proj.id; });
+      var isExpanded = !!_state.expandedProjects[proj.id] || (!!q && projChats.length > 0);
+      var hasActive = projChats.some(function(c) { return c.id === _state.activeChatId; });
+      var color = proj.color || '#ec4899';
+      var limit = Number(_state.projectVisibleLimit[proj.id]) || 5;
+      var visibleChats = projChats.slice(0, limit);
+      var remaining = Math.max(0, projChats.length - visibleChats.length);
+
+      var chatsHtml = '';
+      if (isExpanded) {
+        if (visibleChats.length === 0) {
+          chatsHtml = '<div class="aiw-sb-proj-chats"><div class="aiw-sb-proj-empty">暂无聊天</div></div>';
+        } else {
+          chatsHtml =
+            '<div class="aiw-sb-proj-chats">' +
+              visibleChats.map(function(c) {
+                var activeCls = _state.activeChatId === c.id ? ' active' : '';
+                return (
+                  '<div class="aiw-chat-row aiw-sb-proj-chat-row' + activeCls + '">' +
+                    '<button type="button" class="aiw-chat-item' + activeCls + '" data-proj-chat-id="' + escapeHtml(c.id) + '">' +
+                      '<span class="aiw-chat-item-title">' + escapeHtml(c.title || '新对话') + '</span>' +
+                      (c.pinned ? '<span class="aiw-chat-item-pin" title="已置顶"><i class="fa-solid fa-thumbtack"></i></span>' : '') +
+                    '</button>' +
+                    '<button type="button" class="aiw-chat-more-btn" data-chat-more="' + escapeHtml(c.id) + '" aria-label="对话操作">' +
+                      '<i class="fa-solid fa-ellipsis"></i>' +
+                    '</button>' +
+                  '</div>'
+                );
+              }).join('') +
+              (remaining > 0
+                ? '<button type="button" class="aiw-sb-proj-show-more" data-proj-show-more="' + escapeHtml(proj.id) + '">显示更多（还有 ' + remaining + ' 条）</button>'
+                : '') +
+            '</div>';
+        }
+      }
+
+      return (
+        '<div class="aiw-sb-proj-group' + (isExpanded ? ' is-expanded' : '') + (hasActive ? ' has-active' : '') + '" data-sb-proj-id="' + escapeHtml(proj.id) + '">' +
+          '<div class="aiw-sb-proj-row' + (hasActive ? ' is-active' : '') + '">' +
+            '<button type="button" class="aiw-sb-proj-main" data-proj-toggle="' + escapeHtml(proj.id) + '" aria-expanded="' + (isExpanded ? 'true' : 'false') + '">' +
+              '<span class="aiw-sb-proj-icon" style="color:' + escapeHtml(color) + ';">' + iconRenderer(proj.icon) + '</span>' +
+              '<span class="aiw-sb-proj-name">' + escapeHtml(proj.name) + '</span>' +
+            '</button>' +
+            '<div class="aiw-sb-proj-actions">' +
+              '<button type="button" class="aiw-sb-proj-action-btn" data-proj-new-chat="' + escapeHtml(proj.id) + '" title="在项目中新建聊天"><i class="fa-regular fa-pen-to-square"></i></button>' +
+              '<button type="button" class="aiw-sb-proj-action-btn" data-proj-more="' + escapeHtml(proj.id) + '" title="项目操作"><i class="fa-solid fa-ellipsis"></i></button>' +
+            '</div>' +
+          '</div>' +
+          chatsHtml +
+        '</div>'
+      );
+    }).join('');
+
+    listEl.innerHTML = html;
+
+    listEl.querySelectorAll('[data-proj-toggle]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var pid = btn.getAttribute('data-proj-toggle');
+        _state.expandedProjects[pid] = !_state.expandedProjects[pid];
+        saveSidebarProjUiState();
+        renderSidebarProjects(page);
+      });
+    });
+
+    listEl.querySelectorAll('[data-proj-new-chat]').forEach(function(btn) {
+      btn.addEventListener('click', async function(e) {
+        e.stopPropagation();
+        var pid = btn.getAttribute('data-proj-new-chat');
+        _state.expandedProjects[pid] = true;
+        saveSidebarProjUiState();
+        setSidebarOpen(page, false);
+        await createNewChatInProject(page, pid);
+      });
+    });
+
+    listEl.querySelectorAll('[data-proj-more]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var pid = btn.getAttribute('data-proj-more');
+        var proj = projects.find(function(p) { return p && p.id === pid; });
+        if (proj && global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openProjectQuickActionsModal === 'function') {
+          global.AiWorkspaceProjects.openProjectQuickActionsModal(page, proj, function() {
+            reloadChatList(page);
+          });
+        }
+      });
+    });
+
+    listEl.querySelectorAll('[data-proj-show-more]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var pid = btn.getAttribute('data-proj-show-more');
+        var cur = Number(_state.projectVisibleLimit[pid]) || 5;
+        _state.projectVisibleLimit[pid] = cur + 10;
+        renderSidebarProjects(page);
+      });
+    });
+
+    listEl.querySelectorAll('[data-proj-chat-id]').forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        if (_state.isStreaming) {
+          notifyToast('请先停止当前回答再切换对话');
+          return;
+        }
+        var cid = btn.getAttribute('data-proj-chat-id');
+        setSidebarOpen(page, false);
+        await loadChatIntoState(page, cid);
+      });
+    });
+
+    listEl.querySelectorAll('.aiw-chat-more-btn[data-chat-more]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var cid = btn.getAttribute('data-chat-more');
+        var target = allChats.find(function(c) { return c && c.id === cid; });
+        if (target) openChatActionsModal(page, target);
+      });
+    });
+  }
+
   function renderSidebarChats(page) {
     if (!page) return;
     var list = Array.isArray(_state.chats) ? _state.chats : [];
-    var pinned = list.filter(function(item) { return item.pinned; });
-    var recent = list.filter(function(item) { return !item.pinned; });
+    // 项目聊天仅在所属项目下展示，不在普通聊天分区重复出现
+    var normalList = list.filter(function(item) { return item && !item.projectId; });
+    var pinned = normalList.filter(function(item) { return item.pinned; });
+    var recent = normalList.filter(function(item) { return !item.pinned; });
 
     var pinnedList = page.querySelector('#aiw-pinned-list');
     var recentList = page.querySelector('#aiw-recent-list');
@@ -1320,11 +1532,12 @@
         setSidebarOpen(page, false);
         syncContextStrip(page);
         updateMainStage(page);
-        renderSidebarChats(page);
+        renderSidebarProjects(page);
+    renderSidebarChats(page);
       });
     });
 
-    page.querySelectorAll('.aiw-chat-more-btn[data-chat-more]').forEach(function(btn) {
+    page.querySelectorAll('#aiw-pinned-list .aiw-chat-more-btn[data-chat-more], #aiw-recent-list .aiw-chat-more-btn[data-chat-more]').forEach(function(btn) {
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
         var chatId = btn.getAttribute('data-chat-more');
@@ -3187,6 +3400,10 @@
         messages: []
       });
       _state.activeChatId = _state.activeChat.id;
+    if (projectId) {
+      _state.expandedProjects[projectId] = true;
+      saveSidebarProjUiState();
+    }
     } else if (_state.messages.length === 0 && (!_state.activeChat.title || _state.activeChat.title === '新对话')) {
       _state.activeChat.title = S().generateChatTitle(text);
     }
@@ -3376,6 +3593,7 @@
     await refreshEffectiveApi();
     syncContextStrip(page);
     updateMainStage(page);
+    renderSidebarProjects(page);
     renderSidebarChats(page);
     if (!silent) notifyToast('已开启新对话');
   }
@@ -3458,6 +3676,30 @@
         notifyToast('「' + label + '」将在后续阶段接入');
       });
     });
+
+    var sbProjToggle = page.querySelector('#aiw-sb-projects-toggle');
+    if (sbProjToggle) {
+      sbProjToggle.addEventListener('click', function() {
+        _state.projectsSectionCollapsed = !_state.projectsSectionCollapsed;
+        saveSidebarProjUiState();
+        renderSidebarProjects(page);
+      });
+    }
+
+    var sbProjManage = page.querySelector('#aiw-sb-projects-manage');
+    if (sbProjManage) {
+      sbProjManage.addEventListener('click', function(e) {
+        e.stopPropagation();
+        setSidebarOpen(page, false);
+        if (global.AiWorkspaceProjects && typeof global.AiWorkspaceProjects.openProjectsCenter === 'function') {
+          global.AiWorkspaceProjects.openProjectsCenter(page, {
+            onClose: function() { reloadChatList(page); }
+          });
+        } else {
+          notifyToast('项目模块尚未加载');
+        }
+      });
+    }
 
     page.querySelector('#aiw-nav-more-btn').addEventListener('click', function() {
       _state.moreNavOpen = !_state.moreNavOpen;
@@ -3617,6 +3859,7 @@
     }
 
     attachAppearanceMediaListener(page);
+    renderSidebarProjects(page);
     renderSidebarChats(page);
     syncDeepThinkUI(page);
     syncQuoteBarUI(page);
@@ -3690,6 +3933,7 @@
     syncQuoteBarUI(page);
     syncContextStrip(page);
     updateMainStage(page);
+    renderSidebarProjects(page);
     renderSidebarChats(page);
     notifyToast('已打开对话：' + (chat.title || '新对话'));
   }
