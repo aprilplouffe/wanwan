@@ -6947,3 +6947,283 @@
 .is-pinned-ic {
   color: var(--aiw-pink-deep);
 }
+
+/* ===== 知屿：全局资料库（第一阶段）UI 样式 ===== */
+.aiw-library-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 48;
+  background: var(--aiw-bg);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.aiw-library-stage[hidden] {
+  display: none;
+}
+
+.aiw-lib-wrap {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px 16px 32px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.aiw-lib-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aiw-lib-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-lib-titles {
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-lib-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--aiw-text);
+}
+
+.aiw-lib-subtitle {
+  font-size: 12.5px;
+  color: var(--aiw-sub);
+  margin-top: 2px;
+}
+
+.aiw-lib-header-actions {
+  flex-shrink: 0;
+}
+
+.aiw-lib-upload-status {
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: var(--aiw-pink-soft);
+  border: 1px solid var(--aiw-pink-border);
+  color: var(--aiw-pink-deep);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.aiw-lib-upload-status[hidden] {
+  display: none;
+}
+
+.aiw-lib-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aiw-lib-search {
+  flex: 1;
+  min-width: 180px;
+}
+
+.aiw-lib-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aiw-lib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aiw-lib-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--aiw-surface);
+  border: 1px solid var(--aiw-border);
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.aiw-lib-row:hover {
+  background: var(--aiw-surface-2);
+  border-color: var(--aiw-border-strong);
+}
+
+.aiw-lib-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-lib-row-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--aiw-pink-soft);
+  color: var(--aiw-pink-deep);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.aiw-lib-row-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.aiw-lib-row-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--aiw-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aiw-lib-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--aiw-sub);
+  margin-top: 3px;
+}
+
+.aiw-lib-badge {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--aiw-surface-2);
+  border: 1px solid var(--aiw-border);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--aiw-text);
+}
+
+.aiw-lib-status {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.aiw-lib-status.is-parsed {
+  color: #059669;
+}
+
+.aiw-lib-status.is-failed {
+  color: #e11d48;
+}
+
+.aiw-lib-more-btn {
+  flex-shrink: 0;
+}
+
+.aiw-lib-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 40px 20px;
+  border-radius: 18px;
+  background: var(--aiw-surface);
+  border: 1px dashed var(--aiw-border-strong);
+  gap: 8px;
+}
+
+.aiw-lib-empty-icon {
+  font-size: 32px;
+  color: var(--aiw-hint);
+  margin-bottom: 4px;
+}
+
+.aiw-lib-empty-title {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--aiw-text);
+}
+
+.aiw-lib-empty-desc {
+  font-size: 13px;
+  color: var(--aiw-sub);
+  max-width: 340px;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
+.aiw-lib-pdf-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background: var(--aiw-surface-2);
+  border: 1px solid var(--aiw-border);
+}
+
+.aiw-lib-pdf-bar[hidden] {
+  display: none;
+}
+
+.aiw-lib-pdf-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aiw-lib-pdf-pager[hidden] {
+  display: none;
+}
+
+.aiw-lib-pdf-page-label {
+  font-size: 12px;
+  color: var(--aiw-text);
+  font-weight: 500;
+}
+
+.aiw-lib-detail-kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--aiw-border);
+  font-size: 12.5px;
+}
+
+.aiw-lib-detail-kv span {
+  color: var(--aiw-sub);
+  flex-shrink: 0;
+}
+
+.aiw-lib-detail-kv strong {
+  color: var(--aiw-text);
+  font-weight: 500;
+  text-align: right;
+  word-break: break-all;
+}
